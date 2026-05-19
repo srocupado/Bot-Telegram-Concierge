@@ -52,6 +52,14 @@ async def geocode(
     try:
         resp = await client.get(GEOCODING_ENDPOINT, params=params)
         resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        safe_url = str(e.request.url).replace(api_key, "***")
+        body = (e.response.text or "")[:400]
+        # 404 nesse endpoint normalmente = Geocoding API não habilitada
+        # no projeto Cloud, ou API key com restrição que bloqueia Geocoding.
+        raise GeocodingError(
+            f"geocoding HTTP {e.response.status_code} url={safe_url} body={body!r}"
+        ) from e
     except httpx.HTTPError as e:
         raise GeocodingError(f"geocoding request failed: {e}") from e
 

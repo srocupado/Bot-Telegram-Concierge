@@ -142,7 +142,9 @@ async def on_location(
         except GeocodingError:
             logger.exception("/rota geocoding failed")
             await message.answer(
-                "⚠️ Erro consultando o Google Geocoding. Tente em alguns segundos.",
+                "⚠️ Erro consultando o Google Geocoding. Verifique se a API "
+                "está habilitada no Cloud Console e se a chave permite "
+                "Geocoding (logs do servidor têm o detalhe).",
                 reply_markup=ReplyKeyboardRemove(),
             )
             return
