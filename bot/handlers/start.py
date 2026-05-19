@@ -11,12 +11,12 @@ router = Router(name=__name__)
 
 HELP_TEXT = (
     "🤖 <b>Concierge</b>\n\n"
-    "<b>Trânsito casa↔trabalho</b> (réplica do Telegram-Travels):\n"
+    "<b>Trânsito casa↔trabalho</b>:\n"
     "• <code>/trafego_now casa</code> | <code>/trafego_now trabalho</code> — força consulta agora\n"
     "• <code>/trafego_on</code> / <code>/trafego_off</code> — assina/desassina digest diário (seg-sex)\n"
     "• <code>/trafego_at HH:MM</code> — muda horário do digest (sem arg volta ao default)\n"
     "• <code>/trafego_reset</code> — zera marca de envio de hoje\n\n"
-    "<b>Medidas Provisórias</b> (réplica do Telegram-Travels):\n"
+    "<b>Medidas Provisórias</b>:\n"
     "• <code>/congresso_now</code> — força resumo da semana agora\n"
     "• <code>/congresso_on</code> / <code>/congresso_off</code> — assina/desassina digest semanal (segunda)\n"
     "• <code>/congresso_at HH:MM</code> — muda horário do digest\n"
