@@ -19,8 +19,8 @@ from bot.config import settings
 from bot.db.models import User
 from bot.handlers.chat import SYSTEM_PROMPT
 from bot.handlers.congress import (
+    cmd_congress_agora,
     cmd_congress_at,
-    cmd_congress_now,
     cmd_congress_off,
     cmd_congress_on,
     cmd_congress_reset,
@@ -32,8 +32,8 @@ from bot.handlers.reset import cmd_reset
 from bot.handlers.start import cmd_help, cmd_start
 from bot.handlers.tasks import cmd_feito, cmd_nova, cmd_tarefas
 from bot.handlers.traffic import (
+    cmd_transito_agora,
     cmd_transito_at,
-    cmd_transito_now,
     cmd_transito_off,
     cmd_transito_on,
     cmd_transito_reset,
@@ -57,8 +57,8 @@ def _cmd(name: str, args: str | None) -> CommandObject:
 
 # Wrappers que adaptam as assinaturas heterogêneas dos handlers existentes
 # a um contrato único (message, args, user, session).
-async def _w_transito_now(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_transito_now(message, _cmd("transito_now", args))
+async def _w_transito_agora(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_transito_agora(message, _cmd("transito_agora", args))
 
 
 async def _w_transito_on(message: Message, args: str, user: User, session: AsyncSession) -> None:
@@ -77,8 +77,8 @@ async def _w_transito_reset(message: Message, args: str, user: User, session: As
     await cmd_transito_reset(message, user, session)
 
 
-async def _w_congresso_now(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_congress_now(message)
+async def _w_congresso_agora(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_congress_agora(message)
 
 
 async def _w_congresso_on(message: Message, args: str, user: User, session: AsyncSession) -> None:
@@ -138,12 +138,12 @@ async def _w_help(message: Message, args: str, user: User, session: AsyncSession
 
 
 _DISPATCH: dict[str, callable] = {
-    "transito_now": _w_transito_now,
+    "transito_agora": _w_transito_agora,
     "transito_on": _w_transito_on,
     "transito_off": _w_transito_off,
     "transito_at": _w_transito_at,
     "transito_reset": _w_transito_reset,
-    "congresso_now": _w_congresso_now,
+    "congresso_agora": _w_congresso_agora,
     "congresso_on": _w_congresso_on,
     "congresso_off": _w_congresso_off,
     "congresso_at": _w_congresso_at,

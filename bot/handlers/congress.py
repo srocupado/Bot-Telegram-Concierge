@@ -91,8 +91,8 @@ async def cmd_congress_reset(message: Message, user: User, session: AsyncSession
     )
 
 
-@router.message(Command("congresso_now"))
-async def cmd_congress_now(message: Message) -> None:
+@router.message(Command("congresso_agora"))
+async def cmd_congress_agora(message: Message) -> None:
     today = datetime.now(BRT).date()
     try:
         async with httpx.AsyncClient(
@@ -102,7 +102,7 @@ async def cmd_congress_now(message: Message) -> None:
         ) as client:
             items = await fetch_week_mps(client, today)
     except CongressScrapeError:
-        logger.exception("congresso_now scrape failed")
+        logger.exception("congresso_agora scrape failed")
         await message.answer(
             "⚠️ Não consegui acessar a agenda do Congresso agora. "
             "Tenta de novo em alguns minutos."
@@ -113,5 +113,5 @@ async def cmd_congress_now(message: Message) -> None:
     try:
         await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
     except Exception:
-        logger.exception("HTML send failed in /congresso_now")
+        logger.exception("HTML send failed in /congresso_agora")
         await message.answer(text, parse_mode=None, disable_web_page_preview=True)
