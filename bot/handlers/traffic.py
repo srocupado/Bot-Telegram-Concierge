@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 router = Router(name="traffic")
 
-_USAGE = "Uso: /transito_now casa  (ou)  /transito_now trabalho"
+_USAGE = "Uso: /transito_agora casa  (ou)  /transito_agora trabalho"
 _MISSING_CONFIG = (
     "⚠️ Trânsito ainda não está configurado. "
     "Veja .env: HOME_COORDS, WORK_COORDS, GOOGLE_MAPS_API_KEY."
@@ -110,8 +110,8 @@ async def cmd_transito_reset(message: Message, user: User, session: AsyncSession
     )
 
 
-@router.message(Command("transito_now"))
-async def cmd_transito_now(message: Message, command: CommandObject) -> None:
+@router.message(Command("transito_agora"))
+async def cmd_transito_agora(message: Message, command: CommandObject) -> None:
     arg = _normalize(command.args or "")
     if arg not in ("casa", "trabalho"):
         await message.answer(_USAGE)
@@ -155,13 +155,13 @@ async def cmd_transito_now(message: Message, command: CommandObject) -> None:
                 maps_url=settings.route_google_maps_url or "",
             )
     except TrafficError:
-        logger.exception("/transito_now fetch failed")
+        logger.exception("/transito_agora fetch failed")
         await message.answer(_FETCH_ERROR)
         return
 
     if alt is not None:
         logger.info(
-            "/transito_now: 2 rotas (pref=%d min via %s, alt=%d min via %s)",
+            "/transito_agora: 2 rotas (pref=%d min via %s, alt=%d min via %s)",
             pref.duration_minutes, pref.summary or "—",
             alt.duration_minutes, alt.summary or "—",
         )
@@ -169,5 +169,5 @@ async def cmd_transito_now(message: Message, command: CommandObject) -> None:
     try:
         await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
     except Exception:
-        logger.exception("HTML send failed in /transito_now")
+        logger.exception("HTML send failed in /transito_agora")
         await message.answer(text, parse_mode=None, disable_web_page_preview=True)

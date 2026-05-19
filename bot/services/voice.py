@@ -19,8 +19,8 @@ _TRANSCRIBE_PROMPT = (
     "Retorne apenas a transcrição literal, sem comentários, "
     "sem aspas, sem prefixos. "
     "Se o áudio começa com a palavra 'barra' seguida de um comando "
-    "(ex: 'barra trânsito now casa'), transcreva como o slash + comando "
-    "com underline (ex: '/transito_now casa')."
+    "(ex: 'barra trânsito agora casa'), transcreva como o slash + comando "
+    "com underline (ex: '/transito_agora casa')."
 )
 
 _STT_MODEL = "gemini-2.5-flash"

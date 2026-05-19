@@ -30,7 +30,7 @@ multi-provider (Anthropic/OpenAI/Gemini) e troca de modelo em runtime.
 ### Trânsito casa↔trabalho
 | Comando | Descrição |
 |---|---|
-| `/transito_now casa` \| `/transito_now trabalho` | Força consulta agora (mostra rota preferida + alternativa) |
+| `/transito_agora casa` \| `/transito_agora trabalho` | Força consulta agora (mostra rota preferida + alternativa) |
 | `/transito_on` / `/transito_off` | Assina/desassina o digest diário (seg-sex) |
 | `/transito_at HH:MM` | Muda o horário do digest (sem arg volta ao default) |
 | `/transito_reset` | Zera marca de envio de hoje (útil pra forçar reenvio) |
@@ -38,7 +38,7 @@ multi-provider (Anthropic/OpenAI/Gemini) e troca de modelo em runtime.
 ### Medidas Provisórias
 | Comando | Descrição |
 |---|---|
-| `/congresso_now` | Força resumo da semana agora |
+| `/congresso_agora` | Força resumo da semana agora |
 | `/congresso_on` / `/congresso_off` | Assina/desassina o digest semanal (segunda) |
 | `/congresso_at HH:MM` | Muda o horário do digest |
 | `/congresso_reset` | Zera marca de envio da semana |
@@ -69,7 +69,7 @@ Mande um áudio para o bot. Ele transcreve via **Gemini 2.5 Flash multimodal**
 (aceita OGG/Opus do Telegram nativamente) e roteia:
 
 - Se a transcrição começa com `/` → executa o comando (ex: você grava
-  *"barra trânsito now casa"*, vira `/transito_now casa`).
+  *"barra trânsito agora casa"*, vira `/transito_agora casa`).
 - Caso contrário → trata como chat livre, com o mesmo contexto de 30 min em RAM.
 
 O bot ecoa a transcrição antes da resposta (transparência). Audios acima de
