@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     scheduler_tick_seconds: int = Field(60, alias="SCHEDULER_TICK_SECONDS")
     timezone: str = Field("America/Sao_Paulo", alias="TIMEZONE")
 
+    # Voz (STT via Gemini multimodal; reutiliza GEMINI_API_KEY)
+    voice_enabled: bool = Field(True, alias="VOICE_ENABLED")
+    voice_max_seconds: int = Field(120, alias="VOICE_MAX_SECONDS")
+
     # Logging
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 

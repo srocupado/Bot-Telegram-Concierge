@@ -31,6 +31,9 @@ HELP_TEXT = (
     "• <code>/ping</code> — testa o LLM atual (mostra provider e modelo)\n"
     "• <code>/provider anthropic|openai|gemini</code> — troca de LLM\n"
     "• <code>/reset</code> — limpa o contexto da conversa livre\n\n"
+    "<b>Voz</b>:\n"
+    "• Mande um áudio — o bot transcreve via Gemini e executa o comando "
+    "(se começar com /) ou responde no chat livre.\n\n"
     "Mensagens de texto livre são enviadas ao LLM com contexto curto."
 )
 

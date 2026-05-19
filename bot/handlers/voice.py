@@ -1,0 +1,263 @@
+"""Handler de mensagens de voz/audio.
+
+Fluxo: baixa o blob, transcreve via Gemini multimodal, e:
+- se a transcrição começa com `/`, dispatcha para o handler do comando;
+- caso contrário, trata como mensagem de chat livre (igual handlers/chat.py).
+"""
+from __future__ import annotations
+
+import html
+import io
+import logging
+
+from aiogram import F, Router
+from aiogram.filters import CommandObject
+from aiogram.types import Message
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from bot.config import settings
+from bot.db.models import User
+from bot.handlers.chat import SYSTEM_PROMPT
+from bot.handlers.congress import (
+    cmd_congress_at,
+    cmd_congress_now,
+    cmd_congress_off,
+    cmd_congress_on,
+    cmd_congress_reset,
+)
+from bot.handlers.ping import cmd_ping
+from bot.handlers.provider import cmd_provider
+from bot.handlers.reminders import cmd_lembrar, cmd_lembretes
+from bot.handlers.reset import cmd_reset
+from bot.handlers.start import cmd_help, cmd_start
+from bot.handlers.tasks import cmd_feito, cmd_nova, cmd_tarefas
+from bot.handlers.traffic import (
+    cmd_transito_at,
+    cmd_transito_now,
+    cmd_transito_off,
+    cmd_transito_on,
+    cmd_transito_reset,
+)
+from bot.services.chat_memory import memory
+from bot.services.llm.factory import get_provider
+from bot.services.voice import VoiceTranscribeError, transcribe
+
+logger = logging.getLogger(__name__)
+
+router = Router(name="voice")
+
+_TOO_LONG = "⚠️ Áudio muito longo (máx {max}s). Tenta um trecho menor."
+_EMPTY = "🤷 Não entendi nada no áudio. Tenta gravar de novo, mais perto do microfone."
+_STT_ERROR = "⚠️ Não consegui transcrever o áudio agora. Tenta de novo em alguns segundos."
+
+
+def _cmd(name: str, args: str | None) -> CommandObject:
+    return CommandObject(prefix="/", command=name, args=args or None)
+
+
+# Wrappers que adaptam as assinaturas heterogêneas dos handlers existentes
+# a um contrato único (message, args, user, session).
+async def _w_transito_now(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_transito_now(message, _cmd("transito_now", args))
+
+
+async def _w_transito_on(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_transito_on(message, user, session)
+
+
+async def _w_transito_off(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_transito_off(message, user, session)
+
+
+async def _w_transito_at(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_transito_at(message, _cmd("transito_at", args), user, session)
+
+
+async def _w_transito_reset(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_transito_reset(message, user, session)
+
+
+async def _w_congresso_now(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_congress_now(message)
+
+
+async def _w_congresso_on(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_congress_on(message, user, session)
+
+
+async def _w_congresso_off(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_congress_off(message, user, session)
+
+
+async def _w_congresso_at(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_congress_at(message, _cmd("congresso_at", args), user, session)
+
+
+async def _w_congresso_reset(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_congress_reset(message, user, session)
+
+
+async def _w_nova(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_nova(message, _cmd("nova", args), user, session)
+
+
+async def _w_tarefas(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_tarefas(message, user, session)
+
+
+async def _w_feito(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_feito(message, _cmd("feito", args), user, session)
+
+
+async def _w_lembrar(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_lembrar(message, _cmd("lembrar", args), user, session)
+
+
+async def _w_lembretes(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_lembretes(message, user, session)
+
+
+async def _w_ping(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_ping(message, user)
+
+
+async def _w_provider(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_provider(message, _cmd("provider", args), user, session)
+
+
+async def _w_reset(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_reset(message)
+
+
+async def _w_start(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_start(message, user)
+
+
+async def _w_help(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_help(message)
+
+
+_DISPATCH: dict[str, callable] = {
+    "transito_now": _w_transito_now,
+    "transito_on": _w_transito_on,
+    "transito_off": _w_transito_off,
+    "transito_at": _w_transito_at,
+    "transito_reset": _w_transito_reset,
+    "congresso_now": _w_congresso_now,
+    "congresso_on": _w_congresso_on,
+    "congresso_off": _w_congresso_off,
+    "congresso_at": _w_congresso_at,
+    "congresso_reset": _w_congresso_reset,
+    "nova": _w_nova,
+    "tarefas": _w_tarefas,
+    "feito": _w_feito,
+    "lembrar": _w_lembrar,
+    "lembretes": _w_lembretes,
+    "ping": _w_ping,
+    "provider": _w_provider,
+    "reset": _w_reset,
+    "start": _w_start,
+    "help": _w_help,
+}
+
+
+@router.message(F.voice | F.audio)
+async def cmd_voice(message: Message, user: User, session: AsyncSession) -> None:
+    if not user.is_authorized:
+        return
+    if not settings.voice_enabled:
+        await message.answer("🔇 Mensagens de voz estão desativadas (VOICE_ENABLED=false).")
+        return
+
+    voice_obj = message.voice or message.audio
+    if voice_obj is None:
+        return
+    duration = getattr(voice_obj, "duration", 0) or 0
+    if duration > settings.voice_max_seconds:
+        await message.answer(_TOO_LONG.format(max=settings.voice_max_seconds))
+        return
+
+    file_id = voice_obj.file_id
+    mime_type = getattr(voice_obj, "mime_type", None) or "audio/ogg"
+
+    try:
+        buf = io.BytesIO()
+        await message.bot.download(file_id, destination=buf)
+        audio_bytes = buf.getvalue()
+    except Exception:
+        logger.exception("voice download failed")
+        await message.answer(_STT_ERROR)
+        return
+
+    try:
+        transcribed = await transcribe(audio_bytes, mime_type=mime_type)
+    except VoiceTranscribeError:
+        logger.exception("voice transcribe failed")
+        await message.answer(_STT_ERROR)
+        return
+
+    transcribed = transcribed.strip()
+    if not transcribed:
+        await message.answer(_EMPTY)
+        return
+
+    is_command = transcribed.startswith("/")
+    logger.info(
+        "voice transcribed",
+        extra={
+            "duration_s": duration,
+            "transcribed_len": len(transcribed),
+            "is_command": is_command,
+        },
+    )
+
+    # Echo do que foi transcrito (transparência)
+    await message.answer(
+        f"🎤 <i>{html.escape(transcribed)}</i>",
+        parse_mode="HTML",
+    )
+
+    if is_command:
+        await _dispatch_command(message, user, session, transcribed)
+    else:
+        await _dispatch_chat(message, user, transcribed)
+
+
+async def _dispatch_command(
+    message: Message, user: User, session: AsyncSession, text: str
+) -> None:
+    parts = text.lstrip("/").split(None, 1)
+    if not parts:
+        return
+    cmd = parts[0].lower()
+    args = parts[1] if len(parts) > 1 else ""
+
+    handler = _DISPATCH.get(cmd)
+    if handler is None:
+        await message.answer(f"❌ Comando /{cmd} não reconhecido.")
+        return
+
+    try:
+        await handler(message, args, user, session)
+    except Exception:
+        logger.exception("voice command dispatch failed: /%s", cmd)
+        await message.answer(f"❌ Erro ao executar /{cmd}.")
+
+
+async def _dispatch_chat(message: Message, user: User, text: str) -> None:
+    """Mesma lógica do handlers/chat.py::free_chat, adaptada para texto vindo de voz."""
+    chat_id = message.chat.id
+    history = memory.get(chat_id)  # já retorna cópia
+    history.append({"role": "user", "content": text})
+
+    try:
+        provider = get_provider(user.provider)
+        reply = await provider.chat(history, system=SYSTEM_PROMPT, max_tokens=600)
+    except Exception as e:
+        logger.exception("voice→chat failed")
+        await message.answer(f"❌ erro no LLM ({user.provider}): {e}")
+        return
+
+    memory.append(chat_id, "user", text)
+    memory.append(chat_id, "assistant", reply)
+    await message.answer(reply or "(sem resposta)")
