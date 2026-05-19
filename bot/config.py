@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,20 +28,21 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = Field(None, alias="GEMINI_API_KEY")
     gemini_model: str = Field("gemini-2.5-pro", alias="GEMINI_MODEL")
 
-    # Trânsito
-    google_maps_api_key: str | None = Field(None, alias="GOOGLE_MAPS_API_KEY")
+    # Trânsito (Google Directions API — replicado do Telegram-Travels)
+    google_maps_api_key: SecretStr | None = Field(None, alias="GOOGLE_MAPS_API_KEY")
     home_coords: str | None = Field(None, alias="HOME_COORDS")
     work_coords: str | None = Field(None, alias="WORK_COORDS")
+    route_google_maps_url: str | None = Field(None, alias="ROUTE_GOOGLE_MAPS_URL")
+    traffic_digest_enabled: bool = Field(True, alias="TRAFFIC_DIGEST_ENABLED")
+    traffic_hour: int = Field(7, alias="TRAFFIC_HOUR")
+    traffic_minute: int = Field(20, alias="TRAFFIC_MINUTE")
 
-    # Clima
-    weather_lat: float | None = Field(None, alias="WEATHER_LAT")
-    weather_lon: float | None = Field(None, alias="WEATHER_LON")
+    # Medidas Provisórias
+    congress_digest_enabled: bool = Field(True, alias="CONGRESS_DIGEST_ENABLED")
 
     # Scheduler
     scheduler_tick_seconds: int = Field(60, alias="SCHEDULER_TICK_SECONDS")
     timezone: str = Field("America/Sao_Paulo", alias="TIMEZONE")
-    traffic_daily_time: str = Field("07:00", alias="TRAFFIC_DAILY_TIME")
-    mp_weekly_time: str = Field("08:00", alias="MP_WEEKLY_TIME")
 
     # Logging
     log_level: str = Field("INFO", alias="LOG_LEVEL")
@@ -57,10 +58,6 @@ class Settings(BaseSettings):
         float(parts[0])
         float(parts[1])
         return v
-
-    def parsed_coords(self, raw: str) -> tuple[float, float]:
-        lat, lng = raw.split(",")
-        return float(lat), float(lng)
 
 
 settings = Settings()  # type: ignore[call-arg]

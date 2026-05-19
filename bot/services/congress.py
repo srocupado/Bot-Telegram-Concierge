@@ -1,146 +1,208 @@
-"""Scraper da agenda de Medidas Provisórias do Congresso Nacional.
-
-Usa a página pública `congressonacional.leg.br/.../mpv/em-tramitacao`, sem
-APIs de Dados Abertos. Para evitar bloqueio 403, envia headers completos
-de browser e visita a home antes para coletar cookies.
-"""
 from __future__ import annotations
 
+import asyncio
+import html
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
+from datetime import date, timedelta
+from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-CONGRESS_HOME = "https://www.congressonacional.leg.br/"
-CONGRESS_URL = "https://www.congressonacional.leg.br/materias/medidas-provisorias/-/mpv/em-tramitacao"
+AGENDA_DAY_URL_TEMPLATE = (
+    "https://www.congressonacional.leg.br/sessoes/"
+    "agenda-do-congresso-senado-e-camara/-/agenda/{date}"
+)
+USER_AGENT = (
+    "Mozilla/5.0 (compatible; TelegramTravelsBot/0.2; "
+    "+https://github.com/srocupado/telegram-travels)"
+)
 
-BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-    ),
-    "Accept": (
-        "text/html,application/xhtml+xml,application/xml;q=0.9,"
-        "image/avif,image/webp,*/*;q=0.8"
-    ),
-    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Upgrade-Insecure-Requests": "1",
-}
+_WEEKDAY_PT = {0: "seg", 1: "ter", 2: "qua", 3: "qui", 4: "sex", 5: "sáb", 6: "dom"}
+
+_MP_REGEX = re.compile(r"\b(?:mpv?|cmmpv)\b")
+_TIME_REGEX = re.compile(r"\b(\d{1,2})\s*h\s*(\d{2})\b")
+_CANCELED_REGEX = re.compile(r"\bcancelad[oa]s?\b")
 
 
-@dataclass
+class CongressScrapeError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
 class MPItem:
-    title: str
-    summary: str
-    status: str
-    url: str | None
+    date: date
+    hora: str | None
+    descricao: str
+    link: str | None
 
 
-async def fetch_mps(limit: int = 10) -> list[MPItem]:
-    """Faz scraping da página em tramitação do Congresso Nacional."""
-    try:
-        async with httpx.AsyncClient(
-            timeout=20.0, follow_redirects=True, headers=BROWSER_HEADERS, http2=False
-        ) as client:
-            # Visita a home primeiro para receber cookies de sessão (necessário em
-            # alguns gateways do portal).
-            try:
-                await client.get(CONGRESS_HOME)
-            except Exception:
-                logger.debug("falha ao visitar home (seguindo)")
-            r = await client.get(CONGRESS_URL, headers={"Referer": CONGRESS_HOME})
-            r.raise_for_status()
-            html = r.text
-    except Exception:
-        logger.exception("congresso request failed")
-        return []
-
-    return _parse(html, limit)
+def _normalize(text: str) -> str:
+    return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().casefold()
 
 
-def _parse(html: str, limit: int) -> list[MPItem]:
-    soup = BeautifulSoup(html, "html.parser")
-    seen: set[str] = set()
+def _is_mp(text: str) -> bool:
+    norm = _normalize(text)
+    if "medida provisoria" in norm:
+        return True
+    return bool(_MP_REGEX.search(norm))
+
+
+def _week_bounds(today: date) -> tuple[date, date]:
+    # Seg-sex da semana "ativa": no fim de semana (sáb=5, dom=6), pula pra
+    # próxima segunda, pra não mostrar a agenda já encerrada.
+    if today.weekday() >= 5:
+        monday = today + timedelta(days=7 - today.weekday())
+    else:
+        monday = today - timedelta(days=today.weekday())
+    friday = monday + timedelta(days=4)
+    return monday, friday
+
+
+def _extract_time(text: str) -> str | None:
+    m = _TIME_REGEX.search(text)
+    if not m:
+        return None
+    return f"{int(m.group(1)):02d}:{m.group(2)}"
+
+
+def _parse_day(html_text: str, day: date, base_url: str) -> list[MPItem]:
+    """Extract MP items from a single day's agenda page."""
+    soup = BeautifulSoup(html_text, "html.parser")
+    rows = soup.find_all("div", class_="cn-agenda-casas-tabela-linha")
     items: list[MPItem] = []
-
-    # A página lista cada MP em um bloco com link contendo o número. Procuramos
-    # todos os <a> cujo texto bate com o padrão MPV NNNN/AAAA.
-    for a in soup.select("a"):
-        text = a.get_text(" ", strip=True)
-        m = re.search(r"\b(MPV?\s?\d{3,4}/\d{4})\b", text, flags=re.IGNORECASE)
-        if not m:
+    seen: set[str] = set()
+    for row in rows:
+        # Filtro de casa: só eventos do Congresso Nacional (sessões conjuntas
+        # e comissões mistas, incluindo CMMPV). Câmara (CD) e Senado (SF)
+        # isolados ficam de fora.
+        if row.get("data-casa") != "CN":
             continue
-        title = re.sub(r"\s+", " ", m.group(1).upper()).replace("MP ", "MPV ")
-        if title in seen:
+        full_text = " ".join(row.get_text(" ", strip=True).split())
+        if not full_text or not _is_mp(full_text):
             continue
-        seen.add(title)
-
-        # Pega o bloco-pai para extrair ementa e situação.
-        container = a.find_parent(["article", "li", "tr", "div"]) or a
-        block_text = container.get_text(" ", strip=True)
-        summary = _extract_summary(block_text, title)
-        status = _extract_status(block_text)
-        href = a.get("href") or ""
-        url = href if href.startswith("http") else None
-        items.append(MPItem(title=title, summary=summary, status=status, url=url))
-        if len(items) >= limit:
+        if _CANCELED_REGEX.search(_normalize(full_text)):
+            logger.info("congress: pulando evento cancelado em %s", day)
+            continue
+        orgao_block = row.find("div", class_="cn-agenda-casas-orgao")
+        orgao = (
+            " ".join(orgao_block.get_text(" ", strip=True).split())
+            if orgao_block
+            else None
+        )
+        # Título/link da sessão fica num <a> da célula principal, não no
+        # <a> do órgão (link da comissão) nem no clone visible-phone.
+        link_tag = None
+        for a in row.find_all("a", href=True):
+            ancestors_classes = {
+                cls
+                for parent in a.parents
+                for cls in (parent.get("class") or [])
+            }
+            if "cn-agenda-casas-orgao" in ancestors_classes:
+                continue
+            if "visible-phone" in ancestors_classes:
+                continue
+            link_tag = a
             break
-
+        titulo = (
+            " ".join(link_tag.get_text(" ", strip=True).split()) or None
+            if link_tag is not None
+            else None
+        )
+        desc_block = row.find("blockquote", class_="cn-agenda-casas-descricao")
+        desc_bq = (
+            " ".join(desc_block.get_text(" ", strip=True).split())
+            if desc_block
+            else None
+        )
+        parts = [p for p in (orgao, titulo, desc_bq) if p]
+        descricao = " — ".join(parts) if parts else full_text
+        hora = _extract_time(full_text)
+        link = urljoin(base_url, link_tag["href"]) if link_tag else None
+        sig = descricao[:200]
+        if sig in seen:
+            continue
+        seen.add(sig)
+        items.append(MPItem(date=day, hora=hora, descricao=descricao, link=link))
     return items
 
 
-def _extract_summary(block_text: str, title: str) -> str:
-    idx = block_text.upper().find(title)
-    tail = block_text[idx + len(title) :] if idx >= 0 else block_text
-
-    # Prefere o trecho que vem após "Ementa" (descrição oficial), caindo para
-    # "Título" caso a ementa não exista.
-    m = re.search(r"Ementa\b[:\s]+(.+?)(?:\s+(?:Dia de tramita|Situa|Última|$))", tail, flags=re.IGNORECASE | re.DOTALL)
-    if m:
-        text = m.group(1)
-    else:
-        m_t = re.search(r"T[ií]tulo\b[:\s]+(.+?)(?:\s+(?:Ementa|Dia de tramita|Situa|Última|$))", tail, flags=re.IGNORECASE | re.DOTALL)
-        text = m_t.group(1) if m_t else tail
-
-    text = re.sub(r"\s+", " ", text).strip(" -–—:.;")
-    if len(text) > 240:
-        text = text[:237].rstrip() + "..."
-    return text or "(sem ementa disponível)"
-
-
-def _extract_status(block_text: str) -> str:
-    for kw in (
-        "Aguardando designação",
-        "Aguardando análise",
-        "Aguardando",
-        "Em tramitação",
-        "Em análise",
-        "Aprovada",
-        "Rejeitada",
-        "Vencida",
-        "Prorrogada",
-        "Devolvida",
-    ):
-        if kw.lower() in block_text.lower():
-            return kw
-    return "—"
+async def _fetch_day(
+    client: httpx.AsyncClient, day: date
+) -> list[MPItem]:
+    url = AGENDA_DAY_URL_TEMPLATE.format(date=day.isoformat())
+    try:
+        resp = await client.get(
+            url, headers={"Accept-Language": "pt-BR,pt;q=0.9"}
+        )
+    except httpx.HTTPError as e:
+        raise CongressScrapeError(f"http error for {day}: {e}") from e
+    if resp.status_code != 200:
+        raise CongressScrapeError(
+            f"HTTP {resp.status_code} for {day}: {resp.text[:200]}"
+        )
+    try:
+        return _parse_day(resp.text, day, url)
+    except Exception as e:
+        raise CongressScrapeError(f"parse error for {day}: {e}") from e
 
 
-def format_mps_message(items: list[MPItem]) -> str:
+async def fetch_week_mps(client: httpx.AsyncClient, today: date) -> list[MPItem]:
+    """Fetch MP items from the Congresso Nacional agenda for Mon-Fri of `today`'s week.
+
+    Fetches one page per weekday in parallel. Raises CongressScrapeError if any day fails.
+    """
+    monday, _ = _week_bounds(today)
+    days = [monday + timedelta(days=i) for i in range(5)]
+    results = await asyncio.gather(
+        *(_fetch_day(client, d) for d in days), return_exceptions=True
+    )
+    items: list[MPItem] = []
+    errors: list[str] = []
+    for res in results:
+        if isinstance(res, CongressScrapeError):
+            errors.append(str(res))
+        elif isinstance(res, BaseException):
+            errors.append(repr(res))
+        else:
+            items.extend(res)
+    if errors and not items:
+        raise CongressScrapeError("; ".join(errors))
+    if errors:
+        logger.warning("partial congress scrape: %s", "; ".join(errors))
+    items.sort(key=lambda i: (i.date, i.hora or ""))
+    return items
+
+
+def format_week_message(items: list[MPItem], today: date) -> str:
+    monday, friday = _week_bounds(today)
+    header = (
+        f"🏛️ <b>Agenda do Congresso — semana de "
+        f"{monday.strftime('%d/%m')} a {friday.strftime('%d/%m')}</b>"
+    )
     if not items:
-        return "📜 *Medidas Provisórias*\n\nNão foi possível obter a lista no momento."
-    lines = ["📜 *Medidas Provisórias em tramitação*\n"]
-    for it in items:
-        lines.append(f"• *{it.title}* — _{it.status}_\n  {it.summary}")
-    return "\n\n".join(lines)
+        return f"{header}\n\nSem MP esta semana."
+    lines = [header, ""]
+    for item in items:
+        wd = _WEEKDAY_PT[item.date.weekday()]
+        when = f"{wd} {item.date.strftime('%d/%m')}"
+        if item.hora:
+            when = f"{when} {item.hora}"
+        descricao = item.descricao
+        if len(descricao) > 280:
+            descricao = descricao[:277] + "..."
+        descricao_html = html.escape(descricao)
+        if item.link:
+            link_esc = html.escape(item.link)
+            lines.append(
+                f'• <b>{when}</b> — {descricao_html} (<a href="{link_esc}">link</a>)'
+            )
+        else:
+            lines.append(f"• <b>{when}</b> — {descricao_html}")
+    return "\n".join(lines)

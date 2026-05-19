@@ -44,6 +44,7 @@ class AuthMiddleware(BaseMiddleware):
                 id=tg_user.id,
                 chat_id=event.chat.id,
                 username=tg_user.username,
+                first_name=tg_user.first_name,
                 is_authorized=False,
                 provider=settings.ai_provider,
                 timezone=settings.timezone,

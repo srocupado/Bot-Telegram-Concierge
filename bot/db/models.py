@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from bot.db.base import Base
@@ -15,13 +15,28 @@ def _utcnow() -> datetime:
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)  # telegram user id
+    # Internamente o id do user é o próprio telegram_id (também usado como chat_id em DMs).
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     chat_id: Mapped[int] = mapped_column(BigInteger, index=True)
-    username: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    is_authorized: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    username: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    first_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    is_authorized: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
     provider: Mapped[str] = mapped_column(String(32), default="anthropic", nullable=False)
     timezone: Mapped[str] = mapped_column(String(64), default="America/Sao_Paulo", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    # Trânsito (replicado do Telegram-Travels)
+    traffic_subscribed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
+    last_traffic_digest_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    traffic_hour: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    traffic_minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Medidas Provisórias (replicado do Telegram-Travels)
+    congress_subscribed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
+    last_congress_digest_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    congress_hour: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    congress_minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
     )
@@ -55,16 +70,3 @@ class Reminder(Base):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     user: Mapped[User] = relationship(back_populates="reminders")
-
-
-class DigestLog(Base):
-    __tablename__ = "digest_logs"
-    __table_args__ = (
-        UniqueConstraint("user_id", "sent_date", "kind", name="uq_digest_user_date_kind"),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True, nullable=False)
-    kind: Mapped[str] = mapped_column(String(32), nullable=False)  # traffic_daily, traffic_manual, mp_weekly, mp_manual
-    sent_date: Mapped[date] = mapped_column(Date, index=True, nullable=False)
-    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
