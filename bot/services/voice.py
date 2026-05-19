@@ -39,6 +39,15 @@ transcrição literal):
    (e variações próximas de pontuação ou preposição, ex: "pauta de MPs no
    congresso agora", "pauta das MPs do congresso") → /congresso_agora
 
+4. Para pedido de rota com localização atual, qualquer das formas abaixo
+   vira "/rota <destino>" — preserve o destino exatamente como falado,
+   inclusive nomes próprios, números e acentos:
+     "rota para casa", "rota pra casa"                → /rota casa
+     "rota para o trabalho", "rota pro trabalho"      → /rota trabalho
+     "rota para X", "rota pra X", "como chegar em X",
+     "como chegar até X", "trajeto até X",
+     "me leva para X"                                  → /rota X
+
 Em qualquer outro caso, transcreva literalmente o que foi dito —
 inclusive quando o usuário só MENCIONA trânsito ou congresso em uma
 conversa, sem pedir explicitamente a informação naquele momento.

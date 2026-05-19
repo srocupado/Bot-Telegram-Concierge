@@ -20,6 +20,9 @@ multi-provider (Anthropic/OpenAI/Gemini) e troca de modelo em runtime.
 - **Mensagens de voz**: áudio é transcrito via **Gemini 2.5 Flash multimodal**
   (aceita OGG/Opus nativo, sem ffmpeg) e roteado como comando (se começa com
   `/`) ou como chat livre.
+- **Rota com localização atual**: comando `/rota <destino>` (ou voz "rota
+  para X") faz o bot pedir sua localização via botão do Telegram e calcula
+  a rota até o destino, com geocoding para endereços livres.
 - **Multi-provider LLM**: Anthropic (default), OpenAI, Gemini.
   Troca em runtime via `/provider`. Preferência persistida por usuário.
 - **Acesso restrito por senha** (`ACCESS_PASSWORD`); isolamento por
@@ -42,6 +45,15 @@ multi-provider (Anthropic/OpenAI/Gemini) e troca de modelo em runtime.
 | `/congresso_on` / `/congresso_off` | Assina/desassina o digest semanal (segunda) |
 | `/congresso_at HH:MM` | Muda o horário do digest |
 | `/congresso_reset` | Zera marca de envio da semana |
+
+### Rota com sua localização
+| Comando | Descrição |
+|---|---|
+| `/rota casa` \| `/rota trabalho` | Atalho — usa `HOME_COORDS` / `WORK_COORDS` como destino |
+| `/rota <endereço>` | Geocoda o endereço (Google Geocoding API) e calcula a rota a partir da sua localização |
+
+Em todos os casos o bot envia um teclado com botão **📍 Enviar localização**;
+basta tocar uma vez. A localização não é persistida.
 
 ### Tarefas e lembretes
 | Comando | Descrição |
@@ -78,6 +90,9 @@ Três formas de invocar comandos por voz:
    *"trânsito para o trabalho"*, *"trânsito trabalho"* etc. → `/transito_agora …`.
 3. **Fala natural — congresso**: *"pauta de MP do congresso agora"* (e
    variações próximas) → `/congresso_agora`.
+4. **Fala natural — rota**: *"rota para casa"*, *"como chegar em Avenida
+   Paulista 1000"*, *"me leva pro shopping X"* → `/rota …` (bot pede sua
+   localização via botão).
 
 Em conversa casual (ex: *"falei sobre o trânsito ontem com o motorista"*) a
 transcrição é literal e cai no chat livre — não dispara comando.
@@ -105,6 +120,12 @@ cp .env.example .env
 ```
 
 A previsão do tempo (Open-Meteo) usa `HOME_COORDS`, sem chave própria.
+
+A `GOOGLE_MAPS_API_KEY` é usada para **Directions API** (digest diário e
+`/transito_agora`) e também para **Geocoding API** (`/rota <endereço>`).
+Habilite ambas no Google Cloud Console; sem Geocoding, atalhos
+(`/rota casa`, `/rota trabalho`) ainda funcionam mas endereços livres
+retornam erro.
 
 ### Rota preferida (`ROUTE_GOOGLE_MAPS_URL`)
 
@@ -209,14 +230,17 @@ bot/
 │   ├── traffic.py                # /transito_*
 │   ├── congress.py               # /congresso_*
 │   ├── tasks.py, reminders.py
+│   ├── route.py                  # /rota + F.location + botão cancelar
 │   ├── voice.py                  # F.voice|F.audio → transcribe + dispatch
 │   └── chat.py                   # catch-all texto livre
 ├── services/
 │   ├── llm/                      # base + factory + anthropic/openai/gemini
 │   ├── traffic.py, weather.py    # Google Directions + Open-Meteo
+│   ├── geocoding.py              # Google Geocoding (endereço → coords)
 │   ├── congress.py               # Scraper MP
 │   ├── tasks.py, reminders.py
 │   ├── chat_memory.py            # in-memory TTL 30min
+│   ├── route_pending.py          # /rota aguardando localização (in-memory)
 │   ├── voice.py                  # STT via Gemini multimodal
 │   └── scheduler.py              # loop async (trânsito, MP, lembretes)
 └── utils/

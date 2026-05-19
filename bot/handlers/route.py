@@ -1,0 +1,196 @@
+from __future__ import annotations
+
+import html
+import logging
+import unicodedata
+
+import httpx
+from aiogram import F, Router
+from aiogram.filters import Command, CommandObject
+from aiogram.types import (
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from bot.config import settings
+from bot.db.models import User
+from bot.services.geocoding import GeocodingError, geocode
+from bot.services.route_pending import pending_routes
+from bot.services.traffic import (
+    USER_AGENT,
+    TrafficError,
+    fetch_traffic,
+    format_traffic_message,
+)
+
+logger = logging.getLogger(__name__)
+
+router = Router(name="route")
+
+_USAGE = (
+    "Uso: /rota &lt;destino&gt;\n"
+    "Ex: /rota casa  |  /rota trabalho  |  /rota Avenida Paulista 1000"
+)
+_MISSING_CONFIG = (
+    "⚠️ Rota não está configurada. Verifique GOOGLE_MAPS_API_KEY (e, para "
+    "atalhos, HOME_COORDS / WORK_COORDS) no .env."
+)
+_BTN_SEND = "📍 Enviar localização"
+_BTN_CANCEL = "❌ Cancelar"
+
+
+def _normalize(s: str) -> str:
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", s.strip().casefold())
+        if not unicodedata.combining(c)
+    )
+
+
+def _resolve_shortcut(arg: str) -> tuple[str, str | None]:
+    """Para atalhos conhecidos retorna (label, coords). Senão retorna (arg, None)."""
+    norm = _normalize(arg)
+    if norm == "casa":
+        return "casa", settings.home_coords
+    if norm in ("trabalho", "o trabalho"):
+        return "trabalho", settings.work_coords
+    return arg, None
+
+
+def _build_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[
+            KeyboardButton(text=_BTN_SEND, request_location=True),
+            KeyboardButton(text=_BTN_CANCEL),
+        ]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+        selective=True,
+    )
+
+
+@router.message(Command("rota"))
+async def cmd_rota(
+    message: Message, command: CommandObject, user: User, session: AsyncSession
+) -> None:
+    arg = (command.args or "").strip()
+    if not arg:
+        await message.answer(_USAGE, parse_mode="HTML")
+        return
+
+    if not settings.google_maps_api_key:
+        await message.answer(_MISSING_CONFIG)
+        return
+
+    label, resolved = _resolve_shortcut(arg)
+
+    # Se é atalho mas a coord correspondente não está configurada, falha cedo.
+    if resolved is None and _normalize(arg) in ("casa", "trabalho", "o trabalho"):
+        await message.answer(
+            f"⚠️ {label.upper()}_COORDS não configurado no .env."
+        )
+        return
+
+    pending_routes.put(
+        user_id=user.id,
+        label=label,
+        raw_query=arg,
+        resolved_coords=resolved,
+    )
+    await message.answer(
+        f"📍 Toque para enviar sua localização e ver a rota até "
+        f"<b>{html.escape(label)}</b>.",
+        parse_mode="HTML",
+        reply_markup=_build_keyboard(),
+    )
+
+
+@router.message(F.location)
+async def on_location(
+    message: Message, user: User, session: AsyncSession
+) -> None:
+    pending = pending_routes.pop(user.id)
+    if pending is None:
+        await message.answer(
+            "Localização recebida, mas não havia /rota pendente "
+            "(ou já expirou). Use /rota &lt;destino&gt; primeiro.",
+            parse_mode="HTML",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return
+
+    if not message.location:
+        return
+    user_coords = f"{message.location.latitude},{message.location.longitude}"
+    api_key = settings.google_maps_api_key.get_secret_value()
+
+    # Resolve destino: pré-resolvido (casa/trabalho) ou geocode com viewport bias.
+    if pending.resolved_coords:
+        dest_coords = pending.resolved_coords
+        dest_label = pending.label
+    else:
+        try:
+            async with httpx.AsyncClient(
+                timeout=15.0,
+                follow_redirects=True,
+                headers={"User-Agent": USER_AGENT},
+            ) as client:
+                hit = await geocode(client, api_key, pending.raw_query,
+                                    bias_coords=user_coords)
+        except GeocodingError:
+            logger.exception("/rota geocoding failed")
+            await message.answer(
+                "⚠️ Erro consultando o Google Geocoding. Tente em alguns segundos.",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            return
+
+        if hit is None:
+            await message.answer(
+                f"🤷 Não encontrei <b>{html.escape(pending.raw_query)}</b>. "
+                f"Tente um endereço mais específico.",
+                parse_mode="HTML",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            return
+        dest_coords = hit.coords
+        dest_label = hit.formatted_address
+
+    # Calcula rota.
+    try:
+        async with httpx.AsyncClient(
+            timeout=20.0,
+            follow_redirects=True,
+            headers={"User-Agent": USER_AGENT},
+        ) as client:
+            infos = await fetch_traffic(
+                client, api_key, user_coords, dest_coords, [], alternatives=False
+            )
+    except TrafficError:
+        logger.exception("/rota directions failed")
+        await message.answer(
+            "⚠️ Não consegui calcular a rota agora. Tente de novo em alguns minutos.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return
+
+    text = format_traffic_message(infos[0], f"até {dest_label}")
+    try:
+        await message.answer(
+            text, parse_mode="HTML", disable_web_page_preview=True,
+            reply_markup=ReplyKeyboardRemove(),
+        )
+    except Exception:
+        logger.exception("HTML send failed in /rota")
+        await message.answer(
+            text, parse_mode=None, disable_web_page_preview=True,
+            reply_markup=ReplyKeyboardRemove(),
+        )
+
+
+@router.message(F.text == _BTN_CANCEL)
+async def on_cancel(message: Message, user: User, session: AsyncSession) -> None:
+    pending_routes.discard(user.id)
+    await message.answer("Cancelado.", reply_markup=ReplyKeyboardRemove())
