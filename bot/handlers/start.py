@@ -33,7 +33,16 @@ HELP_TEXT = (
     "• <code>/reset</code> — limpa o contexto da conversa livre\n\n"
     "<b>Voz</b>:\n"
     "• Mande um áudio — o bot transcreve via Gemini e executa o comando "
-    "(se começar com /) ou responde no chat livre.\n\n"
+    "(se começar com /) ou responde no chat livre.\n"
+    "• <b>Slash literal</b>: <i>\"barra trânsito agora casa\"</i> → "
+    "<code>/transito_agora casa</code>.\n"
+    "• <b>Trânsito natural</b>: <i>\"trânsito para casa\"</i>, "
+    "<i>\"trânsito para o trabalho\"</i> (e variantes) → "
+    "<code>/transito_agora …</code>.\n"
+    "• <b>Congresso natural</b>: <i>\"pauta de MP do congresso agora\"</i> → "
+    "<code>/congresso_agora</code>.\n"
+    "• Em conversa casual sobre trânsito ou MPs, transcrição literal "
+    "(cai no chat livre, não dispara comando).\n\n"
     "Mensagens de texto livre são enviadas ao LLM com contexto curto."
 )
 
