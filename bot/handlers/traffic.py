@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 router = Router(name="traffic")
 
-_USAGE = "Uso: /trafego_now casa  (ou)  /trafego_now trabalho"
+_USAGE = "Uso: /transito_now casa  (ou)  /transito_now trabalho"
 _MISSING_CONFIG = (
     "⚠️ Trânsito ainda não está configurado. "
     "Veja .env: HOME_COORDS, WORK_COORDS, GOOGLE_MAPS_API_KEY."
@@ -40,8 +40,8 @@ def _normalize(s: str) -> str:
     )
 
 
-@router.message(Command("trafego_on"))
-async def cmd_trafego_on(message: Message, user: User, session: AsyncSession) -> None:
+@router.message(Command("transito_on"))
+async def cmd_transito_on(message: Message, user: User, session: AsyncSession) -> None:
     user.traffic_subscribed = True
     await session.commit()
     await message.answer(
@@ -50,8 +50,8 @@ async def cmd_trafego_on(message: Message, user: User, session: AsyncSession) ->
     )
 
 
-@router.message(Command("trafego_off"))
-async def cmd_trafego_off(message: Message, user: User, session: AsyncSession) -> None:
+@router.message(Command("transito_off"))
+async def cmd_transito_off(message: Message, user: User, session: AsyncSession) -> None:
     user.traffic_subscribed = False
     await session.commit()
     await message.answer("🚗 Resumo diário de trânsito cancelado.")
@@ -70,8 +70,8 @@ def _parse_hhmm(s: str) -> tuple[int, int] | None:
     return h, m
 
 
-@router.message(Command("trafego_at"))
-async def cmd_trafego_at(
+@router.message(Command("transito_at"))
+async def cmd_transito_at(
     message: Message, command: CommandObject, user: User, session: AsyncSession
 ) -> None:
     arg = (command.args or "").strip()
@@ -87,7 +87,7 @@ async def cmd_trafego_at(
     parsed = _parse_hhmm(arg)
     if parsed is None:
         await message.answer(
-            "Uso: /trafego_at HH:MM (ex: /trafego_at 08:15). "
+            "Uso: /transito_at HH:MM (ex: /transito_at 08:15). "
             "Sem argumento volta pro default."
         )
         return
@@ -100,8 +100,8 @@ async def cmd_trafego_at(
     )
 
 
-@router.message(Command("trafego_reset"))
-async def cmd_trafego_reset(message: Message, user: User, session: AsyncSession) -> None:
+@router.message(Command("transito_reset"))
+async def cmd_transito_reset(message: Message, user: User, session: AsyncSession) -> None:
     user.last_traffic_digest_at = None
     await session.commit()
     await message.answer(
@@ -110,8 +110,8 @@ async def cmd_trafego_reset(message: Message, user: User, session: AsyncSession)
     )
 
 
-@router.message(Command("trafego_now"))
-async def cmd_trafego_now(message: Message, command: CommandObject) -> None:
+@router.message(Command("transito_now"))
+async def cmd_transito_now(message: Message, command: CommandObject) -> None:
     arg = _normalize(command.args or "")
     if arg not in ("casa", "trabalho"):
         await message.answer(_USAGE)
@@ -155,13 +155,13 @@ async def cmd_trafego_now(message: Message, command: CommandObject) -> None:
                 maps_url=settings.route_google_maps_url or "",
             )
     except TrafficError:
-        logger.exception("/trafego_now fetch failed")
+        logger.exception("/transito_now fetch failed")
         await message.answer(_FETCH_ERROR)
         return
 
     if alt is not None:
         logger.info(
-            "/trafego_now: 2 rotas (pref=%d min via %s, alt=%d min via %s)",
+            "/transito_now: 2 rotas (pref=%d min via %s, alt=%d min via %s)",
             pref.duration_minutes, pref.summary or "—",
             alt.duration_minutes, alt.summary or "—",
         )
@@ -169,5 +169,5 @@ async def cmd_trafego_now(message: Message, command: CommandObject) -> None:
     try:
         await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
     except Exception:
-        logger.exception("HTML send failed in /trafego_now")
+        logger.exception("HTML send failed in /transito_now")
         await message.answer(text, parse_mode=None, disable_web_page_preview=True)
