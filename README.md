@@ -76,10 +76,38 @@ Resumo (ver passo a passo detalhado no plano):
 
 1. Criar e2-micro em `us-west1`/`us-central1`/`us-east1`, **Standard provisioning**, Debian 12, 30 GB pd-standard.
 2. Instalar Docker: `curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker $USER`.
-3. Clonar repo → `cp .env.example .env` → preencher.
-4. `docker compose up -d --build`.
+3. Ativar swap (recomendado em 1 GB RAM): `sudo ./scripts/setup-swap.sh`.
+4. Clonar repo → `cp .env.example .env` → preencher.
+5. `docker compose up -d --build`.
 
 Custo: 0 USD/mês dentro do free tier.
+
+### Swap de memória
+
+A e2-micro tem só 1 GB de RAM. Build do Docker + dois bots Python podem
+estourar e causar OOM. Crie 2 GB de swap:
+
+```bash
+sudo ./scripts/setup-swap.sh           # 2 GB padrão
+sudo ./scripts/setup-swap.sh 4         # 4 GB
+```
+
+Idempotente: persiste em `/etc/fstab`, ajusta `vm.swappiness=10`.
+
+### Backup do SQLite
+
+`./scripts/backup.sh` gera `concierge-YYYY-MM-DD-HHMM.tgz` em
+`/var/backups/concierge` e mantém 14 dias de histórico.
+
+Agendar via cron diário às 03:00:
+
+```bash
+sudo crontab -e
+# adicionar:
+0 3 * * * /home/USER/apps/Bot-Telegram-Concierge/scripts/backup.sh
+```
+
+(troque `USER` pelo seu usuário SSH)
 
 ## Estrutura
 
