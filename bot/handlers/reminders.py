@@ -42,8 +42,8 @@ async def cmd_lembrar(
     rem = await create_reminder(session, user.id, clean_text, due_utc)
     local = due_utc.astimezone(ZoneInfo(user.timezone))
     await message.answer(
-        f"🔔 Lembrete #{rem.id} marcado para "
-        f"{local.strftime('%d/%m %H:%M')}: _{clean_text}_",
+        f"🔔 *{clean_text}*\n"
+        f"   marcado para {local.strftime('%d/%m %H:%M')} _(#{rem.id})_",
         parse_mode="Markdown",
     )
 
