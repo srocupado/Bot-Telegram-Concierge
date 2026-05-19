@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Cria um arquivo de swap de 2 GB em /swapfile.
+# Cria um arquivo de swap de 1 GB em /swapfile.
 # Recomendado em e2-micro (1 GB RAM) para evitar OOM ao rodar Docker.
 # Idempotente: se o swap já existir e estiver ativo, sai sem erro.
 #
 # Uso (na VM):
 #   sudo ./scripts/setup-swap.sh
-# Opcional: tamanho em GB como primeiro argumento (default 2).
-#   sudo ./scripts/setup-swap.sh 4
+# Opcional: tamanho em GB como primeiro argumento (default 1).
+#   sudo ./scripts/setup-swap.sh 2
 
 set -euo pipefail
 
@@ -15,7 +15,7 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-SIZE_GB="${1:-2}"
+SIZE_GB="${1:-1}"
 SWAPFILE="/swapfile"
 
 if swapon --show | grep -q "$SWAPFILE"; then

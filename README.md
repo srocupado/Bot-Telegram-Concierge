@@ -85,11 +85,11 @@ Custo: 0 USD/mês dentro do free tier.
 ### Swap de memória
 
 A e2-micro tem só 1 GB de RAM. Build do Docker + dois bots Python podem
-estourar e causar OOM. Crie 2 GB de swap:
+estourar e causar OOM. Crie 1 GB de swap:
 
 ```bash
-sudo ./scripts/setup-swap.sh           # 2 GB padrão
-sudo ./scripts/setup-swap.sh 4         # 4 GB
+sudo ./scripts/setup-swap.sh           # 1 GB padrão
+sudo ./scripts/setup-swap.sh 2         # 2 GB
 ```
 
 Idempotente: persiste em `/etc/fstab`, ajusta `vm.swappiness=10`.
