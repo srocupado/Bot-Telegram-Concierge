@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # LLM
     ai_provider: Provider = Field("anthropic", alias="AI_PROVIDER")
     anthropic_api_key: str | None = Field(None, alias="ANTHROPIC_API_KEY")
-    anthropic_model: str = Field("claude-opus-4-7", alias="ANTHROPIC_MODEL")
+    anthropic_model: str = Field("claude-sonnet-4-6", alias="ANTHROPIC_MODEL")
     openai_api_key: str | None = Field(None, alias="OPENAI_API_KEY")
     openai_model: str = Field("gpt-4.1", alias="OPENAI_MODEL")
     gemini_api_key: str | None = Field(None, alias="GEMINI_API_KEY")
