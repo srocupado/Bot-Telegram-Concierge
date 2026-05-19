@@ -14,14 +14,35 @@ class VoiceTranscribeError(Exception):
     pass
 
 
-_TRANSCRIBE_PROMPT = (
-    "Transcreva o áudio em português brasileiro. "
-    "Retorne apenas a transcrição literal, sem comentários, "
-    "sem aspas, sem prefixos. "
-    "Se o áudio começa com a palavra 'barra' seguida de um comando "
-    "(ex: 'barra trânsito agora casa'), transcreva como o slash + comando "
-    "com underline (ex: '/transito_agora casa')."
-)
+_TRANSCRIBE_PROMPT = """\
+Transcreva o áudio em português brasileiro. Retorne APENAS a transcrição,
+sem aspas, sem prefixos, sem comentários, sem markdown.
+
+REGRAS DE CONVERSÃO PARA COMANDO (aplique somente quando a intenção do
+falante é claramente pedir a informação agora; em conversa casual mantenha
+transcrição literal):
+
+1. Se o áudio começa com a palavra "barra" seguida do nome de um comando,
+   transcreva como "/comando" com underline ligando as palavras.
+   Exemplos:
+     "barra trânsito agora casa"  → /transito_agora casa
+     "barra tarefas"              → /tarefas
+     "barra ping"                 → /ping
+
+2. Para trânsito, qualquer das formas abaixo deve virar "/transito_agora <destino>":
+     "trânsito para casa", "trânsito pra casa", "trânsito casa",
+     "como está o trânsito para casa"        → /transito_agora casa
+     "trânsito para o trabalho", "trânsito pro trabalho",
+     "trânsito trabalho"                      → /transito_agora trabalho
+
+3. Para congresso, a frase "pauta de MP do congresso agora"
+   (e variações próximas de pontuação ou preposição, ex: "pauta de MPs no
+   congresso agora", "pauta das MPs do congresso") → /congresso_agora
+
+Em qualquer outro caso, transcreva literalmente o que foi dito —
+inclusive quando o usuário só MENCIONA trânsito ou congresso em uma
+conversa, sem pedir explicitamente a informação naquele momento.
+"""
 
 _STT_MODEL = "gemini-2.5-flash"
 
