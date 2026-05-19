@@ -17,8 +17,9 @@ logger = logging.getLogger(__name__)
 async def cmd_ping(message: Message, user: User) -> None:
     try:
         provider = get_provider(user.provider)
+        model = getattr(provider, "model", "?")
         reply = await provider.ping()
-        await message.answer(f"[{provider.name}] {reply or 'pong'}")
+        await message.answer(f"[{provider.name}/{model}] {reply or 'pong'}")
     except Exception as e:
         logger.exception("ping failed")
         await message.answer(f"❌ erro no LLM ({user.provider}): {e}")

@@ -10,27 +10,27 @@ router = Router(name=__name__)
 
 
 HELP_TEXT = (
-    "🤖 *Concierge*\n\n"
-    "*Trânsito casa↔trabalho* (réplica do Telegram-Travels):\n"
-    "• /trafego_now <casa|trabalho> — força consulta agora\n"
-    "• /trafego_on / /trafego_off — assina/desassina digest diário (seg-sex)\n"
-    "• /trafego_at HH:MM — muda horário do digest (sem arg volta ao default)\n"
-    "• /trafego_reset — zera marca de envio de hoje\n\n"
-    "*Medidas Provisórias* (réplica do Telegram-Travels):\n"
-    "• /congresso_now — força resumo da semana agora\n"
-    "• /congresso_on / /congresso_off — assina/desassina digest semanal (segunda)\n"
-    "• /congresso_at HH:MM — muda horário do digest\n"
-    "• /congresso_reset — zera marca de envio da semana\n\n"
-    "*Tarefas e lembretes*:\n"
-    "• /nova <texto> — cria tarefa\n"
-    "• /tarefas — lista tarefas abertas\n"
-    "• /feito <id> — marca tarefa como concluída\n"
-    "• /lembrar <texto> em 2h | amanhã 09:00 — cria lembrete\n"
-    "• /lembretes — lista lembretes pendentes\n\n"
-    "*LLM*:\n"
-    "• /ping — testa o LLM atual\n"
-    "• /provider [anthropic|openai|gemini] — troca de LLM\n"
-    "• /reset — limpa o contexto da conversa livre\n\n"
+    "🤖 <b>Concierge</b>\n\n"
+    "<b>Trânsito casa↔trabalho</b> (réplica do Telegram-Travels):\n"
+    "• <code>/trafego_now casa</code> | <code>/trafego_now trabalho</code> — força consulta agora\n"
+    "• <code>/trafego_on</code> / <code>/trafego_off</code> — assina/desassina digest diário (seg-sex)\n"
+    "• <code>/trafego_at HH:MM</code> — muda horário do digest (sem arg volta ao default)\n"
+    "• <code>/trafego_reset</code> — zera marca de envio de hoje\n\n"
+    "<b>Medidas Provisórias</b> (réplica do Telegram-Travels):\n"
+    "• <code>/congresso_now</code> — força resumo da semana agora\n"
+    "• <code>/congresso_on</code> / <code>/congresso_off</code> — assina/desassina digest semanal (segunda)\n"
+    "• <code>/congresso_at HH:MM</code> — muda horário do digest\n"
+    "• <code>/congresso_reset</code> — zera marca de envio da semana\n\n"
+    "<b>Tarefas e lembretes</b>:\n"
+    "• <code>/nova &lt;texto&gt;</code> — cria tarefa\n"
+    "• <code>/tarefas</code> — lista tarefas abertas\n"
+    "• <code>/feito &lt;id&gt;</code> — marca tarefa como concluída\n"
+    "• <code>/lembrar &lt;texto&gt; em 2h | amanhã 09:00</code> — cria lembrete\n"
+    "• <code>/lembretes</code> — lista lembretes pendentes\n\n"
+    "<b>LLM</b>:\n"
+    "• <code>/ping</code> — testa o LLM atual (mostra provider e modelo)\n"
+    "• <code>/provider anthropic|openai|gemini</code> — troca de LLM\n"
+    "• <code>/reset</code> — limpa o contexto da conversa livre\n\n"
     "Mensagens de texto livre são enviadas ao LLM com contexto curto."
 )
 
@@ -47,4 +47,4 @@ async def cmd_start(message: Message, user: User) -> None:
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
-    await message.answer(HELP_TEXT, parse_mode="Markdown")
+    await message.answer(HELP_TEXT, parse_mode="HTML", disable_web_page_preview=True)
