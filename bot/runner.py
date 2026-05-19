@@ -16,6 +16,7 @@ from bot.handlers import ping as ping_handler
 from bot.handlers import provider as provider_handler
 from bot.handlers import reminders as reminders_handler
 from bot.handlers import reset as reset_handler
+from bot.handlers import route as route_handler
 from bot.handlers import start as start_handler
 from bot.handlers import tasks as tasks_handler
 from bot.handlers import traffic as traffic_handler
@@ -44,6 +45,7 @@ def _build_dispatcher() -> Dispatcher:
     dp.include_router(congress_handler.router)
     dp.include_router(tasks_handler.router)
     dp.include_router(reminders_handler.router)
+    dp.include_router(route_handler.router)  # /rota + F.location + botão cancelar
     dp.include_router(voice_handler.router)  # voz: transcreve + roteia
     dp.include_router(chat_handler.router)  # catch-all texto livre
     return dp
