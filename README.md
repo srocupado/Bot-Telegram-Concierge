@@ -17,6 +17,9 @@ multi-provider (Anthropic/OpenAI/Gemini) e troca de modelo em runtime.
   `/lembrar reunião amanhã 09:00`, `/lembrar tomar remédio em 30min`.
 - **Chat livre com LLM**: mensagens de texto livre viram conversa com contexto
   curto (TTL 30 min, em RAM).
+- **Mensagens de voz**: áudio é transcrito via **Gemini 2.5 Flash multimodal**
+  (aceita OGG/Opus nativo, sem ffmpeg) e roteado como comando (se começa com
+  `/`) ou como chat livre.
 - **Multi-provider LLM**: Anthropic (default), OpenAI, Gemini.
   Troca em runtime via `/provider`. Preferência persistida por usuário.
 - **Acesso restrito por senha** (`ACCESS_PASSWORD`); isolamento por
@@ -196,6 +199,7 @@ bot/
 │   ├── traffic.py                # /transito_*
 │   ├── congress.py               # /congresso_*
 │   ├── tasks.py, reminders.py
+│   ├── voice.py                  # F.voice|F.audio → transcribe + dispatch
 │   └── chat.py                   # catch-all texto livre
 ├── services/
 │   ├── llm/                      # base + factory + anthropic/openai/gemini
@@ -203,6 +207,7 @@ bot/
 │   ├── congress.py               # Scraper MP
 │   ├── tasks.py, reminders.py
 │   ├── chat_memory.py            # in-memory TTL 30min
+│   ├── voice.py                  # STT via Gemini multimodal
 │   └── scheduler.py              # loop async (trânsito, MP, lembretes)
 └── utils/
     └── timez.py
