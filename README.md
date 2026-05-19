@@ -60,6 +60,19 @@ multi-provider (Anthropic/OpenAI/Gemini) e troca de modelo em runtime.
 
 Mensagens de texto sem `/` são tratadas como chat livre com o LLM atual.
 
+### Mensagens de voz
+
+Mande um áudio para o bot. Ele transcreve via **Gemini 2.5 Flash multimodal**
+(aceita OGG/Opus do Telegram nativamente) e roteia:
+
+- Se a transcrição começa com `/` → executa o comando (ex: você grava
+  *"barra trânsito now casa"*, vira `/transito_now casa`).
+- Caso contrário → trata como chat livre, com o mesmo contexto de 30 min em RAM.
+
+O bot ecoa a transcrição antes da resposta (transparência). Audios acima de
+`VOICE_MAX_SECONDS` (default 120s) são rejeitados. Para desativar:
+`VOICE_ENABLED=false`.
+
 ## Stack
 
 - Python 3.12, aiogram 3 (long polling)
