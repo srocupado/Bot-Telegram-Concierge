@@ -1,4 +1,3 @@
-"""STT via Gemini 2.5 Flash multimodal — aceita OGG/Opus nativo."""
 from __future__ import annotations
 
 import asyncio
@@ -15,47 +14,41 @@ class VoiceTranscribeError(Exception):
     pass
 
 
-_PROMPT = (
+_TRANSCRIBE_PROMPT = (
     "Transcreva o áudio em português brasileiro. "
-    "Retorne APENAS a transcrição literal do que foi dito, "
-    "sem comentários, sem aspas, sem prefixos como 'O áudio diz:'. "
-    "Se o áudio estiver vazio ou inaudível, retorne uma string vazia."
+    "Retorne apenas a transcrição literal, sem comentários, "
+    "sem aspas, sem prefixos. "
+    "Se o áudio começa com a palavra 'barra' seguida de um comando "
+    "(ex: 'barra trânsito now casa'), transcreva como o slash + comando "
+    "com underline (ex: '/transito_now casa')."
 )
 
-_MODEL_NAME = "gemini-2.5-flash"
+_STT_MODEL = "gemini-2.5-flash"
 
 
 async def transcribe(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
-    """Transcreve áudio para texto usando Gemini multimodal.
+    """Transcreve áudio usando Gemini multimodal.
 
-    Args:
-        audio_bytes: bytes do arquivo de áudio (Telegram envia OGG/Opus).
-        mime_type: MIME type do áudio.
-
-    Returns:
-        Texto transcrito (string vazia se Gemini não detectar fala).
-
-    Raises:
-        VoiceTranscribeError: se a chamada à API falhar.
+    Lança VoiceTranscribeError em falhas de API.
+    Retorna string vazia se o áudio não tem fala detectável.
     """
     if not settings.gemini_api_key:
-        raise VoiceTranscribeError(
-            "GEMINI_API_KEY ausente — necessário para transcrição de voz"
-        )
+        raise VoiceTranscribeError("GEMINI_API_KEY ausente — STT requer Gemini")
 
     genai.configure(api_key=settings.gemini_api_key)
 
     def _call() -> str:
         try:
-            model = genai.GenerativeModel(_MODEL_NAME)
+            model = genai.GenerativeModel(_STT_MODEL)
             resp = model.generate_content(
                 [
                     {"mime_type": mime_type, "data": audio_bytes},
-                    _PROMPT,
-                ]
+                    _TRANSCRIBE_PROMPT,
+                ],
+                generation_config={"max_output_tokens": 1024, "temperature": 0.0},
             )
             return (resp.text or "").strip()
         except Exception as e:
-            raise VoiceTranscribeError(f"Gemini transcribe failed: {e}") from e
+            raise VoiceTranscribeError(f"gemini transcribe failed: {e}") from e
 
     return await asyncio.to_thread(_call)
