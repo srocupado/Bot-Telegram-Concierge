@@ -122,10 +122,17 @@ cp .env.example .env
 A previsão do tempo (Open-Meteo) usa `HOME_COORDS`, sem chave própria.
 
 A `GOOGLE_MAPS_API_KEY` é usada para **Directions API** (digest diário e
-`/transito_agora`) e também para **Geocoding API** (`/rota <endereço>`).
+`/transito_agora`) e também para **Geocoding API (New)** (`/rota <endereço>`).
 Habilite ambas no Google Cloud Console; sem Geocoding, atalhos
 (`/rota casa`, `/rota trabalho`) ainda funcionam mas endereços livres
 retornam erro.
+
+> O serviço de geocoding usa o endpoint v4beta
+> (`geocode.googleapis.com/v4beta/geocode/address/...`), que é o SKU
+> servido pela **Geocoding API (New)** — única versão disponível para
+> projetos novos do Google Cloud. O endpoint legado
+> `maps.googleapis.com/maps/api/geocoding/json` retorna 404 nesses
+> projetos.
 
 ### Rota preferida (`ROUTE_GOOGLE_MAPS_URL`)
 
