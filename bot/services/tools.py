@@ -145,7 +145,7 @@ TOOLS: list[Tool] = [
         handler=_h_criar_tarefa,
     ),
     Tool(
-        name="listar_tarefas_abertas",
+        name="listar_tarefas",
         description="Lista todas as tarefas pendentes (não concluídas) do usuário.",
         parameters={"type": "object", "properties": {}},
         handler=_h_listar_tarefas,
@@ -190,7 +190,7 @@ TOOLS: list[Tool] = [
         handler=_h_criar_lembrete,
     ),
     Tool(
-        name="listar_lembretes_pendentes",
+        name="listar_lembretes",
         description="Lista os lembretes pendentes do usuário.",
         parameters={"type": "object", "properties": {}},
         handler=_h_listar_lembretes,
