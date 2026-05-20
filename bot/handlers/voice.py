@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db.models import User
-from bot.handlers.chat import SYSTEM_PROMPT
+from bot.handlers.chat import _build_system_prompt
 from bot.handlers.congress import (
     cmd_congress_agora,
     cmd_congress_at,
@@ -265,7 +265,9 @@ async def _dispatch_chat(
         provider = get_provider(user.provider)
         ctx = ToolContext(user=user, session=session, tz=user.timezone)
         reply = await provider.chat_with_tools(
-            history, tools=TOOLS, ctx=ctx, system=SYSTEM_PROMPT, max_tokens=600,
+            history, tools=TOOLS, ctx=ctx,
+            system=_build_system_prompt(user.timezone),
+            max_tokens=600,
         )
     except Exception as e:
         logger.exception("voice→chat failed")
