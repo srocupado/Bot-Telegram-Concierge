@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     # Voz (STT via Gemini multimodal; reutiliza GEMINI_API_KEY)
     voice_enabled: bool = Field(True, alias="VOICE_ENABLED")
     voice_max_seconds: int = Field(120, alias="VOICE_MAX_SECONDS")
+    voice_stt_model: str = Field("gemini-2.5-flash", alias="VOICE_STT_MODEL")
 
     # Logging
     log_level: str = Field("INFO", alias="LOG_LEVEL")

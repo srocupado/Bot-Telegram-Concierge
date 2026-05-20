@@ -62,9 +62,6 @@ agir). Exemplos do que NÃO virar comando:
   "qual a previsão do tempo hoje"      → transcrição literal
 """
 
-_STT_MODEL = "gemini-2.5-flash"
-
-
 async def transcribe(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
     """Transcreve áudio usando Gemini multimodal.
 
@@ -78,7 +75,7 @@ async def transcribe(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
 
     def _call() -> str:
         try:
-            model = genai.GenerativeModel(_STT_MODEL)
+            model = genai.GenerativeModel(settings.voice_stt_model)
             resp = model.generate_content(
                 [
                     {"mime_type": mime_type, "data": audio_bytes},
