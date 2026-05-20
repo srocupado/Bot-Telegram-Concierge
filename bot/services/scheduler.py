@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -25,6 +25,12 @@ from bot.services.traffic import (
     fetch_traffic,
     format_traffic_message,
     parse_route_waypoints,
+)
+from bot.services.traffic_baseline import (
+    baseline_p50,
+    purge_old_samples,
+    record_sample,
+    should_alert,
 )
 from bot.services.weather import (
     WeatherError,
@@ -241,6 +247,123 @@ async def run_reminders(
                     await session.rollback()
 
 
+TRAFFIC_WATCH_INTERVAL_MIN = 10
+TRAFFIC_WATCH_LEAD_HOURS = 2
+TRAFFIC_WATCH_TAIL_MIN = 30
+TRAFFIC_ALERT_COOLDOWN_MIN = 30
+
+
+def _user_traffic_time(u: User) -> tuple[int, int]:
+    h = u.traffic_hour if u.traffic_hour is not None else settings.traffic_hour
+    m = u.traffic_minute if u.traffic_minute is not None else settings.traffic_minute
+    return h, m
+
+
+def _in_watch_window(now_brt: datetime, u: User) -> bool:
+    h, m = _user_traffic_time(u)
+    digest_dt = now_brt.replace(hour=h, minute=m, second=0, microsecond=0)
+    start = digest_dt - timedelta(hours=TRAFFIC_WATCH_LEAD_HOURS)
+    end = digest_dt + timedelta(minutes=TRAFFIC_WATCH_TAIL_MIN)
+    return start <= now_brt <= end
+
+
+async def run_traffic_watch(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    bot: Bot,
+) -> None:
+    """Coleta sample da rota home→work, compara com baseline e alerta."""
+    if not (settings.home_coords and settings.work_coords and settings.google_maps_api_key):
+        return
+    now_brt = datetime.now(BRT)
+    if now_brt.weekday() > 4:
+        return
+    # rate-limit por intervalo: só roda em minutos múltiplos do intervalo (com folga de 1)
+    if now_brt.minute % TRAFFIC_WATCH_INTERVAL_MIN > 1:
+        return
+
+    async with sessionmaker() as session:
+        stmt = select(User).where(
+            User.traffic_subscribed.is_(True),
+            User.traffic_alert_enabled.is_(True),
+            User.is_authorized.is_(True),
+        )
+        candidates = list((await session.scalars(stmt)).all())
+
+    users = [u for u in candidates if _in_watch_window(now_brt, u)]
+    if not users:
+        return
+
+    api_key = settings.google_maps_api_key.get_secret_value()
+    try:
+        async with httpx.AsyncClient(
+            timeout=20.0,
+            follow_redirects=True,
+            headers={"User-Agent": TRAFFIC_USER_AGENT},
+        ) as client:
+            waypoints: list[str] = []
+            if settings.route_google_maps_url:
+                waypoints = await parse_route_waypoints(
+                    client, settings.route_google_maps_url
+                )
+            infos = await fetch_traffic(
+                client, api_key,
+                settings.home_coords, settings.work_coords,
+                waypoints, maps_url=settings.route_google_maps_url or "",
+            )
+    except TrafficError:
+        logger.exception("traffic watch fetch failed")
+        return
+
+    info = infos[0]
+    current_s = info.duration_minutes * 60
+    weekday, hour = now_brt.weekday(), now_brt.hour
+    cooldown_cut = datetime.now(timezone.utc) - timedelta(minutes=TRAFFIC_ALERT_COOLDOWN_MIN)
+
+    for u in users:
+        async with sessionmaker() as session:
+            await record_sample(session, u.id, weekday, hour, current_s)
+            base = await baseline_p50(session, u.id, weekday, hour)
+        if base is None:
+            continue
+        if not should_alert(current_s, base):
+            continue
+        if u.last_traffic_alert_at and u.last_traffic_alert_at >= cooldown_cut:
+            continue
+
+        delta_pct = round((current_s / base - 1) * 100)
+        text = (
+            f"🚨 <b>Trânsito anormal na sua rota</b>\n\n"
+            f"⏱️ ~{info.duration_minutes} min agora (mediana de hoje: "
+            f"~{round(base/60)} min, +{delta_pct}%).\n"
+            f"📏 {info.distance_km} km via {info.summary or 'rota direta'}.\n"
+        )
+        if info.maps_url:
+            text += f'\n<a href="{info.maps_url}">abrir no Google Maps</a>'
+
+        sent = await _send_html_with_fallback(bot, u.id, text)
+        if sent:
+            async with sessionmaker() as session:
+                fresh = await session.get(User, u.id)
+                if fresh is not None:
+                    fresh.last_traffic_alert_at = datetime.now(timezone.utc)
+                    await session.commit()
+            logger.info(
+                "traffic alert sent to %d: %d min (baseline %d, +%d%%)",
+                u.id, info.duration_minutes, round(base / 60), delta_pct,
+            )
+
+
+async def run_purge(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    now_brt = datetime.now(BRT)
+    # Roda só uma vez por dia, às 03:00 BRT.
+    if now_brt.hour != 3 or now_brt.minute > 1:
+        return
+    async with sessionmaker() as session:
+        n = await purge_old_samples(session)
+        if n:
+            logger.info("purged %d old traffic_samples", n)
+
+
 async def tick(
     sessionmaker: async_sessionmaker[AsyncSession],
     bot: Bot,
@@ -256,9 +379,19 @@ async def tick(
         logger.exception("traffic digest crashed")
 
     try:
+        await run_traffic_watch(sessionmaker, bot)
+    except Exception:
+        logger.exception("traffic watch crashed")
+
+    try:
         await run_reminders(sessionmaker, bot)
     except Exception:
         logger.exception("reminders dispatch crashed")
+
+    try:
+        await run_purge(sessionmaker)
+    except Exception:
+        logger.exception("purge crashed")
 
 
 async def scheduler_loop(
