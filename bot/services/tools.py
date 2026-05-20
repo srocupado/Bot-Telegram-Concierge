@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -8,11 +9,9 @@ import httpx
 from bot.config import settings
 from bot.services.llm.base import Tool, ToolContext
 from bot.services.reminders import (
-    ReminderParseError,
     create_reminder,
     delete_reminder,
     list_pending,
-    parse_reminder,
 )
 from bot.services.tasks import (
     create_task,
@@ -63,17 +62,27 @@ async def _h_apagar_tarefa(args: dict, ctx: ToolContext) -> str:
 
 async def _h_criar_lembrete(args: dict, ctx: ToolContext) -> str:
     texto = (args.get("texto") or "").strip()
-    quando = (args.get("quando") or "").strip()
-    if not texto or not quando:
-        return "erro: parâmetros 'texto' e 'quando' são obrigatórios"
+    quando_iso = (args.get("quando_iso") or "").strip()
+    if not texto or not quando_iso:
+        return "erro: parâmetros 'texto' e 'quando_iso' são obrigatórios"
+    tz = ZoneInfo(ctx.tz)
     try:
-        clean_text, due_utc = parse_reminder(f"{texto} {quando}", ctx.tz)
-    except ReminderParseError as e:
-        return f"erro: {e}"
-    rem = await create_reminder(ctx.session, ctx.user.id, clean_text, due_utc)
-    local = due_utc.astimezone(ZoneInfo(ctx.tz))
+        # Aceita 'YYYY-MM-DDTHH:MM' ou 'YYYY-MM-DD HH:MM' (com ou sem segundos).
+        dt_local = datetime.fromisoformat(quando_iso.replace(" ", "T"))
+    except ValueError:
+        return (
+            f"erro: 'quando_iso' inválido ({quando_iso!r}). "
+            f"Use formato ISO local: 'YYYY-MM-DDTHH:MM'."
+        )
+    if dt_local.tzinfo is None:
+        dt_local = dt_local.replace(tzinfo=tz)
+    due_utc = dt_local.astimezone(timezone.utc)
+    if due_utc <= datetime.now(timezone.utc):
+        return f"erro: data/hora ({quando_iso}) já passou"
+    rem = await create_reminder(ctx.session, ctx.user.id, texto, due_utc)
+    local = due_utc.astimezone(tz)
     return (
-        f"ok: lembrete #{rem.id} criado: {clean_text} "
+        f"ok: lembrete #{rem.id} criado: {texto} "
         f"em {local.strftime('%d/%m %H:%M')}"
     )
 
@@ -173,19 +182,25 @@ TOOLS: list[Tool] = [
     Tool(
         name="criar_lembrete",
         description=(
-            "Cria um lembrete com horário em linguagem natural português. "
-            "Ex: texto='pagar boleto', quando='amanhã 10h'."
+            "Cria um lembrete com data/hora absoluta. Calcule a data ISO usando "
+            "a 'Data/hora atual' do system prompt como referência. "
+            "Atenção: 'às 16h' é hora absoluta (16:00 daquele dia); "
+            "'em 16h' é duração relativa (16 horas a partir de agora) — não confunda."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "texto": {"type": "string", "description": "O que lembrar"},
-                "quando": {
+                "quando_iso": {
                     "type": "string",
-                    "description": "Quando lembrar (ex: 'em 2h', 'amanhã 09:00', 'sexta 18h')",
+                    "description": (
+                        "Data/hora local no formato ISO 'YYYY-MM-DDTHH:MM' "
+                        "(timezone do usuário). Ex: '2026-05-21T16:00' para "
+                        "amanhã às 16h se hoje é 2026-05-20."
+                    ),
                 },
             },
-            "required": ["texto", "quando"],
+            "required": ["texto", "quando_iso"],
         },
         handler=_h_criar_lembrete,
     ),

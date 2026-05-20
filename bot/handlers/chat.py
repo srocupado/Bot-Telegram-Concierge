@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
 from aiogram.types import Message
@@ -16,9 +18,10 @@ router = Router(name=__name__)
 logger = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT = (
+_SYSTEM_PROMPT_TEMPLATE = (
     "Você é o Concierge, um assistente pessoal em português brasileiro. "
     "Respostas curtas, diretas e amistosas.\n\n"
+    "Data/hora atual: {now_local} ({tz}).\n\n"
     "Você tem ferramentas (tools) para agir no sistema do usuário. "
     "Os nomes EXATOS das tools disponíveis são:\n"
     "- criar_tarefa, listar_tarefas, concluir_tarefa, apagar_tarefa\n"
@@ -27,12 +30,25 @@ SYSTEM_PROMPT = (
     "SEMPRE use a tool apropriada quando o usuário pedir uma ação concreta — "
     "não sugira comandos com /, não invente nomes de tool, não descreva a "
     "chamada em texto: invoque de fato. Após executar, confirme em uma frase "
-    "curta com o resultado. "
-    "Para criar_lembrete, passe o texto da ação em 'texto' e a hora/data em "
-    "'quando' (em português, ex: 'amanhã 10h', 'em 2h', 'sexta 18:00'). "
+    "curta com o resultado.\n\n"
+    "Para criar_lembrete:\n"
+    "- 'texto' é o conteúdo do lembrete (ex: 'comprar morangos').\n"
+    "- 'quando_iso' é a data/hora ABSOLUTA no formato ISO local "
+    "'YYYY-MM-DDTHH:MM', calculada a partir da Data/hora atual acima.\n"
+    "- 'às 16h' / 'às 4 da tarde' / '16:00' = hora absoluta 16:00 do dia indicado.\n"
+    "- 'em 2h' = relativo: some 2h à Data/hora atual.\n"
+    "- Sempre confira mentalmente: 'às' vira hora absoluta, 'em' vira soma.\n"
     "Use ids reais retornados pelas tools de listagem. "
     "Se a intenção do usuário for ambígua, pergunte antes de agir."
 )
+
+
+def _build_system_prompt(tz_name: str) -> str:
+    now_local = datetime.now(ZoneInfo(tz_name))
+    return _SYSTEM_PROMPT_TEMPLATE.format(
+        now_local=now_local.strftime("%Y-%m-%d %H:%M %A"),
+        tz=tz_name,
+    )
 
 
 @router.message(F.text & ~F.text.startswith("/"))
@@ -52,7 +68,9 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
         provider = get_provider(user.provider)
         ctx = ToolContext(user=user, session=session, tz=user.timezone)
         reply = await provider.chat_with_tools(
-            history, tools=TOOLS, ctx=ctx, system=SYSTEM_PROMPT, max_tokens=800,
+            history, tools=TOOLS, ctx=ctx,
+            system=_build_system_prompt(user.timezone),
+            max_tokens=800,
         )
     except Exception as e:
         logger.exception("chat failed")
