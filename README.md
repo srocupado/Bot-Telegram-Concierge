@@ -15,11 +15,18 @@ multi-provider (Anthropic/OpenAI/Gemini) e troca de modelo em runtime.
 - **Tarefas**: lista persistente — `/nova`, `/tarefas`, `/feito`.
 - **Lembretes** com horário em linguagem natural (português, via `dateparser`):
   `/lembrar reunião amanhã 09:00`, `/lembrar tomar remédio em 30min`.
-- **Chat livre com LLM**: mensagens de texto livre viram conversa com contexto
-  curto (TTL 30 min, em RAM).
-- **Mensagens de voz**: áudio é transcrito via **Gemini 2.5 Flash multimodal**
-  (aceita OGG/Opus nativo, sem ffmpeg) e roteado como comando (se começa com
-  `/`) ou como chat livre.
+- **Chat livre com LLM agente**: mensagens de texto e voz viram conversa com
+  contexto curto (TTL 30 min, em RAM) e **tool use** — o LLM aciona ferramentas
+  pra criar/listar/concluir/apagar tarefas e lembretes, consultar clima e
+  trânsito, sem você precisar lembrar slash commands.
+- **Mensagens de voz**: áudio é transcrito via **Gemini multimodal**
+  (default `gemini-2.5-flash`, configurável via `VOICE_STT_MODEL`), aceita
+  OGG/Opus nativo sem ffmpeg, e é roteado como comando (fast-path
+  determinístico: rota/trânsito/congresso) ou cai no chat agente.
+- **Alerta proativo de trânsito**: scheduler monitora sua rota
+  casa→trabalho a cada 10 min na janela [horário do digest - 2h,
+  horário + 30min] e avisa se o tempo estiver ≥30% acima da mediana
+  habitual do mesmo `(dia da semana, hora)` (com piso de 30 min).
 - **Rota com localização atual**: comando `/rota <destino>` (ou voz "rota
   para X") faz o bot pedir sua localização via botão do Telegram e calcula
   a rota até o destino, com geocoding para endereços livres.
@@ -37,6 +44,7 @@ multi-provider (Anthropic/OpenAI/Gemini) e troca de modelo em runtime.
 | `/transito_on` / `/transito_off` | Assina/desassina o digest diário (seg-sex) |
 | `/transito_at HH:MM` | Muda o horário do digest (sem arg volta ao default) |
 | `/transito_reset` | Zera marca de envio de hoje (útil pra forçar reenvio) |
+| `/transito_alerta_on` / `/transito_alerta_off` | Liga/desliga alerta proativo (default ligado) |
 
 ### Medidas Provisórias
 | Comando | Descrição |
@@ -63,6 +71,11 @@ basta tocar uma vez. A localização não é persistida.
 | `/feito <id>` | Marca tarefa como concluída |
 | `/lembrar <texto> em 2h \| amanhã 09:00 \| sexta 18h` | Cria lembrete com horário |
 | `/lembretes` | Lista lembretes pendentes |
+| `/apagar_lembrete <id>` | Apaga um lembrete pendente |
+
+> Você também pode pedir essas ações em texto/voz livre — o LLM aciona a tool
+> certa. Ex: *"me lembre de pagar o boleto amanhã 10h"*, *"quais minhas
+> tarefas?"*, *"apaga o lembrete 5"*, *"qual a previsão pra hoje?"*.
 
 ### LLM e utilitários
 | Comando | Descrição |
@@ -77,8 +90,9 @@ Mensagens de texto sem `/` são tratadas como chat livre com o LLM atual.
 
 ### Mensagens de voz
 
-Mande um áudio para o bot. Ele transcreve via **Gemini 2.5 Flash multimodal**
-(aceita OGG/Opus do Telegram nativamente) e roteia:
+Mande um áudio para o bot. Ele transcreve via **Gemini multimodal**
+(default `gemini-2.5-flash`, ajustável via `VOICE_STT_MODEL` — ex.
+`gemini-2.5-flash-lite` pra latência menor) e roteia:
 
 - Se a transcrição começa com `/` → executa o comando.
 - Caso contrário → trata como chat livre, com o mesmo contexto de 30 min em RAM.
@@ -95,7 +109,10 @@ Três formas de invocar comandos por voz:
    localização via botão).
 
 Em conversa casual (ex: *"falei sobre o trânsito ontem com o motorista"*) a
-transcrição é literal e cai no chat livre — não dispara comando.
+transcrição é literal e cai no chat livre. Como o chat tem tool use,
+pedidos de tarefa/lembrete/clima por voz funcionam naturalmente: *"nova
+tarefa comprar pão"*, *"me lembre de pagar boleto amanhã 10h"*,
+*"qual a previsão pra hoje?"* — o LLM aciona a tool e confirma.
 
 O bot ecoa a transcrição antes da resposta (transparência). Áudios acima de
 `VOICE_MAX_SECONDS` (default 120s) são rejeitados. Para desativar:
@@ -214,13 +231,19 @@ sudo crontab -e
 
 - **`users`**: `id` (telegram_id), `chat_id`, `username`, `first_name`,
   `is_authorized`, `provider`, `timezone`, e campos de subscription:
-  `traffic_subscribed`, `traffic_hour/minute`, `last_traffic_digest_at`
-  + os equivalentes para `congress_*`.
+  `traffic_subscribed`, `traffic_hour/minute`, `last_traffic_digest_at`,
+  `traffic_alert_enabled`, `last_traffic_alert_at` + os equivalentes para
+  `congress_*`.
 - **`tasks`**: `id`, `user_id`, `text`, `done`, `created_at`, `done_at`.
 - **`reminders`**: `id`, `user_id`, `text`, `due_at` (UTC), `sent`, `sent_at`.
+- **`traffic_samples`**: `id`, `user_id`, `weekday` (0-6), `hour` (0-23),
+  `sampled_at`, `duration_seconds`. Coletado a cada 10 min na janela de
+  monitoramento; usado pra calcular mediana rolling 7 dias do baseline de
+  trânsito. Purge automática de samples >30 dias às 03:00 BRT.
 
 Idempotência dos digests é via os timestamps `last_*_digest_at` no User
-(não duplica no mesmo dia/semana).
+(não duplica no mesmo dia/semana). Migrações de coluna são aplicadas
+inline em `init_db` (ALTER TABLE guardado por PRAGMA — SQLite).
 
 ## Estrutura
 
@@ -242,14 +265,17 @@ bot/
 │   └── chat.py                   # catch-all texto livre
 ├── services/
 │   ├── llm/                      # base + factory + anthropic/openai/gemini
+│   │                             # (chat_with_tools implementado nos 3)
+│   ├── tools.py                  # registry de tools acionáveis pelo LLM
 │   ├── traffic.py, weather.py    # Google Directions + Open-Meteo
+│   ├── traffic_baseline.py       # mediana rolling + alerta proativo
 │   ├── geocoding.py              # Google Geocoding (endereço → coords)
 │   ├── congress.py               # Scraper MP
 │   ├── tasks.py, reminders.py
 │   ├── chat_memory.py            # in-memory TTL 30min
 │   ├── route_pending.py          # /rota aguardando localização (in-memory)
 │   ├── voice.py                  # STT via Gemini multimodal
-│   └── scheduler.py              # loop async (trânsito, MP, lembretes)
+│   └── scheduler.py              # loop async (trânsito, MP, watch, lembretes, purge)
 └── utils/
     └── timez.py
 scripts/
