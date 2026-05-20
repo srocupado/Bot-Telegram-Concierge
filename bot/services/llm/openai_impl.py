@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 
 from openai import OpenAI
 
-from bot.services.llm.base import ChatMessage, LLMProvider
+from bot.services.llm.base import ChatMessage, LLMProvider, Tool, ToolContext
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAIProvider(LLMProvider):
@@ -37,3 +41,76 @@ class OpenAIProvider(LLMProvider):
             return (resp.choices[0].message.content or "").strip()
 
         return await asyncio.to_thread(_call)
+
+    async def chat_with_tools(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        ctx: ToolContext,
+        *,
+        system: str | None = None,
+        max_tokens: int = 1024,
+        max_iterations: int = 5,
+    ) -> str:
+        oa_messages: list[dict] = []
+        if system:
+            oa_messages.append({"role": "system", "content": system})
+        oa_messages.extend({"role": m["role"], "content": m["content"]} for m in messages)
+
+        tools_spec = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters,
+                },
+            }
+            for t in tools
+        ]
+        tool_by_name = {t.name: t for t in tools}
+
+        for _ in range(max_iterations):
+            def _call():
+                return self.client.chat.completions.create(
+                    model=self.model,
+                    messages=oa_messages,
+                    max_tokens=max_tokens,
+                    tools=tools_spec,
+                )
+
+            resp = await asyncio.to_thread(_call)
+            choice = resp.choices[0]
+            msg = choice.message
+
+            if not msg.tool_calls:
+                return (msg.content or "").strip()
+
+            # Anexa a mensagem do assistant (com tool_calls) e cada resultado.
+            oa_messages.append({
+                "role": "assistant",
+                "content": msg.content or "",
+                "tool_calls": [tc.model_dump() for tc in msg.tool_calls],
+            })
+            for tc in msg.tool_calls:
+                fn_name = tc.function.name
+                try:
+                    fn_args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    fn_args = {}
+                tool = tool_by_name.get(fn_name)
+                if tool is None:
+                    result = f"erro: tool '{fn_name}' não existe"
+                else:
+                    try:
+                        result = await tool.handler(fn_args, ctx)
+                    except Exception as e:
+                        logger.exception("tool %s failed", fn_name)
+                        result = f"erro: {e}"
+                oa_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result,
+                })
+
+        return "(limite de iterações de tool use atingido)"

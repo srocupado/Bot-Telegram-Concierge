@@ -51,10 +51,16 @@ transcrição literal):
 Em qualquer outro caso, transcreva literalmente o que foi dito —
 inclusive quando o usuário só MENCIONA trânsito ou congresso em uma
 conversa, sem pedir explicitamente a informação naquele momento.
+
+IMPORTANTE: NÃO converta pedidos de tarefa, lembrete, clima, ou
+qualquer outra ação em comando com "/". Apenas transcreva literalmente.
+Essas intenções são tratadas pelo chat livre (que tem ferramentas para
+agir). Exemplos do que NÃO virar comando:
+  "nova tarefa comprar leite"          → transcrição literal
+  "me lembre de pagar boleto amanhã"   → transcrição literal
+  "apaga o lembrete 5"                 → transcrição literal
+  "qual a previsão do tempo hoje"      → transcrição literal
 """
-
-_STT_MODEL = "gemini-2.5-flash"
-
 
 async def transcribe(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
     """Transcreve áudio usando Gemini multimodal.
@@ -69,7 +75,7 @@ async def transcribe(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
 
     def _call() -> str:
         try:
-            model = genai.GenerativeModel(_STT_MODEL)
+            model = genai.GenerativeModel(settings.voice_stt_model)
             resp = model.generate_content(
                 [
                     {"mime_type": mime_type, "data": audio_bytes},

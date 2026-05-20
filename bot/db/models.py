@@ -29,6 +29,8 @@ class User(Base):
     last_traffic_digest_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     traffic_hour: Mapped[int | None] = mapped_column(Integer, nullable=True)
     traffic_minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    traffic_alert_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1", nullable=False)
+    last_traffic_alert_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Medidas Provisórias (replicado do Telegram-Travels)
     congress_subscribed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
@@ -56,6 +58,17 @@ class Task(Base):
     done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     user: Mapped[User] = relationship(back_populates="tasks")
+
+
+class TrafficSample(Base):
+    __tablename__ = "traffic_samples"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True, nullable=False)
+    weekday: Mapped[int] = mapped_column(Integer, nullable=False)  # 0=Mon..6=Sun
+    hour: Mapped[int] = mapped_column(Integer, nullable=False)     # 0..23
+    sampled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class Reminder(Base):

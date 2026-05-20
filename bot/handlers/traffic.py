@@ -57,6 +57,23 @@ async def cmd_transito_off(message: Message, user: User, session: AsyncSession) 
     await message.answer("🚗 Resumo diário de trânsito cancelado.")
 
 
+@router.message(Command("transito_alerta_on"))
+async def cmd_transito_alerta_on(message: Message, user: User, session: AsyncSession) -> None:
+    user.traffic_alert_enabled = True
+    await session.commit()
+    await message.answer(
+        "🚨 Alertas proativos ativados. Avisarei se a rota estiver "
+        "≥30% acima da mediana habitual (mínimo 30 min de viagem)."
+    )
+
+
+@router.message(Command("transito_alerta_off"))
+async def cmd_transito_alerta_off(message: Message, user: User, session: AsyncSession) -> None:
+    user.traffic_alert_enabled = False
+    await session.commit()
+    await message.answer("🚨 Alertas proativos de trânsito desativados.")
+
+
 def _parse_hhmm(s: str) -> tuple[int, int] | None:
     parts = s.strip().split(":")
     if len(parts) != 2:

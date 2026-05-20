@@ -38,7 +38,29 @@ SessionLocal: async_sessionmaker[AsyncSession] = async_sessionmaker(
 )
 
 
+async def _ensure_user_columns(conn) -> None:
+    """ALTER TABLE para colunas novas adicionadas após o create_all inicial.
+
+    SQLite não tem `ADD COLUMN IF NOT EXISTS`, então checamos via PRAGMA.
+    """
+    from sqlalchemy import text
+
+    result = await conn.exec_driver_sql("PRAGMA table_info(users)")
+    cols = {row[1] for row in result.fetchall()}
+    if "traffic_alert_enabled" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE users ADD COLUMN traffic_alert_enabled BOOLEAN NOT NULL DEFAULT 1"
+        )
+        logger.info("migrated: added users.traffic_alert_enabled")
+    if "last_traffic_alert_at" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE users ADD COLUMN last_traffic_alert_at DATETIME"
+        )
+        logger.info("migrated: added users.last_traffic_alert_at")
+
+
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _ensure_user_columns(conn)
     logger.info("database initialized")
