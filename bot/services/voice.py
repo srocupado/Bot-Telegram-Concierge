@@ -51,6 +51,15 @@ transcrição literal):
 Em qualquer outro caso, transcreva literalmente o que foi dito —
 inclusive quando o usuário só MENCIONA trânsito ou congresso em uma
 conversa, sem pedir explicitamente a informação naquele momento.
+
+IMPORTANTE: NÃO converta pedidos de tarefa, lembrete, clima, ou
+qualquer outra ação em comando com "/". Apenas transcreva literalmente.
+Essas intenções são tratadas pelo chat livre (que tem ferramentas para
+agir). Exemplos do que NÃO virar comando:
+  "nova tarefa comprar leite"          → transcrição literal
+  "me lembre de pagar boleto amanhã"   → transcrição literal
+  "apaga o lembrete 5"                 → transcrição literal
+  "qual a previsão do tempo hoje"      → transcrição literal
 """
 
 _STT_MODEL = "gemini-2.5-flash"
