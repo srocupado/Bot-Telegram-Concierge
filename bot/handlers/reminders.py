@@ -11,6 +11,7 @@ from bot.db.models import User
 from bot.services.reminders import (
     ReminderParseError,
     create_reminder,
+    delete_reminder,
     list_pending,
     parse_reminder,
 )
@@ -60,3 +61,27 @@ async def cmd_lembretes(message: Message, user: User, session: AsyncSession) -> 
         local = r.due_at.astimezone(tz)
         lines.append(f"• #{r.id} — {local.strftime('%d/%m %H:%M')} — {r.text}")
     await message.answer("\n".join(lines), parse_mode="Markdown")
+
+
+@router.message(Command("apagar_lembrete"))
+async def cmd_apagar_lembrete(
+    message: Message, command: CommandObject, user: User, session: AsyncSession
+) -> None:
+    raw = (command.args or "").strip()
+    if not raw:
+        await message.answer(
+            "Uso: /apagar_lembrete <id>\n"
+            "Veja os ids com /lembretes."
+        )
+        return
+    try:
+        rid = int(raw.lstrip("#"))
+    except ValueError:
+        await message.answer("⚠️ id inválido. Use um número (veja /lembretes).")
+        return
+
+    rem = await delete_reminder(session, user.id, rid)
+    if rem is None:
+        await message.answer(f"🤷 Lembrete #{rid} não encontrado (ou já enviado).")
+        return
+    await message.answer(f"🗑️ Lembrete #{rid} apagado: _{rem.text}_", parse_mode="Markdown")

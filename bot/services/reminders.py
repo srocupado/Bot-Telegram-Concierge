@@ -104,3 +104,19 @@ async def mark_sent(session: AsyncSession, rem: Reminder) -> None:
     rem.sent = True
     rem.sent_at = datetime.now(timezone.utc)
     await session.commit()
+
+
+async def delete_reminder(session: AsyncSession, user_id: int, reminder_id: int) -> Reminder | None:
+    result = await session.execute(
+        select(Reminder).where(
+            Reminder.id == reminder_id,
+            Reminder.user_id == user_id,
+            Reminder.sent.is_(False),
+        )
+    )
+    rem = result.scalar_one_or_none()
+    if rem is None:
+        return None
+    await session.delete(rem)
+    await session.commit()
+    return rem
