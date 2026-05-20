@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import anthropic
 
-from bot.services.llm.base import ChatMessage, LLMProvider
+from bot.services.llm.base import ChatMessage, LLMProvider, Tool, ToolContext
+
+logger = logging.getLogger(__name__)
 
 
 class AnthropicProvider(LLMProvider):
@@ -42,3 +45,66 @@ class AnthropicProvider(LLMProvider):
             return "".join(parts).strip()
 
         return await asyncio.to_thread(_call)
+
+    async def chat_with_tools(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        ctx: ToolContext,
+        *,
+        system: str | None = None,
+        max_tokens: int = 1024,
+        max_iterations: int = 5,
+    ) -> str:
+        anth_messages: list[dict] = [
+            {"role": m["role"], "content": m["content"]}
+            for m in messages
+            if m["role"] in ("user", "assistant")
+        ]
+        tools_spec = [
+            {"name": t.name, "description": t.description, "input_schema": t.parameters}
+            for t in tools
+        ]
+        tool_by_name = {t.name: t for t in tools}
+
+        for _ in range(max_iterations):
+            def _call() -> anthropic.types.Message:
+                kwargs: dict = {
+                    "model": self.model,
+                    "max_tokens": max_tokens,
+                    "messages": anth_messages,
+                    "tools": tools_spec,
+                }
+                if system:
+                    kwargs["system"] = system
+                return self.client.messages.create(**kwargs)
+
+            resp = await asyncio.to_thread(_call)
+
+            if resp.stop_reason != "tool_use":
+                parts = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
+                return "".join(parts).strip()
+
+            # Anexa a resposta do assistant (com blocos tool_use) e executa cada tool.
+            anth_messages.append({"role": "assistant", "content": [b.model_dump() for b in resp.content]})
+            tool_results: list[dict] = []
+            for block in resp.content:
+                if getattr(block, "type", None) != "tool_use":
+                    continue
+                tool = tool_by_name.get(block.name)
+                if tool is None:
+                    result = f"erro: tool '{block.name}' não existe"
+                else:
+                    try:
+                        result = await tool.handler(block.input or {}, ctx)
+                    except Exception as e:
+                        logger.exception("tool %s failed", block.name)
+                        result = f"erro: {e}"
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result,
+                })
+            anth_messages.append({"role": "user", "content": tool_results})
+
+        return "(limite de iterações de tool use atingido)"

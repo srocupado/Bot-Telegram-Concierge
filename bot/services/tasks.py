@@ -34,3 +34,12 @@ async def mark_done(session: AsyncSession, user_id: int, task_id: int) -> Task |
     await session.commit()
     await session.refresh(task)
     return task
+
+
+async def delete_task(session: AsyncSession, user_id: int, task_id: int) -> Task | None:
+    task = await session.get(Task, task_id)
+    if task is None or task.user_id != user_id:
+        return None
+    await session.delete(task)
+    await session.commit()
+    return task
