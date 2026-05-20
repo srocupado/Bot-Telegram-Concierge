@@ -226,7 +226,7 @@ async def cmd_voice(message: Message, user: User, session: AsyncSession) -> None
     if is_command:
         await _dispatch_command(message, user, session, transcribed)
     else:
-        await _dispatch_chat(message, user, transcribed)
+        await _dispatch_chat(message, user, session, transcribed)
 
 
 async def _dispatch_command(
@@ -250,15 +250,23 @@ async def _dispatch_command(
         await message.answer(f"❌ Erro ao executar /{cmd}.")
 
 
-async def _dispatch_chat(message: Message, user: User, text: str) -> None:
+async def _dispatch_chat(
+    message: Message, user: User, session: AsyncSession, text: str
+) -> None:
     """Mesma lógica do handlers/chat.py::free_chat, adaptada para texto vindo de voz."""
+    from bot.services.llm.base import ToolContext
+    from bot.services.tools import TOOLS
+
     chat_id = message.chat.id
     history = memory.get(chat_id)  # já retorna cópia
     history.append({"role": "user", "content": text})
 
     try:
         provider = get_provider(user.provider)
-        reply = await provider.chat(history, system=SYSTEM_PROMPT, max_tokens=600)
+        ctx = ToolContext(user=user, session=session, tz=user.timezone)
+        reply = await provider.chat_with_tools(
+            history, tools=TOOLS, ctx=ctx, system=SYSTEM_PROMPT, max_tokens=600,
+        )
     except Exception as e:
         logger.exception("voice→chat failed")
         await message.answer(f"❌ erro no LLM ({user.provider}): {e}")
