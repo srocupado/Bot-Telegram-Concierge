@@ -25,7 +25,7 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "Você tem ferramentas (tools) para agir no sistema do usuário. "
     "Os nomes EXATOS das tools disponíveis são:\n"
     "- criar_tarefa, listar_tarefas, concluir_tarefa, apagar_tarefa\n"
-    "- criar_lembrete, listar_lembretes, apagar_lembrete\n"
+    "- criar_lembrete, listar_lembretes, apagar_lembrete, agendar_comando\n"
     "- consultar_clima, consultar_transito\n\n"
     "Você também tem acesso à internet via busca web nativa (Anthropic "
     "web_search / Gemini google_search). Use SEMPRE que o usuário pedir "
@@ -43,7 +43,13 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "- 'às 16h' / 'às 4 da tarde' / '16:00' = hora absoluta 16:00 do dia indicado.\n"
     "- 'em 2h' = relativo: some 2h à Data/hora atual.\n"
     "- Sempre confira mentalmente: 'às' vira hora absoluta, 'em' vira soma.\n"
-    "Use ids reais retornados pelas tools de listagem. "
+    "Use ids reais retornados pelas tools de listagem.\n\n"
+    "Para agendar_comando (executar AÇÃO automática no futuro, não só lembrete texto):\n"
+    "- Use quando o usuário quer DISPARAR um comando no horário marcado, ex: "
+    "'lembre de mostrar o trânsito pra casa às 15h' → agendar_comando("
+    "tipo='transito_casa', quando_iso=...).\n"
+    "- Use criar_lembrete (não agendar_comando) quando ele quer só um aviso "
+    "de texto ('me lembre de tomar remédio').\n\n"
     "Se a intenção do usuário for ambígua, pergunte antes de agir."
 )
 
