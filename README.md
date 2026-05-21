@@ -8,7 +8,7 @@ multi-provider (Anthropic/OpenAI/Gemini) e troca de modelo em runtime.
 ## Funcionalidades
 
 - **Trânsito diário** (seg–sex, 07:20 BRT por padrão): rota casa↔trabalho com
-  tempo real (Google Directions API) + previsão do tempo (Open-Meteo).
+  tempo real (Google Directions API) + previsão do tempo (Open-Meteo)!
   Suporta rota preferida via URL do Google Maps com waypoints.
 - **Medidas Provisórias** (segunda, 07:00 BRT por padrão): agenda do
   Congresso Nacional via web scraping (BeautifulSoup), filtrando MPs e CMMPV.
