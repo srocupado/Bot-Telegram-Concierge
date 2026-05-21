@@ -61,10 +61,16 @@ class AnthropicProvider(LLMProvider):
             for m in messages
             if m["role"] in ("user", "assistant")
         ]
-        tools_spec = [
+        tools_spec: list[dict] = [
             {"name": t.name, "description": t.description, "input_schema": t.parameters}
             for t in tools
         ]
+        # Server-side web search da Anthropic — sem handler local.
+        tools_spec.append({
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": 5,
+        })
         tool_by_name = {t.name: t for t in tools}
 
         for _ in range(max_iterations):

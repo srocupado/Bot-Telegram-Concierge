@@ -76,13 +76,17 @@ class GeminiProvider(LLMProvider):
             {"name": t.name, "description": t.description, "parameters": t.parameters}
             for t in tools
         ]
-        gemini_tool = {"function_declarations": function_declarations}
+        # Combina nossas tools customizadas com a tool nativa google_search.
+        gemini_tools = [
+            {"function_declarations": function_declarations},
+            {"google_search": {}},
+        ]
         tool_by_name = {t.name: t for t in tools}
 
         model = genai.GenerativeModel(
             self.model_name,
             system_instruction=system,
-            tools=[gemini_tool],
+            tools=gemini_tools,
             generation_config={"max_output_tokens": max_tokens},
         )
         chat = model.start_chat(history=history)
