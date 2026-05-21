@@ -70,8 +70,23 @@ def parse_reminder(text: str, user_tz: str) -> tuple[str, datetime]:
     return clean_text, due_utc
 
 
-async def create_reminder(session: AsyncSession, user_id: int, text: str, due_utc: datetime) -> Reminder:
-    rem = Reminder(user_id=user_id, text=text, due_at=due_utc, sent=False)
+async def create_reminder(
+    session: AsyncSession,
+    user_id: int,
+    text: str,
+    due_utc: datetime,
+    *,
+    command_kind: str | None = None,
+    command_args: str | None = None,
+) -> Reminder:
+    rem = Reminder(
+        user_id=user_id,
+        text=text,
+        due_at=due_utc,
+        sent=False,
+        command_kind=command_kind,
+        command_args=command_args,
+    )
     session.add(rem)
     await session.commit()
     await session.refresh(rem)

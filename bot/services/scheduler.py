@@ -19,6 +19,7 @@ from bot.services.congress import (
     format_week_message,
 )
 from bot.services.reminders import due_reminders, mark_sent
+from bot.services.scheduled_actions import run_action
 from bot.services.traffic import (
     USER_AGENT as TRAFFIC_USER_AGENT,
     TrafficError,
@@ -235,13 +236,23 @@ async def run_reminders(
             items: list[Reminder] = await due_reminders(session, user.id, now_utc)
             for rem in items:
                 try:
-                    await bot.send_message(
-                        user.id,
-                        f"🔔 *Lembrete*: {rem.text}",
-                        parse_mode="Markdown",
-                    )
+                    if rem.command_kind:
+                        await run_action(bot, session, user, rem.command_kind, rem.command_args)
+                    else:
+                        await bot.send_message(
+                            user.id,
+                            f"🔔 *Lembrete*: {rem.text}",
+                            parse_mode="Markdown",
+                        )
                     await mark_sent(session, rem)
-                    logger.info("reminder sent", extra={"user_id": user.id, "reminder_id": rem.id})
+                    logger.info(
+                        "reminder sent",
+                        extra={
+                            "user_id": user.id,
+                            "reminder_id": rem.id,
+                            "kind": rem.command_kind or "text",
+                        },
+                    )
                 except Exception:
                     logger.exception("reminder send failed", extra={"reminder_id": rem.id})
                     await session.rollback()

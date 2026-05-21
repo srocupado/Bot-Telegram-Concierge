@@ -108,6 +108,49 @@ async def _h_apagar_lembrete(args: dict, ctx: ToolContext) -> str:
     return f"ok: lembrete #{rid} apagado"
 
 
+async def _h_agendar_comando(args: dict, ctx: ToolContext) -> str:
+    from bot.services.scheduled_actions import VALID_KINDS
+
+    tipo = (args.get("tipo") or "").strip()
+    parametros = (args.get("parametros") or "").strip()
+    quando_iso = (args.get("quando_iso") or "").strip()
+    if not tipo or not quando_iso:
+        return "erro: 'tipo' e 'quando_iso' são obrigatórios"
+    if tipo not in VALID_KINDS:
+        return f"erro: tipo inválido. Use um de: {sorted(VALID_KINDS)}"
+    if tipo == "chat" and not parametros:
+        return "erro: para tipo='chat', 'parametros' deve conter o prompt a executar"
+
+    tz = ZoneInfo(ctx.tz)
+    try:
+        dt_local = datetime.fromisoformat(quando_iso.replace(" ", "T"))
+    except ValueError:
+        return f"erro: 'quando_iso' inválido ({quando_iso!r}). Use 'YYYY-MM-DDTHH:MM'."
+    if dt_local.tzinfo is None:
+        dt_local = dt_local.replace(tzinfo=tz)
+    due_utc = dt_local.astimezone(timezone.utc)
+    if due_utc <= datetime.now(timezone.utc):
+        return f"erro: data/hora ({quando_iso}) já passou"
+
+    descricao_map = {
+        "transito_casa": "trânsito → casa",
+        "transito_trabalho": "trânsito → trabalho",
+        "congresso": "pauta do congresso",
+        "clima": "clima",
+        "chat": parametros[:60] + ("…" if len(parametros) > 60 else ""),
+    }
+    texto = f"[agendado] {descricao_map.get(tipo, tipo)}"
+    rem = await create_reminder(
+        ctx.session, ctx.user.id, texto, due_utc,
+        command_kind=tipo, command_args=parametros or None,
+    )
+    local = due_utc.astimezone(tz)
+    return (
+        f"ok: comando #{rem.id} agendado: {descricao_map.get(tipo, tipo)} "
+        f"em {local.strftime('%d/%m %H:%M')}"
+    )
+
+
 async def _h_consultar_clima(args: dict, ctx: ToolContext) -> str:
     coords = (args.get("coords") or "").strip() or settings.home_coords
     if not coords:
@@ -219,6 +262,43 @@ TOOLS: list[Tool] = [
             "required": ["id"],
         },
         handler=_h_apagar_lembrete,
+    ),
+    Tool(
+        name="agendar_comando",
+        description=(
+            "Agenda uma ação automática pra rodar em data/hora futura, "
+            "sem precisar você mandar comando na hora. Aparece junto dos "
+            "lembretes em /lembretes. Tipos suportados:\n"
+            "- 'transito_casa' / 'transito_trabalho': dispara consulta de "
+            "trânsito (rota trabalho→casa ou casa→trabalho).\n"
+            "- 'congresso': dispara resumo da pauta do Congresso.\n"
+            "- 'clima': consulta previsão do tempo (parametros='lat,lng' opcional, default HOME_COORDS).\n"
+            "- 'chat': envia um prompt livre pro assistente como se o usuário "
+            "tivesse digitado. Use parametros pro prompt completo. Ex: "
+            "'me dê um resumo das notícias da semana e clima de hoje'."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "tipo": {
+                    "type": "string",
+                    "enum": ["transito_casa", "transito_trabalho", "congresso", "clima", "chat"],
+                },
+                "parametros": {
+                    "type": "string",
+                    "description": (
+                        "Args opcionais (coords pra clima; prompt pra chat). "
+                        "Vazio pra transito/congresso."
+                    ),
+                },
+                "quando_iso": {
+                    "type": "string",
+                    "description": "Data/hora local ISO 'YYYY-MM-DDTHH:MM'.",
+                },
+            },
+            "required": ["tipo", "quando_iso"],
+        },
+        handler=_h_agendar_comando,
     ),
     Tool(
         name="consultar_clima",

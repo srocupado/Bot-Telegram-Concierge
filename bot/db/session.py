@@ -38,15 +38,13 @@ SessionLocal: async_sessionmaker[AsyncSession] = async_sessionmaker(
 )
 
 
-async def _ensure_user_columns(conn) -> None:
+async def _ensure_columns(conn) -> None:
     """ALTER TABLE para colunas novas adicionadas após o create_all inicial.
 
     SQLite não tem `ADD COLUMN IF NOT EXISTS`, então checamos via PRAGMA.
     """
-    from sqlalchemy import text
-
-    result = await conn.exec_driver_sql("PRAGMA table_info(users)")
-    cols = {row[1] for row in result.fetchall()}
+    user_cols = await conn.exec_driver_sql("PRAGMA table_info(users)")
+    cols = {row[1] for row in user_cols.fetchall()}
     if "traffic_alert_enabled" not in cols:
         await conn.exec_driver_sql(
             "ALTER TABLE users ADD COLUMN traffic_alert_enabled BOOLEAN NOT NULL DEFAULT 1"
@@ -58,9 +56,22 @@ async def _ensure_user_columns(conn) -> None:
         )
         logger.info("migrated: added users.last_traffic_alert_at")
 
+    rem_cols = await conn.exec_driver_sql("PRAGMA table_info(reminders)")
+    cols = {row[1] for row in rem_cols.fetchall()}
+    if "command_kind" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN command_kind VARCHAR(32)"
+        )
+        logger.info("migrated: added reminders.command_kind")
+    if "command_args" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN command_args VARCHAR(2048)"
+        )
+        logger.info("migrated: added reminders.command_args")
+
 
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        await _ensure_user_columns(conn)
+        await _ensure_columns(conn)
     logger.info("database initialized")

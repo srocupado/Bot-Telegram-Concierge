@@ -81,5 +81,12 @@ class Reminder(Base):
     sent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Quando setado, em vez de mandar `text` como notificação, o scheduler
+    # executa uma ação. Valores válidos de command_kind:
+    #   'transito_casa', 'transito_trabalho', 'congresso', 'clima', 'chat'.
+    # command_args é livre — pro 'chat' é o prompt; pra 'clima' pode ser
+    # 'lat,lng'; pra 'transito_*'/'congresso' fica vazio.
+    command_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    command_args: Mapped[str | None] = mapped_column(String(2048), nullable=True)
 
     user: Mapped[User] = relationship(back_populates="reminders")
