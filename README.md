@@ -19,6 +19,11 @@ multi-provider (Anthropic/OpenAI/Gemini) e troca de modelo em runtime.
   contexto curto (TTL 30 min, em RAM) e **tool use** — o LLM aciona ferramentas
   pra criar/listar/concluir/apagar tarefas e lembretes, consultar clima e
   trânsito, sem você precisar lembrar slash commands.
+- **Busca web nativa** no Anthropic (`web_search`, server-side, max 5 buscas
+  por turno) e Gemini (`google_search`). O LLM pesquisa em tempo real
+  quando você pede notícias, cotações, eventos atuais ou qualquer coisa
+  que dependa de dados recentes, citando fontes. OpenAI não tem busca
+  nativa nessa versão — use `/provider anthropic|gemini` quando precisar.
 - **Mensagens de voz**: áudio é transcrito via **Gemini multimodal**
   (default `gemini-2.5-flash`, configurável via `VOICE_STT_MODEL`), aceita
   OGG/Opus nativo sem ffmpeg, e é roteado como comando (fast-path
