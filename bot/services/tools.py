@@ -168,6 +168,14 @@ async def _h_consultar_transito(args: dict, ctx: ToolContext) -> str:
     destino = (args.get("destino") or "").strip()
     if not origem or not destino:
         return "erro: parâmetros 'origem' e 'destino' são obrigatórios"
+    # Atalhos: 'casa' e 'trabalho' viram HOME_COORDS / WORK_COORDS.
+    aliases = {"casa": settings.home_coords, "trabalho": settings.work_coords}
+    origem_resolved = aliases.get(origem.lower(), origem)
+    destino_resolved = aliases.get(destino.lower(), destino)
+    if origem_resolved is None:
+        return f"erro: 'casa'/'trabalho' usado em origem mas HOME_COORDS/WORK_COORDS não configurado"
+    if destino_resolved is None:
+        return f"erro: 'casa'/'trabalho' usado em destino mas HOME_COORDS/WORK_COORDS não configurado"
     if not settings.google_maps_api_key:
         return "erro: GOOGLE_MAPS_API_KEY não configurada"
     key = settings.google_maps_api_key.get_secret_value()
@@ -175,7 +183,9 @@ async def _h_consultar_transito(args: dict, ctx: ToolContext) -> str:
         async with httpx.AsyncClient(
             timeout=15.0, follow_redirects=True, headers={"User-Agent": USER_AGENT}
         ) as client:
-            infos = await fetch_traffic(client, key, origem, destino, [], alternatives=False)
+            infos = await fetch_traffic(
+                client, key, origem_resolved, destino_resolved, [], alternatives=False,
+            )
     except TrafficError as e:
         return f"erro: {e}"
     info = infos[0]
@@ -320,13 +330,20 @@ TOOLS: list[Tool] = [
         name="consultar_transito",
         description=(
             "Calcula tempo atual de viagem entre origem e destino. "
-            "Origem/destino podem ser 'lat,lng' ou endereço."
+            "Origem/destino podem ser 'lat,lng', endereço, ou os atalhos "
+            "'casa'/'trabalho' (mapeiam pra HOME_COORDS/WORK_COORDS do servidor)."
         ),
         parameters={
             "type": "object",
             "properties": {
-                "origem": {"type": "string"},
-                "destino": {"type": "string"},
+                "origem": {
+                    "type": "string",
+                    "description": "Origem: 'casa', 'trabalho', 'lat,lng' ou endereço",
+                },
+                "destino": {
+                    "type": "string",
+                    "description": "Destino: 'casa', 'trabalho', 'lat,lng' ou endereço",
+                },
             },
             "required": ["origem", "destino"],
         },
