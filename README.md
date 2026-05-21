@@ -32,6 +32,10 @@ multi-provider (Anthropic/OpenAI/Gemini) e troca de modelo em runtime.
   casa→trabalho a cada 10 min na janela [horário do digest - 2h,
   horário + 30min] e avisa se o tempo estiver ≥30% acima da mediana
   habitual do mesmo `(dia da semana, hora)` (com piso de 30 min).
+- **Comandos agendados**: além de lembretes texto, dá pra agendar
+  AÇÕES pra rodar no horário (trânsito, congresso, clima, ou prompt
+  livre pro LLM agente). Ex: voz "agenda o trânsito pra casa às 15h"
+  → bot dispara `/transito_agora casa` automaticamente às 15h.
 - **Rota com localização atual**: comando `/rota <destino>` (ou voz "rota
   para X") faz o bot pedir sua localização via botão do Telegram e calcula
   a rota até o destino, com geocoding para endereços livres.
@@ -75,12 +79,15 @@ basta tocar uma vez. A localização não é persistida.
 | `/tarefas` | Lista tarefas abertas |
 | `/feito <id>` | Marca tarefa como concluída |
 | `/lembrar <texto> em 2h \| amanhã 09:00 \| sexta 18h` | Cria lembrete com horário |
-| `/lembretes` | Lista lembretes pendentes |
+| `/lembretes` | Lista lembretes pendentes (⏰ = ação agendada, • = texto) |
 | `/apagar_lembrete <id>` | Apaga um lembrete pendente |
+| `/agendar_comando <tipo> [args] <quando>` | Agenda uma ação automática. Tipos: `transito_casa`, `transito_trabalho`, `congresso`, `clima`, `chat`. Ex: `/agendar_comando transito_casa amanhã 15h` ou `/agendar_comando chat resumo das notícias da semana sexta 18h` |
 
 > Você também pode pedir essas ações em texto/voz livre — o LLM aciona a tool
 > certa. Ex: *"me lembre de pagar o boleto amanhã 10h"*, *"quais minhas
-> tarefas?"*, *"apaga o lembrete 5"*, *"qual a previsão pra hoje?"*.
+> tarefas?"*, *"apaga o lembrete 5"*, *"qual a previsão pra hoje?"*,
+> *"agenda o trânsito pra casa amanhã às 15h"*, *"no domingo às 8h me dê
+> um resumo das notícias da semana"*.
 
 ### LLM e utilitários
 | Comando | Descrição |
@@ -240,7 +247,11 @@ sudo crontab -e
   `traffic_alert_enabled`, `last_traffic_alert_at` + os equivalentes para
   `congress_*`.
 - **`tasks`**: `id`, `user_id`, `text`, `done`, `created_at`, `done_at`.
-- **`reminders`**: `id`, `user_id`, `text`, `due_at` (UTC), `sent`, `sent_at`.
+- **`reminders`**: `id`, `user_id`, `text`, `due_at` (UTC), `sent`, `sent_at`,
+  `command_kind` (nullable: `transito_casa`/`transito_trabalho`/`congresso`/
+  `clima`/`chat`), `command_args` (nullable: prompt pra `chat`, coords
+  opcionais pra `clima`, vazio pros demais). Quando `command_kind` está
+  setado, o scheduler executa a ação no `due_at` em vez de mandar texto.
 - **`traffic_samples`**: `id`, `user_id`, `weekday` (0-6), `hour` (0-23),
   `sampled_at`, `duration_seconds`. Coletado a cada 10 min na janela de
   monitoramento; usado pra calcular mediana rolling 7 dias do baseline de
@@ -272,6 +283,7 @@ bot/
 │   ├── llm/                      # base + factory + anthropic/openai/gemini
 │   │                             # (chat_with_tools implementado nos 3)
 │   ├── tools.py                  # registry de tools acionáveis pelo LLM
+│   ├── scheduled_actions.py      # dispatch de ações agendadas (transito/congresso/clima/chat)
 │   ├── traffic.py, weather.py    # Google Directions + Open-Meteo
 │   ├── traffic_baseline.py       # mediana rolling + alerta proativo
 │   ├── geocoding.py              # Google Geocoding (endereço → coords)
