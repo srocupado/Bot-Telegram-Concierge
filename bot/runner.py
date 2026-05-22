@@ -17,6 +17,7 @@ from bot.handlers import provider as provider_handler
 from bot.handlers import reminders as reminders_handler
 from bot.handlers import reset as reset_handler
 from bot.handlers import route as route_handler
+from bot.handlers import search as search_handler
 from bot.handlers import start as start_handler
 from bot.handlers import tasks as tasks_handler
 from bot.handlers import traffic as traffic_handler
@@ -51,6 +52,7 @@ def _build_dispatcher() -> Dispatcher:
     dp.include_router(tasks_handler.router)
     dp.include_router(reminders_handler.router)
     dp.include_router(route_handler.router)  # /rota + F.location + botão cancelar
+    dp.include_router(search_handler.router)  # /buscar (Anthropic ou Gemini)
     dp.include_router(voice_handler.router)  # voz: transcreve + roteia
     dp.include_router(photo_handler.router)  # foto: multimodal → chat agente
     dp.include_router(document_handler.router)  # PDF: multimodal → chat agente

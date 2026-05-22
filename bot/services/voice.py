@@ -48,6 +48,13 @@ transcrição literal):
      "como chegar até X", "trajeto até X",
      "me leva para X"                                  → /rota X
 
+5. Para pedido de busca/pesquisa na web, qualquer das formas abaixo vira
+   "/buscar <termo>" — preserve o termo exatamente como falado:
+     "busca X", "busca por X", "busca X na internet"  → /buscar X
+     "pesquisa X", "pesquisa sobre X"                 → /buscar X
+     "procura X", "procura por X"                     → /buscar X
+     "google X", "googleia X"                          → /buscar X
+
 Em qualquer outro caso, transcreva literalmente o que foi dito —
 inclusive quando o usuário só MENCIONA trânsito ou congresso em uma
 conversa, sem pedir explicitamente a informação naquele momento.

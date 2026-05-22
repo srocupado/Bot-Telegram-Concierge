@@ -30,6 +30,7 @@ from bot.handlers.provider import cmd_provider
 from bot.handlers.reminders import cmd_lembrar, cmd_lembretes
 from bot.handlers.reset import cmd_reset
 from bot.handlers.route import cmd_rota
+from bot.handlers.search import cmd_buscar
 from bot.handlers.start import cmd_help, cmd_start
 from bot.handlers.tasks import cmd_feito, cmd_nova, cmd_tarefas
 from bot.handlers.traffic import (
@@ -122,6 +123,10 @@ async def _w_rota(message: Message, args: str, user: User, session: AsyncSession
     await cmd_rota(message, _cmd("rota", args), user, session)
 
 
+async def _w_buscar(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_buscar(message, _cmd("buscar", args), user)
+
+
 async def _w_ping(message: Message, args: str, user: User, session: AsyncSession) -> None:
     await cmd_ping(message, user)
 
@@ -159,6 +164,7 @@ _DISPATCH: dict[str, callable] = {
     "lembrar": _w_lembrar,
     "lembretes": _w_lembretes,
     "rota": _w_rota,
+    "buscar": _w_buscar,
     "ping": _w_ping,
     "provider": _w_provider,
     "reset": _w_reset,
