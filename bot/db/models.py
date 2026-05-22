@@ -63,6 +63,26 @@ class Task(Base):
     user: Mapped[User] = relationship(back_populates="tasks")
 
 
+class UserFact(Base):
+    """Fato persistente sobre o usuário, salvo/recuperado via tool do LLM.
+
+    Chave única por (user_id, key) — recriar com mesma key sobrescreve.
+    Pensado pra preferências e atributos longos (esposa: Dani, mora em Brasília,
+    prefere Vue, alergia: amendoim), não pra histórico de conversa.
+    """
+
+    __tablename__ = "user_facts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True, nullable=False)
+    key: Mapped[str] = mapped_column(String(128), nullable=False)
+    value: Mapped[str] = mapped_column(String(2048), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+
+
 class TrafficSample(Base):
     __tablename__ = "traffic_samples"
 

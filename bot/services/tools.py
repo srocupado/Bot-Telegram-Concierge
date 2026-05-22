@@ -21,6 +21,12 @@ from bot.services.tasks import (
     mark_done,
 )
 from bot.services.traffic import USER_AGENT, TrafficError, fetch_traffic
+from bot.services.user_facts import (
+    delete_fact,
+    get_fact,
+    list_facts,
+    upsert_fact,
+)
 from bot.services.weather import WeatherError, fetch_today_weather, format_weather_line
 
 logger = logging.getLogger(__name__)
@@ -184,6 +190,42 @@ async def _h_agendar_comando(args: dict, ctx: ToolContext) -> str:
         f"ok: comando #{rem.id} agendado: {descricao_map.get(tipo, tipo)} "
         f"em {local.strftime('%d/%m %H:%M')}"
     )
+
+
+async def _h_lembrar_fato(args: dict, ctx: ToolContext) -> str:
+    chave = (args.get("chave") or "").strip()
+    valor = (args.get("valor") or "").strip()
+    if not chave or not valor:
+        return "erro: 'chave' e 'valor' são obrigatórios"
+    fact = await upsert_fact(ctx.session, ctx.user.id, chave, valor)
+    return f"ok: fato '{fact.key}' salvo: {fact.value}"
+
+
+async def _h_recuperar_fato(args: dict, ctx: ToolContext) -> str:
+    chave = (args.get("chave") or "").strip()
+    if not chave:
+        return "erro: 'chave' obrigatória"
+    fact = await get_fact(ctx.session, ctx.user.id, chave)
+    if fact is None:
+        return f"ok: nenhum fato salvo com chave '{chave}'"
+    return f"ok: {fact.key} = {fact.value}"
+
+
+async def _h_listar_fatos(_args: dict, ctx: ToolContext) -> str:
+    items = await list_facts(ctx.session, ctx.user.id)
+    if not items:
+        return "ok: nenhum fato salvo"
+    return "ok: " + " | ".join(f"{f.key}={f.value}" for f in items)
+
+
+async def _h_esquecer_fato(args: dict, ctx: ToolContext) -> str:
+    chave = (args.get("chave") or "").strip()
+    if not chave:
+        return "erro: 'chave' obrigatória"
+    ok = await delete_fact(ctx.session, ctx.user.id, chave)
+    if not ok:
+        return f"erro: nenhum fato com chave '{chave}'"
+    return f"ok: fato '{chave}' apagado"
 
 
 async def _h_consultar_clima(args: dict, ctx: ToolContext) -> str:
@@ -372,6 +414,57 @@ TOOLS: list[Tool] = [
             "required": ["tipo", "quando_iso"],
         },
         handler=_h_agendar_comando,
+    ),
+    Tool(
+        name="lembrar_fato",
+        description=(
+            "Salva um fato persistente sobre o usuário (chave/valor). Use SEMPRE "
+            "que o usuário disser algo sobre si próprio que queira que você lembre "
+            "no futuro (preferências, nomes de família, alergias, ferramentas "
+            "preferidas, etc). Sobrescreve se a chave já existir. Chaves "
+            "minúsculas, snake_case curto. Ex: lembrar_fato("
+            "chave='esposa_nome', valor='Dani'); lembrar_fato("
+            "chave='alergia', valor='amendoim'); lembrar_fato("
+            "chave='editor_preferido', valor='nvim')."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "chave": {"type": "string", "description": "Identificador curto (snake_case)"},
+                "valor": {"type": "string", "description": "Conteúdo do fato"},
+            },
+            "required": ["chave", "valor"],
+        },
+        handler=_h_lembrar_fato,
+    ),
+    Tool(
+        name="recuperar_fato",
+        description="Lê um fato salvo pela chave exata.",
+        parameters={
+            "type": "object",
+            "properties": {"chave": {"type": "string"}},
+            "required": ["chave"],
+        },
+        handler=_h_recuperar_fato,
+    ),
+    Tool(
+        name="listar_fatos",
+        description=(
+            "Lista TODOS os fatos salvos sobre o usuário. Use no início "
+            "de conversas pra recuperar contexto sobre quem ele é."
+        ),
+        parameters={"type": "object", "properties": {}},
+        handler=_h_listar_fatos,
+    ),
+    Tool(
+        name="esquecer_fato",
+        description="Remove um fato salvo pela chave.",
+        parameters={
+            "type": "object",
+            "properties": {"chave": {"type": "string"}},
+            "required": ["chave"],
+        },
+        handler=_h_esquecer_fato,
     ),
     Tool(
         name="consultar_clima",
