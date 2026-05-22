@@ -97,9 +97,13 @@ class GeminiProvider(LLMProvider):
             )
             for t in tools
         ]
-        # SDK novo aceita combinar google_search com function_declarations.
+        # IMPORTANTE: a API do Gemini recusa combinar google_search com
+        # function_declarations no mesmo request ('Built-in tools and
+        # Function Calling cannot be combined'). Como tool use é o uso
+        # primário, mantemos só function_declarations aqui. Web search
+        # nativa via Gemini fica indisponível — use /provider anthropic
+        # quando precisar de busca.
         genai_tools = [
-            types.Tool(google_search=types.GoogleSearch()),
             types.Tool(function_declarations=function_declarations),
         ]
         tool_by_name = {t.name: t for t in tools}
