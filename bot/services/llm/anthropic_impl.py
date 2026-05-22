@@ -2,12 +2,37 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 import anthropic
 
 from bot.services.llm.base import ChatMessage, LLMProvider, Tool, ToolContext
 
 logger = logging.getLogger(__name__)
+
+
+def _to_anth_content(content: Any) -> Any:
+    """Converte content (str ou list[block]) pro formato esperado pela API Anthropic."""
+    if isinstance(content, str):
+        return content
+    out: list[dict] = []
+    for b in content:
+        bt = b.get("type")
+        if bt == "text":
+            out.append({"type": "text", "text": b.get("text", "")})
+        elif bt == "image":
+            out.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": b.get("media_type", "image/jpeg"),
+                    "data": b.get("data", ""),
+                },
+            })
+        else:
+            # bloco já em formato Anthropic nativo (tool_use, tool_result, etc).
+            out.append(b)
+    return out
 
 
 class AnthropicProvider(LLMProvider):
@@ -27,7 +52,7 @@ class AnthropicProvider(LLMProvider):
         max_tokens: int = 1024,
     ) -> str:
         anth_messages = [
-            {"role": m["role"], "content": m["content"]}
+            {"role": m["role"], "content": _to_anth_content(m["content"])}
             for m in messages
             if m["role"] in ("user", "assistant")
         ]
@@ -57,7 +82,7 @@ class AnthropicProvider(LLMProvider):
         max_iterations: int = 5,
     ) -> str:
         anth_messages: list[dict] = [
-            {"role": m["role"], "content": m["content"]}
+            {"role": m["role"], "content": _to_anth_content(m["content"])}
             for m in messages
             if m["role"] in ("user", "assistant")
         ]

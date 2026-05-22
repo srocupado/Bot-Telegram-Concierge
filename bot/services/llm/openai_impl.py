@@ -3,12 +3,30 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from typing import Any
 
 from openai import OpenAI
 
 from bot.services.llm.base import ChatMessage, LLMProvider, Tool, ToolContext
 
 logger = logging.getLogger(__name__)
+
+
+def _to_openai_content(content: Any) -> Any:
+    """Converte content (str ou list[block]) pro formato OpenAI chat.completions."""
+    if isinstance(content, str):
+        return content
+    out: list[dict] = []
+    for b in content:
+        bt = b.get("type")
+        if bt == "text":
+            out.append({"type": "text", "text": b.get("text", "")})
+        elif bt == "image":
+            data_url = f"data:{b.get('media_type', 'image/jpeg')};base64,{b.get('data', '')}"
+            out.append({"type": "image_url", "image_url": {"url": data_url}})
+        else:
+            out.append(b)
+    return out
 
 
 class OpenAIProvider(LLMProvider):
@@ -30,7 +48,9 @@ class OpenAIProvider(LLMProvider):
         oa_messages: list[dict] = []
         if system:
             oa_messages.append({"role": "system", "content": system})
-        oa_messages.extend({"role": m["role"], "content": m["content"]} for m in messages)
+        oa_messages.extend(
+            {"role": m["role"], "content": _to_openai_content(m["content"])} for m in messages
+        )
 
         def _call() -> str:
             resp = self.client.chat.completions.create(
@@ -55,7 +75,9 @@ class OpenAIProvider(LLMProvider):
         oa_messages: list[dict] = []
         if system:
             oa_messages.append({"role": "system", "content": system})
-        oa_messages.extend({"role": m["role"], "content": m["content"]} for m in messages)
+        oa_messages.extend(
+            {"role": m["role"], "content": _to_openai_content(m["content"])} for m in messages
+        )
 
         tools_spec = [
             {

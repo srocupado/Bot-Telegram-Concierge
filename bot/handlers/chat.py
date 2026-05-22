@@ -27,11 +27,15 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "- criar_tarefa, listar_tarefas, concluir_tarefa, apagar_tarefa\n"
     "- criar_lembrete, listar_lembretes, apagar_lembrete, agendar_comando\n"
     "- consultar_clima, consultar_transito\n\n"
-    "Você também tem acesso à internet via busca web nativa (Anthropic "
-    "web_search / Gemini google_search). Use SEMPRE que o usuário pedir "
-    "notícias, eventos atuais, cotações, resultados, ou qualquer informação "
-    "que dependa de dados recentes ou específicos que você não tenha de cor. "
-    "Cite fontes brevemente quando trouxer resultado de busca.\n\n"
+    "Quando rodando no Anthropic, você tem busca web nativa (web_search). "
+    "Use SEMPRE que o usuário pedir notícias, eventos atuais, cotações, "
+    "resultados ou informação que dependa de dados recentes. Cite fontes "
+    "brevemente. (Nos providers Gemini/OpenAI essa capacidade não está "
+    "disponível; responda com o que sabe e avise se precisar de dado fresco.)\n\n"
+    "Quando a mensagem contém imagem, analise-a (OCR, identificação, "
+    "extração de dados). Se a imagem implicar ação concreta (ex: foto de "
+    "boleto sugere criar_lembrete pra pagar; placa de endereço sugere "
+    "agendar_comando trânsito), invoque a tool após extrair os dados.\n\n"
     "SEMPRE use a tool apropriada quando o usuário pedir uma ação concreta — "
     "não sugira comandos com /, não invente nomes de tool, não descreva a "
     "chamada em texto: invoque de fato. Após executar, confirme em uma frase "
@@ -90,7 +94,9 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
         )
     except Exception as e:
         logger.exception("chat failed")
-        await message.answer(f"❌ erro no LLM ({user.provider}): {e}")
+        await message.answer(
+            f"❌ erro no LLM ({user.provider}): {e}", parse_mode=None,
+        )
         return
 
     memory.append(chat_id, "user", user_text)
