@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     voice_max_seconds: int = Field(120, alias="VOICE_MAX_SECONDS")
     voice_stt_model: str = Field("gemini-2.5-flash", alias="VOICE_STT_MODEL")
 
+    # Notificação ao reiniciar (mensagem '🟢 online' pra usuários autorizados).
+    restart_notification_enabled: bool = Field(True, alias="RESTART_NOTIFICATION_ENABLED")
+
     # Logging
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 

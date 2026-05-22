@@ -3,12 +3,16 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from sqlalchemy import select
 
 from bot.config import settings
+from bot.db.models import User
 from bot.db.session import SessionLocal, init_db
 from bot.handlers import chat as chat_handler
 from bot.handlers import congress as congress_handler
@@ -61,6 +65,23 @@ def _build_dispatcher() -> Dispatcher:
     return dp
 
 
+async def _notify_restart(bot: Bot) -> None:
+    """Avisa usuários autorizados que o bot subiu (deploy/restart/crash recovery)."""
+    if not settings.restart_notification_enabled:
+        return
+    now_local = datetime.now(ZoneInfo(settings.timezone))
+    msg = f"🟢 _Concierge online_ — {now_local.strftime('%d/%m %H:%M')}"
+    async with SessionLocal() as session:
+        users = list((await session.scalars(
+            select(User).where(User.is_authorized.is_(True))
+        )).all())
+    for u in users:
+        try:
+            await bot.send_message(u.id, msg, parse_mode="Markdown")
+        except Exception:
+            logger.exception("failed to send restart notification to %d", u.id)
+
+
 async def main() -> None:
     setup_logging(settings.log_level)
     logger.info("starting concierge bot")
@@ -72,6 +93,8 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN),
     )
     dp = _build_dispatcher()
+
+    await _notify_restart(bot)
 
     scheduler_task = asyncio.create_task(scheduler_loop(bot, SessionLocal))
     try:

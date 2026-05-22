@@ -106,6 +106,44 @@ async def _h_listar_lembretes(_args: dict, ctx: ToolContext) -> str:
     )
 
 
+async def _h_criar_lembrete_pagamento(args: dict, ctx: ToolContext) -> str:
+    beneficiario = (args.get("beneficiario") or "").strip()
+    valor = args.get("valor")
+    vencimento_iso = (args.get("vencimento_iso") or "").strip()
+    descricao = (args.get("descricao") or "").strip()
+    if not beneficiario or valor is None or not vencimento_iso:
+        return "erro: 'beneficiario', 'valor' e 'vencimento_iso' são obrigatórios"
+    try:
+        valor_f = float(valor)
+    except (TypeError, ValueError):
+        return "erro: 'valor' deve ser número (em reais)"
+
+    tz = ZoneInfo(ctx.tz)
+    try:
+        dt_local = datetime.fromisoformat(vencimento_iso.replace(" ", "T"))
+    except ValueError:
+        return f"erro: 'vencimento_iso' inválido ({vencimento_iso!r}). Use 'YYYY-MM-DDTHH:MM' ou 'YYYY-MM-DD'."
+    if dt_local.tzinfo is None:
+        # Sem hora → assume 09:00 do dia de vencimento (lembrete matinal)
+        if dt_local.hour == 0 and dt_local.minute == 0:
+            dt_local = dt_local.replace(hour=9)
+        dt_local = dt_local.replace(tzinfo=tz)
+    due_utc = dt_local.astimezone(timezone.utc)
+    if due_utc <= datetime.now(timezone.utc):
+        return f"erro: vencimento ({vencimento_iso}) já passou"
+
+    valor_fmt = f"R$ {valor_f:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    texto = f"💰 Pagar {beneficiario} — {valor_fmt}"
+    if descricao:
+        texto += f" ({descricao})"
+    rem = await create_reminder(ctx.session, ctx.user.id, texto, due_utc)
+    local = due_utc.astimezone(tz)
+    return (
+        f"ok: lembrete de pagamento #{rem.id} criado: "
+        f"{beneficiario} {valor_fmt} em {local.strftime('%d/%m %H:%M')}"
+    )
+
+
 async def _h_criar_lembrete_recorrente(args: dict, ctx: ToolContext) -> str:
     texto = (args.get("texto") or "").strip()
     primeiro_iso = (args.get("primeiro_iso") or "").strip()
@@ -339,6 +377,41 @@ TOOLS: list[Tool] = [
         description="Lista os lembretes pendentes do usuário.",
         parameters={"type": "object", "properties": {}},
         handler=_h_listar_lembretes,
+    ),
+    Tool(
+        name="criar_lembrete_pagamento",
+        description=(
+            "Cria lembrete específico de pagamento a partir de dados extraídos "
+            "de uma foto/PDF de boleto, conta ou fatura. Use IMEDIATAMENTE após "
+            "ver uma imagem de boleto/conta/fatura — extraia beneficiário, "
+            "valor (em reais, como número) e vencimento (formato ISO local). "
+            "Se a hora não vier no documento, deixe só a data ('YYYY-MM-DD') "
+            "e a tool agenda às 09:00. Inclua descrição se útil "
+            "(ex: 'energia 03/2026')."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "beneficiario": {
+                    "type": "string",
+                    "description": "Quem recebe (ex: 'Enel', 'Caesb', 'João Silva')",
+                },
+                "valor": {
+                    "type": "number",
+                    "description": "Valor em reais como número (ex: 245.67)",
+                },
+                "vencimento_iso": {
+                    "type": "string",
+                    "description": "Vencimento ISO local: 'YYYY-MM-DD' ou 'YYYY-MM-DDTHH:MM'",
+                },
+                "descricao": {
+                    "type": "string",
+                    "description": "Opcional — referência/mês/serviço",
+                },
+            },
+            "required": ["beneficiario", "valor", "vencimento_iso"],
+        },
+        handler=_h_criar_lembrete_pagamento,
     ),
     Tool(
         name="criar_lembrete_recorrente",
