@@ -24,6 +24,12 @@ def _to_openai_content(content: Any) -> Any:
         elif bt == "image":
             data_url = f"data:{b.get('media_type', 'image/jpeg')};base64,{b.get('data', '')}"
             out.append({"type": "image_url", "image_url": {"url": data_url}})
+        elif bt == "document":
+            # chat.completions não aceita PDFs direto. Sinaliza pro LLM.
+            out.append({
+                "type": "text",
+                "text": "[PDF anexado — OpenAI não suporta leitura de PDF nessa versão; use /provider_visao anthropic ou gemini]",
+            })
         else:
             out.append(b)
     return out

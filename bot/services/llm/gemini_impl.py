@@ -30,6 +30,13 @@ def _to_gemini_parts(content: Any) -> list[Any]:
                     "data": b.get("data", ""),
                 }
             })
+        elif bt == "document":
+            parts.append({
+                "inline_data": {
+                    "mime_type": b.get("media_type", "application/pdf"),
+                    "data": b.get("data", ""),
+                }
+            })
         else:
             parts.append(b)
     return parts
