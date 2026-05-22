@@ -21,6 +21,7 @@ from bot.handlers import start as start_handler
 from bot.handlers import tasks as tasks_handler
 from bot.handlers import traffic as traffic_handler
 from bot.handlers import photo as photo_handler
+from bot.handlers import reminder_callbacks as reminder_callbacks_handler
 from bot.handlers import voice as voice_handler
 from bot.logging_setup import setup_logging
 from bot.middlewares.auth import AuthMiddleware
@@ -36,6 +37,8 @@ def _build_dispatcher() -> Dispatcher:
     # middlewares: DB primeiro (provê session), depois auth (consome session)
     dp.message.middleware(DBSessionMiddleware())
     dp.message.middleware(AuthMiddleware())
+    dp.callback_query.middleware(DBSessionMiddleware())
+    dp.callback_query.middleware(AuthMiddleware())
 
     # routers (ordem importa: comandos antes do catch-all de chat livre)
     dp.include_router(start_handler.router)
@@ -49,6 +52,7 @@ def _build_dispatcher() -> Dispatcher:
     dp.include_router(route_handler.router)  # /rota + F.location + botão cancelar
     dp.include_router(voice_handler.router)  # voz: transcreve + roteia
     dp.include_router(photo_handler.router)  # foto: multimodal → chat agente
+    dp.include_router(reminder_callbacks_handler.router)  # botões snooze/done
     dp.include_router(chat_handler.router)  # catch-all texto livre
     return dp
 

@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from aiogram import Bot
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -239,10 +240,16 @@ async def run_reminders(
                     if rem.command_kind:
                         await run_action(bot, session, user, rem.command_kind, rem.command_args)
                     else:
+                        kb = InlineKeyboardMarkup(inline_keyboard=[[
+                            InlineKeyboardButton(text="💤 +15min", callback_data=f"snz:15:{rem.id}"),
+                            InlineKeyboardButton(text="💤 +1h", callback_data=f"snz:60:{rem.id}"),
+                            InlineKeyboardButton(text="✅ feito", callback_data=f"done:{rem.id}"),
+                        ]])
                         await bot.send_message(
                             user.id,
                             f"🔔 *Lembrete*: {rem.text}",
                             parse_mode="Markdown",
+                            reply_markup=kb,
                         )
                     await mark_sent(session, rem)
                     logger.info(
