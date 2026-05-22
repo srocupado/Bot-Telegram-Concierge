@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.models import User
 from bot.handlers.chat import _build_system_prompt
+from bot.config import settings
 from bot.services.chat_memory import memory
 from bot.services.llm.base import ToolContext, make_image_message
 from bot.services.llm.factory import get_provider
@@ -64,8 +65,9 @@ async def cmd_photo(message: Message, user: User, session: AsyncSession) -> None
     history = memory.get(chat_id)
     history.append(make_image_message(caption, image_bytes, mime_type="image/jpeg"))
 
+    vision_provider_name = settings.vision_provider or user.provider
     try:
-        provider = get_provider(user.provider)
+        provider = get_provider(vision_provider_name)
         ctx = ToolContext(user=user, session=session, tz=user.timezone)
         reply = await provider.chat_with_tools(
             history, tools=TOOLS, ctx=ctx,
@@ -74,7 +76,7 @@ async def cmd_photo(message: Message, user: User, session: AsyncSession) -> None
         )
     except Exception as e:
         logger.exception("photo chat failed")
-        await message.answer(f"❌ erro no LLM ({user.provider}): {e}")
+        await message.answer(f"❌ erro no LLM de visão ({vision_provider_name}): {e}")
         return
 
     # Guarda só texto no memory pra próximo turno (sem reusar bytes da imagem).

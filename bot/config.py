@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     openai_model: str = Field("gpt-4.1", alias="OPENAI_MODEL")
     gemini_api_key: str | None = Field(None, alias="GEMINI_API_KEY")
     gemini_model: str = Field("gemini-2.5-pro", alias="GEMINI_MODEL")
+    # Override opcional só pra entrada de imagens. Quando setado, fotos vão
+    # pra esse provider independente do /provider do usuário. Vazio = usa o
+    # provider atual do usuário.
+    vision_provider: Provider | None = Field(None, alias="VISION_PROVIDER")
 
     # Trânsito (Google Directions API — replicado do Telegram-Travels)
     google_maps_api_key: SecretStr | None = Field(None, alias="GOOGLE_MAPS_API_KEY")
