@@ -75,7 +75,7 @@ async def cmd_photo(message: Message, user: User, session: AsyncSession) -> None
         reply = await provider.chat_with_tools(
             history, tools=TOOLS, ctx=ctx,
             system=_build_system_prompt(user.timezone),
-            max_tokens=800,
+            max_tokens=4000,
         )
     except Exception as e:
         logger.exception("photo chat failed")

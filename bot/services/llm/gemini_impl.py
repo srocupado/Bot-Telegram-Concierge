@@ -132,10 +132,23 @@ class GeminiProvider(LLMProvider):
                         fcs.append(fc)
 
             if not fcs:
+                # Sem function_call: extrai texto. Pode falhar se a resposta foi
+                # truncada por max_tokens ou bloqueada por safety filters.
                 try:
-                    return (resp.text or "").strip()
-                except Exception:
-                    return ""
+                    text = (resp.text or "").strip()
+                    if text:
+                        return text
+                except Exception as e:
+                    logger.warning("Gemini resp.text raised: %s", e)
+                # Diagnóstico: log finish_reason e safety_ratings se houver.
+                for cand in resp.candidates or []:
+                    fr = getattr(cand, "finish_reason", None)
+                    sr = getattr(cand, "safety_ratings", None)
+                    logger.warning(
+                        "Gemini candidate empty: finish_reason=%s safety_ratings=%s",
+                        fr, sr,
+                    )
+                return ""
 
             # Executa cada function_call e monta function_response parts.
             response_parts = []
