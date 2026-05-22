@@ -65,7 +65,10 @@ async def cmd_photo(message: Message, user: User, session: AsyncSession) -> None
     history = memory.get(chat_id)
     history.append(make_image_message(caption, image_bytes, mime_type="image/jpeg"))
 
-    vision_provider_name = settings.vision_provider or user.provider
+    # Ordem: override por usuário (/provider_visao) → env VISION_PROVIDER → /provider atual.
+    vision_provider_name = (
+        user.vision_provider or settings.vision_provider or user.provider
+    )
     try:
         provider = get_provider(vision_provider_name)
         ctx = ToolContext(user=user, session=session, tz=user.timezone)

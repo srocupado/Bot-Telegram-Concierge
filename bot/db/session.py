@@ -55,6 +55,11 @@ async def _ensure_columns(conn) -> None:
             "ALTER TABLE users ADD COLUMN last_traffic_alert_at DATETIME"
         )
         logger.info("migrated: added users.last_traffic_alert_at")
+    if "vision_provider" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE users ADD COLUMN vision_provider VARCHAR(32)"
+        )
+        logger.info("migrated: added users.vision_provider")
 
     rem_cols = await conn.exec_driver_sql("PRAGMA table_info(reminders)")
     cols = {row[1] for row in rem_cols.fetchall()}
