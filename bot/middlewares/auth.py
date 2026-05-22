@@ -4,7 +4,7 @@ import logging
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
-from aiogram.types import Message, TelegramObject
+from aiogram.types import CallbackQuery, Message, TelegramObject
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,7 +30,7 @@ class AuthMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: dict[str, Any],
     ) -> Any:
-        if not isinstance(event, Message) or event.from_user is None:
+        if not isinstance(event, (Message, CallbackQuery)) or event.from_user is None:
             return await handler(event, data)
 
         session: AsyncSession | None = data.get("session")
@@ -38,11 +38,15 @@ class AuthMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         tg_user = event.from_user
+        chat_id = (
+            event.chat.id if isinstance(event, Message)
+            else (event.message.chat.id if event.message else tg_user.id)
+        )
         user = await session.get(User, tg_user.id)
         if user is None:
             user = User(
                 id=tg_user.id,
-                chat_id=event.chat.id,
+                chat_id=chat_id,
                 username=tg_user.username,
                 first_name=tg_user.first_name,
                 is_authorized=False,
@@ -56,8 +60,8 @@ class AuthMiddleware(BaseMiddleware):
         else:
             # Mantém chat_id e username atualizados.
             changed = False
-            if user.chat_id != event.chat.id:
-                user.chat_id = event.chat.id
+            if user.chat_id != chat_id:
+                user.chat_id = chat_id
                 changed = True
             if user.username != tg_user.username:
                 user.username = tg_user.username
@@ -66,6 +70,13 @@ class AuthMiddleware(BaseMiddleware):
                 await session.commit()
 
         data["user"] = user
+
+        # CallbackQuery não tem texto/comando — só bloqueia se não autorizado.
+        if isinstance(event, CallbackQuery):
+            if not user.is_authorized:
+                await event.answer("🔒 Acesso restrito.", show_alert=True)
+                return None
+            return await handler(event, data)
 
         text = (event.text or "").strip()
         cmd = text.split()[0].lower() if text else ""

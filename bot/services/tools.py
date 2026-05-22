@@ -11,6 +11,7 @@ from bot.services.llm.base import Tool, ToolContext
 from bot.services.reminders import (
     create_reminder,
     delete_reminder,
+    is_valid_recurrence,
     list_pending,
 )
 from bot.services.tasks import (
@@ -20,6 +21,12 @@ from bot.services.tasks import (
     mark_done,
 )
 from bot.services.traffic import USER_AGENT, TrafficError, fetch_traffic
+from bot.services.user_facts import (
+    delete_fact,
+    get_fact,
+    list_facts,
+    upsert_fact,
+)
 from bot.services.weather import WeatherError, fetch_today_weather, format_weather_line
 
 logger = logging.getLogger(__name__)
@@ -94,7 +101,41 @@ async def _h_listar_lembretes(_args: dict, ctx: ToolContext) -> str:
     tz = ZoneInfo(ctx.tz)
     return "ok: " + " | ".join(
         f"#{r.id} {r.due_at.astimezone(tz).strftime('%d/%m %H:%M')} {r.text}"
+        + (f" [recorrente: {r.recurrence}]" if r.recurrence else "")
         for r in items
+    )
+
+
+async def _h_criar_lembrete_recorrente(args: dict, ctx: ToolContext) -> str:
+    texto = (args.get("texto") or "").strip()
+    primeiro_iso = (args.get("primeiro_iso") or "").strip()
+    recurrencia = (args.get("recurrencia") or "").strip().lower()
+    if not texto or not primeiro_iso or not recurrencia:
+        return "erro: 'texto', 'primeiro_iso' e 'recurrencia' são obrigatórios"
+    if not is_valid_recurrence(recurrencia):
+        return (
+            "erro: recurrencia inválida. Use 'daily', 'weekday', 'weekend', "
+            "'monthly' ou 'weekly:mon,wed,fri' (dias = mon|tue|wed|thu|fri|sat|sun "
+            "ou seg|ter|qua|qui|sex|sab|dom)."
+        )
+    tz = ZoneInfo(ctx.tz)
+    try:
+        dt_local = datetime.fromisoformat(primeiro_iso.replace(" ", "T"))
+    except ValueError:
+        return f"erro: 'primeiro_iso' inválido ({primeiro_iso!r}). Use 'YYYY-MM-DDTHH:MM'."
+    if dt_local.tzinfo is None:
+        dt_local = dt_local.replace(tzinfo=tz)
+    due_utc = dt_local.astimezone(timezone.utc)
+    if due_utc <= datetime.now(timezone.utc):
+        return f"erro: primeiro disparo ({primeiro_iso}) já passou"
+    rem = await create_reminder(
+        ctx.session, ctx.user.id, texto, due_utc,
+        recurrence=recurrencia,
+    )
+    local = due_utc.astimezone(tz)
+    return (
+        f"ok: lembrete recorrente #{rem.id} criado: {texto} ({recurrencia}) "
+        f"— primeiro: {local.strftime('%d/%m %H:%M')}"
     )
 
 
@@ -149,6 +190,42 @@ async def _h_agendar_comando(args: dict, ctx: ToolContext) -> str:
         f"ok: comando #{rem.id} agendado: {descricao_map.get(tipo, tipo)} "
         f"em {local.strftime('%d/%m %H:%M')}"
     )
+
+
+async def _h_lembrar_fato(args: dict, ctx: ToolContext) -> str:
+    chave = (args.get("chave") or "").strip()
+    valor = (args.get("valor") or "").strip()
+    if not chave or not valor:
+        return "erro: 'chave' e 'valor' são obrigatórios"
+    fact = await upsert_fact(ctx.session, ctx.user.id, chave, valor)
+    return f"ok: fato '{fact.key}' salvo: {fact.value}"
+
+
+async def _h_recuperar_fato(args: dict, ctx: ToolContext) -> str:
+    chave = (args.get("chave") or "").strip()
+    if not chave:
+        return "erro: 'chave' obrigatória"
+    fact = await get_fact(ctx.session, ctx.user.id, chave)
+    if fact is None:
+        return f"ok: nenhum fato salvo com chave '{chave}'"
+    return f"ok: {fact.key} = {fact.value}"
+
+
+async def _h_listar_fatos(_args: dict, ctx: ToolContext) -> str:
+    items = await list_facts(ctx.session, ctx.user.id)
+    if not items:
+        return "ok: nenhum fato salvo"
+    return "ok: " + " | ".join(f"{f.key}={f.value}" for f in items)
+
+
+async def _h_esquecer_fato(args: dict, ctx: ToolContext) -> str:
+    chave = (args.get("chave") or "").strip()
+    if not chave:
+        return "erro: 'chave' obrigatória"
+    ok = await delete_fact(ctx.session, ctx.user.id, chave)
+    if not ok:
+        return f"erro: nenhum fato com chave '{chave}'"
+    return f"ok: fato '{chave}' apagado"
 
 
 async def _h_consultar_clima(args: dict, ctx: ToolContext) -> str:
@@ -264,6 +341,34 @@ TOOLS: list[Tool] = [
         handler=_h_listar_lembretes,
     ),
     Tool(
+        name="criar_lembrete_recorrente",
+        description=(
+            "Cria um lembrete que se repete em intervalo regular. Use SEMPRE "
+            "que o usuário disser 'todo dia', 'toda semana', 'segundas e "
+            "quartas', 'dia útil', 'fim de semana', 'todo mês'. Recurrencias "
+            "aceitas: 'daily', 'weekday' (seg-sex), 'weekend' (sab-dom), "
+            "'monthly' (mesmo dia do mês), 'weekly:mon,wed,fri' (dias "
+            "específicos em inglês ou pt: mon|tue|wed|thu|fri|sat|sun ou "
+            "seg|ter|qua|qui|sex|sab|dom)."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "texto": {"type": "string", "description": "O que lembrar"},
+                "primeiro_iso": {
+                    "type": "string",
+                    "description": "Data/hora do primeiro disparo (ISO local 'YYYY-MM-DDTHH:MM')",
+                },
+                "recurrencia": {
+                    "type": "string",
+                    "description": "daily | weekday | weekend | monthly | weekly:<dias>",
+                },
+            },
+            "required": ["texto", "primeiro_iso", "recurrencia"],
+        },
+        handler=_h_criar_lembrete_recorrente,
+    ),
+    Tool(
         name="apagar_lembrete",
         description="Apaga um lembrete pendente pelo id.",
         parameters={
@@ -309,6 +414,57 @@ TOOLS: list[Tool] = [
             "required": ["tipo", "quando_iso"],
         },
         handler=_h_agendar_comando,
+    ),
+    Tool(
+        name="lembrar_fato",
+        description=(
+            "Salva um fato persistente sobre o usuário (chave/valor). Use SEMPRE "
+            "que o usuário disser algo sobre si próprio que queira que você lembre "
+            "no futuro (preferências, nomes de família, alergias, ferramentas "
+            "preferidas, etc). Sobrescreve se a chave já existir. Chaves "
+            "minúsculas, snake_case curto. Ex: lembrar_fato("
+            "chave='esposa_nome', valor='Dani'); lembrar_fato("
+            "chave='alergia', valor='amendoim'); lembrar_fato("
+            "chave='editor_preferido', valor='nvim')."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "chave": {"type": "string", "description": "Identificador curto (snake_case)"},
+                "valor": {"type": "string", "description": "Conteúdo do fato"},
+            },
+            "required": ["chave", "valor"],
+        },
+        handler=_h_lembrar_fato,
+    ),
+    Tool(
+        name="recuperar_fato",
+        description="Lê um fato salvo pela chave exata.",
+        parameters={
+            "type": "object",
+            "properties": {"chave": {"type": "string"}},
+            "required": ["chave"],
+        },
+        handler=_h_recuperar_fato,
+    ),
+    Tool(
+        name="listar_fatos",
+        description=(
+            "Lista TODOS os fatos salvos sobre o usuário. Use no início "
+            "de conversas pra recuperar contexto sobre quem ele é."
+        ),
+        parameters={"type": "object", "properties": {}},
+        handler=_h_listar_fatos,
+    ),
+    Tool(
+        name="esquecer_fato",
+        description="Remove um fato salvo pela chave.",
+        parameters={
+            "type": "object",
+            "properties": {"chave": {"type": "string"}},
+            "required": ["chave"],
+        },
+        handler=_h_esquecer_fato,
     ),
     Tool(
         name="consultar_clima",

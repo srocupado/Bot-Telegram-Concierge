@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import dateparser
@@ -78,6 +78,7 @@ async def create_reminder(
     *,
     command_kind: str | None = None,
     command_args: str | None = None,
+    recurrence: str | None = None,
 ) -> Reminder:
     rem = Reminder(
         user_id=user_id,
@@ -86,6 +87,7 @@ async def create_reminder(
         sent=False,
         command_kind=command_kind,
         command_args=command_args,
+        recurrence=recurrence,
     )
     session.add(rem)
     await session.commit()
@@ -119,6 +121,61 @@ async def mark_sent(session: AsyncSession, rem: Reminder) -> None:
     rem.sent = True
     rem.sent_at = datetime.now(timezone.utc)
     await session.commit()
+
+
+_WEEKDAY_MAP = {
+    "mon": 0, "seg": 0,
+    "tue": 1, "ter": 1,
+    "wed": 2, "qua": 2,
+    "thu": 3, "qui": 3,
+    "fri": 4, "sex": 4,
+    "sat": 5, "sab": 5, "sáb": 5,
+    "sun": 6, "dom": 6,
+}
+
+VALID_RECURRENCES = {"daily", "weekday", "weekend", "monthly"}  # + "weekly:<dias>"
+
+
+def is_valid_recurrence(rrule: str) -> bool:
+    if rrule in VALID_RECURRENCES:
+        return True
+    if rrule.startswith("weekly:"):
+        days = rrule.split(":", 1)[1].split(",")
+        return all(d.strip().lower() in _WEEKDAY_MAP for d in days if d.strip())
+    return False
+
+
+def next_due_from(rrule: str, after: datetime) -> datetime:
+    """Calcula o próximo disparo a partir de `after` (timezone-aware), no mesmo HH:MM."""
+    if rrule == "daily":
+        return after + timedelta(days=1)
+    if rrule == "weekday":
+        nxt = after + timedelta(days=1)
+        while nxt.weekday() > 4:  # 5=sat, 6=sun
+            nxt += timedelta(days=1)
+        return nxt
+    if rrule == "weekend":
+        nxt = after + timedelta(days=1)
+        while nxt.weekday() < 5:
+            nxt += timedelta(days=1)
+        return nxt
+    if rrule == "monthly":
+        # Próximo mês, mesmo dia. Edge case: dia 31 em mês com 30 dias → cai pro último dia.
+        from calendar import monthrange
+        year, month = after.year, after.month + 1
+        if month > 12:
+            month, year = 1, year + 1
+        day = min(after.day, monthrange(year, month)[1])
+        return after.replace(year=year, month=month, day=day)
+    if rrule.startswith("weekly:"):
+        wanted = {_WEEKDAY_MAP[d.strip().lower()] for d in rrule.split(":", 1)[1].split(",") if d.strip()}
+        nxt = after + timedelta(days=1)
+        for _ in range(8):
+            if nxt.weekday() in wanted:
+                return nxt
+            nxt += timedelta(days=1)
+    # Fallback: 1 dia. Evita loop infinito caso rrule estranho.
+    return after + timedelta(days=1)
 
 
 async def delete_reminder(session: AsyncSession, user_id: int, reminder_id: int) -> Reminder | None:

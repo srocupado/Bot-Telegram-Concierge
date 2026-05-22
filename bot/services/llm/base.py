@@ -26,6 +26,18 @@ def make_image_message(text: str, image_bytes: bytes, mime_type: str = "image/jp
     return {"role": "user", "content": parts}
 
 
+def make_document_message(
+    text: str, doc_bytes: bytes, mime_type: str = "application/pdf",
+) -> ChatMessage:
+    """Constrói uma mensagem multimodal (user) com texto opcional + documento (PDF)."""
+    b64 = base64.standard_b64encode(doc_bytes).decode("ascii")
+    parts: list[dict] = []
+    if text:
+        parts.append({"type": "text", "text": text})
+    parts.append({"type": "document", "data": b64, "media_type": mime_type})
+    return {"role": "user", "content": parts}
+
+
 @dataclass
 class ToolContext:
     user: Any  # bot.db.models.User — Any para evitar import circular

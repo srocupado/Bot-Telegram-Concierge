@@ -29,6 +29,15 @@ def _to_anth_content(content: Any) -> Any:
                     "data": b.get("data", ""),
                 },
             })
+        elif bt == "document":
+            out.append({
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": b.get("media_type", "application/pdf"),
+                    "data": b.get("data", ""),
+                },
+            })
         else:
             # bloco já em formato Anthropic nativo (tool_use, tool_result, etc).
             out.append(b)
