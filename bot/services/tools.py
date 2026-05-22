@@ -11,6 +11,7 @@ from bot.services.llm.base import Tool, ToolContext
 from bot.services.reminders import (
     create_reminder,
     delete_reminder,
+    is_valid_recurrence,
     list_pending,
 )
 from bot.services.tasks import (
@@ -94,7 +95,41 @@ async def _h_listar_lembretes(_args: dict, ctx: ToolContext) -> str:
     tz = ZoneInfo(ctx.tz)
     return "ok: " + " | ".join(
         f"#{r.id} {r.due_at.astimezone(tz).strftime('%d/%m %H:%M')} {r.text}"
+        + (f" [recorrente: {r.recurrence}]" if r.recurrence else "")
         for r in items
+    )
+
+
+async def _h_criar_lembrete_recorrente(args: dict, ctx: ToolContext) -> str:
+    texto = (args.get("texto") or "").strip()
+    primeiro_iso = (args.get("primeiro_iso") or "").strip()
+    recurrencia = (args.get("recurrencia") or "").strip().lower()
+    if not texto or not primeiro_iso or not recurrencia:
+        return "erro: 'texto', 'primeiro_iso' e 'recurrencia' são obrigatórios"
+    if not is_valid_recurrence(recurrencia):
+        return (
+            "erro: recurrencia inválida. Use 'daily', 'weekday', 'weekend', "
+            "'monthly' ou 'weekly:mon,wed,fri' (dias = mon|tue|wed|thu|fri|sat|sun "
+            "ou seg|ter|qua|qui|sex|sab|dom)."
+        )
+    tz = ZoneInfo(ctx.tz)
+    try:
+        dt_local = datetime.fromisoformat(primeiro_iso.replace(" ", "T"))
+    except ValueError:
+        return f"erro: 'primeiro_iso' inválido ({primeiro_iso!r}). Use 'YYYY-MM-DDTHH:MM'."
+    if dt_local.tzinfo is None:
+        dt_local = dt_local.replace(tzinfo=tz)
+    due_utc = dt_local.astimezone(timezone.utc)
+    if due_utc <= datetime.now(timezone.utc):
+        return f"erro: primeiro disparo ({primeiro_iso}) já passou"
+    rem = await create_reminder(
+        ctx.session, ctx.user.id, texto, due_utc,
+        recurrence=recurrencia,
+    )
+    local = due_utc.astimezone(tz)
+    return (
+        f"ok: lembrete recorrente #{rem.id} criado: {texto} ({recurrencia}) "
+        f"— primeiro: {local.strftime('%d/%m %H:%M')}"
     )
 
 
@@ -262,6 +297,34 @@ TOOLS: list[Tool] = [
         description="Lista os lembretes pendentes do usuário.",
         parameters={"type": "object", "properties": {}},
         handler=_h_listar_lembretes,
+    ),
+    Tool(
+        name="criar_lembrete_recorrente",
+        description=(
+            "Cria um lembrete que se repete em intervalo regular. Use SEMPRE "
+            "que o usuário disser 'todo dia', 'toda semana', 'segundas e "
+            "quartas', 'dia útil', 'fim de semana', 'todo mês'. Recurrencias "
+            "aceitas: 'daily', 'weekday' (seg-sex), 'weekend' (sab-dom), "
+            "'monthly' (mesmo dia do mês), 'weekly:mon,wed,fri' (dias "
+            "específicos em inglês ou pt: mon|tue|wed|thu|fri|sat|sun ou "
+            "seg|ter|qua|qui|sex|sab|dom)."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "texto": {"type": "string", "description": "O que lembrar"},
+                "primeiro_iso": {
+                    "type": "string",
+                    "description": "Data/hora do primeiro disparo (ISO local 'YYYY-MM-DDTHH:MM')",
+                },
+                "recurrencia": {
+                    "type": "string",
+                    "description": "daily | weekday | weekend | monthly | weekly:<dias>",
+                },
+            },
+            "required": ["texto", "primeiro_iso", "recurrencia"],
+        },
+        handler=_h_criar_lembrete_recorrente,
     ),
     Tool(
         name="apagar_lembrete",

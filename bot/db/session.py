@@ -73,6 +73,11 @@ async def _ensure_columns(conn) -> None:
             "ALTER TABLE reminders ADD COLUMN command_args VARCHAR(2048)"
         )
         logger.info("migrated: added reminders.command_args")
+    if "recurrence" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN recurrence VARCHAR(64)"
+        )
+        logger.info("migrated: added reminders.recurrence")
 
 
 async def init_db() -> None:

@@ -19,7 +19,7 @@ from bot.services.congress import (
     fetch_week_mps,
     format_week_message,
 )
-from bot.services.reminders import due_reminders, mark_sent
+from bot.services.reminders import due_reminders, mark_sent, next_due_from
 from bot.services.scheduled_actions import run_action
 from bot.services.traffic import (
     USER_AGENT as TRAFFIC_USER_AGENT,
@@ -240,18 +240,30 @@ async def run_reminders(
                     if rem.command_kind:
                         await run_action(bot, session, user, rem.command_kind, rem.command_args)
                     else:
-                        kb = InlineKeyboardMarkup(inline_keyboard=[[
-                            InlineKeyboardButton(text="💤 +15min", callback_data=f"snz:15:{rem.id}"),
-                            InlineKeyboardButton(text="💤 +1h", callback_data=f"snz:60:{rem.id}"),
-                            InlineKeyboardButton(text="✅ feito", callback_data=f"done:{rem.id}"),
-                        ]])
+                        # Lembretes recorrentes não mostram botões snooze/done
+                        # (a próxima ocorrência já vem; snooze não faz sentido).
+                        kb = None
+                        if not rem.recurrence:
+                            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                                InlineKeyboardButton(text="💤 +15min", callback_data=f"snz:15:{rem.id}"),
+                                InlineKeyboardButton(text="💤 +1h", callback_data=f"snz:60:{rem.id}"),
+                                InlineKeyboardButton(text="✅ feito", callback_data=f"done:{rem.id}"),
+                            ]])
+                        prefix = "🔁 *Recorrente*" if rem.recurrence else "🔔 *Lembrete*"
                         await bot.send_message(
                             user.id,
-                            f"🔔 *Lembrete*: {rem.text}",
+                            f"{prefix}: {rem.text}",
                             parse_mode="Markdown",
                             reply_markup=kb,
                         )
-                    await mark_sent(session, rem)
+                    if rem.recurrence:
+                        # Reagenda: mesmo HH:MM, próximo dia conforme rrule. Mantém row.
+                        rem.due_at = next_due_from(rem.recurrence, rem.due_at)
+                        rem.sent = False
+                        rem.sent_at = None
+                        await session.commit()
+                    else:
+                        await mark_sent(session, rem)
                     logger.info(
                         "reminder sent",
                         extra={

@@ -59,8 +59,14 @@ async def cmd_lembretes(message: Message, user: User, session: AsyncSession) -> 
     lines = ["🔔 *Lembretes pendentes*\n"]
     for r in items:
         local = r.due_at.astimezone(tz)
-        marker = "⏰" if r.command_kind else "•"
-        lines.append(f"{marker} #{r.id} — {local.strftime('%d/%m %H:%M')} — {r.text}")
+        if r.recurrence:
+            marker = "🔁"
+        elif r.command_kind:
+            marker = "⏰"
+        else:
+            marker = "•"
+        suffix = f" _({r.recurrence})_" if r.recurrence else ""
+        lines.append(f"{marker} #{r.id} — {local.strftime('%d/%m %H:%M')} — {r.text}{suffix}")
     await message.answer("\n".join(lines), parse_mode="Markdown")
 
 
