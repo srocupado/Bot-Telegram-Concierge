@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, TypedDict
@@ -9,7 +10,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 class ChatMessage(TypedDict):
     role: str  # "user" | "assistant" | "system"
-    content: str
+    # content é str pra mensagens só-texto, ou list[ContentBlock] pra multimodal.
+    # ContentBlock é {"type": "text", "text": "..."}
+    # ou {"type": "image", "data": "<base64>", "media_type": "image/jpeg"}
+    content: Any
+
+
+def make_image_message(text: str, image_bytes: bytes, mime_type: str = "image/jpeg") -> ChatMessage:
+    """Constrói uma mensagem multimodal (user) com texto opcional + imagem."""
+    b64 = base64.standard_b64encode(image_bytes).decode("ascii")
+    parts: list[dict] = []
+    if text:
+        parts.append({"type": "text", "text": text})
+    parts.append({"type": "image", "data": b64, "media_type": mime_type})
+    return {"role": "user", "content": parts}
 
 
 @dataclass

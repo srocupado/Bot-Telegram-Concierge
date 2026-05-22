@@ -2,12 +2,37 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 import google.generativeai as genai
 
 from bot.services.llm.base import ChatMessage, LLMProvider, Tool, ToolContext
 
 logger = logging.getLogger(__name__)
+
+
+def _to_gemini_parts(content: Any) -> list[Any]:
+    """Converte content (str ou list[block]) pra lista de parts Gemini.
+
+    Cada part é um dict {"text": ...} ou {"inline_data": {"mime_type", "data"}}.
+    """
+    if isinstance(content, str):
+        return [{"text": content}]
+    parts: list[Any] = []
+    for b in content:
+        bt = b.get("type")
+        if bt == "text":
+            parts.append({"text": b.get("text", "")})
+        elif bt == "image":
+            parts.append({
+                "inline_data": {
+                    "mime_type": b.get("media_type", "image/jpeg"),
+                    "data": b.get("data", ""),
+                }
+            })
+        else:
+            parts.append(b)
+    return parts
 
 
 class GeminiProvider(LLMProvider):
@@ -26,17 +51,18 @@ class GeminiProvider(LLMProvider):
         system: str | None = None,
         max_tokens: int = 1024,
     ) -> str:
-        # Gemini: histórico estilo {role: "user"|"model", parts: [text]}.
+        # Gemini: histórico estilo {role: "user"|"model", parts: [...]}.
         history: list[dict] = []
-        last_user: str | None = None
+        last_user_parts: list[Any] | None = None
         for m in messages:
             role = "user" if m["role"] == "user" else "model"
+            parts = _to_gemini_parts(m["content"])
             if m is messages[-1] and m["role"] == "user":
-                last_user = m["content"]
+                last_user_parts = parts
                 break
-            history.append({"role": role, "parts": [m["content"]]})
-        if last_user is None and messages:
-            last_user = messages[-1]["content"]
+            history.append({"role": role, "parts": parts})
+        if last_user_parts is None and messages:
+            last_user_parts = _to_gemini_parts(messages[-1]["content"])
 
         def _call() -> str:
             model = genai.GenerativeModel(
@@ -45,7 +71,7 @@ class GeminiProvider(LLMProvider):
                 generation_config={"max_output_tokens": max_tokens},
             )
             chat = model.start_chat(history=history)
-            resp = chat.send_message(last_user or "")
+            resp = chat.send_message(last_user_parts or [{"text": ""}])
             return (resp.text or "").strip()
 
         return await asyncio.to_thread(_call)
@@ -61,15 +87,16 @@ class GeminiProvider(LLMProvider):
         max_iterations: int = 5,
     ) -> str:
         history: list[dict] = []
-        last_user: str | None = None
+        last_user_parts: list[Any] | None = None
         for m in messages:
             role = "user" if m["role"] == "user" else "model"
+            parts = _to_gemini_parts(m["content"])
             if m is messages[-1] and m["role"] == "user":
-                last_user = m["content"]
+                last_user_parts = parts
                 break
-            history.append({"role": role, "parts": [{"text": m["content"]}]})
-        if last_user is None and messages:
-            last_user = messages[-1]["content"]
+            history.append({"role": role, "parts": parts})
+        if last_user_parts is None and messages:
+            last_user_parts = _to_gemini_parts(messages[-1]["content"])
 
         # Gemini FunctionDeclaration espera schema "OpenAPI-like" — JSON schema funciona.
         function_declarations = [
@@ -94,7 +121,7 @@ class GeminiProvider(LLMProvider):
         def _send(payload):
             return chat.send_message(payload)
 
-        pending = last_user or ""
+        pending: Any = last_user_parts or [{"text": ""}]
         for _ in range(max_iterations):
             resp = await asyncio.to_thread(_send, pending)
             fcs: list = []

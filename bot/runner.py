@@ -20,6 +20,7 @@ from bot.handlers import route as route_handler
 from bot.handlers import start as start_handler
 from bot.handlers import tasks as tasks_handler
 from bot.handlers import traffic as traffic_handler
+from bot.handlers import photo as photo_handler
 from bot.handlers import voice as voice_handler
 from bot.logging_setup import setup_logging
 from bot.middlewares.auth import AuthMiddleware
@@ -47,6 +48,7 @@ def _build_dispatcher() -> Dispatcher:
     dp.include_router(reminders_handler.router)
     dp.include_router(route_handler.router)  # /rota + F.location + botão cancelar
     dp.include_router(voice_handler.router)  # voz: transcreve + roteia
+    dp.include_router(photo_handler.router)  # foto: multimodal → chat agente
     dp.include_router(chat_handler.router)  # catch-all texto livre
     return dp
 
