@@ -39,22 +39,24 @@ async def cmd_provider_visao(
         current = user.vision_provider or "(seguindo /provider)"
         opts = " | ".join(SUPPORTED_PROVIDERS)
         await message.answer(
-            f"Provider de visão: *{current}*\n\n"
+            f"Provider de visão: <b>{current}</b>\n\n"
             f"Use: /provider_visao {opts} | auto",
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
         return
     if arg in ("auto", "none", "padrao", "padrão", "limpar"):
         user.vision_provider = None
         await session.commit()
-        await message.answer("✅ Visão volta a seguir o /provider atual.")
+        await message.answer("✅ Visão volta a seguir o /provider atual.", parse_mode=None)
         return
     if arg not in SUPPORTED_PROVIDERS:
         opts = ", ".join(SUPPORTED_PROVIDERS)
-        await message.answer(f"Provider inválido. Opções: {opts} | auto")
+        await message.answer(
+            f"Provider inválido. Opções: {opts} | auto", parse_mode=None,
+        )
         return
     user.vision_provider = arg
     await session.commit()
     await message.answer(
-        f"✅ Provider de visão definido como *{arg}*.", parse_mode="Markdown"
+        f"✅ Provider de visão definido como <b>{arg}</b>.", parse_mode="HTML",
     )
