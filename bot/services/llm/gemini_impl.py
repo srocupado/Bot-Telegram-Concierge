@@ -103,11 +103,11 @@ class GeminiProvider(LLMProvider):
             {"name": t.name, "description": t.description, "parameters": t.parameters}
             for t in tools
         ]
-        # Combina nossas tools customizadas com a tool nativa google_search.
-        gemini_tools = [
-            {"function_declarations": function_declarations},
-            {"google_search": {}},
-        ]
+        # google-generativeai 0.8.x não aceita combinar function_declarations
+        # com google_search no formato dict — quebra com "Unknown field for
+        # FunctionDeclaration: google_search". Web search via Gemini fica
+        # indisponível por ora; quem precisa de busca usa /provider anthropic.
+        gemini_tools = [{"function_declarations": function_declarations}]
         tool_by_name = {t.name: t for t in tools}
 
         model = genai.GenerativeModel(

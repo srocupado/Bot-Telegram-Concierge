@@ -79,7 +79,10 @@ async def cmd_photo(message: Message, user: User, session: AsyncSession) -> None
         )
     except Exception as e:
         logger.exception("photo chat failed")
-        await message.answer(f"❌ erro no LLM de visão ({vision_provider_name}): {e}")
+        await message.answer(
+            f"❌ erro no LLM de visão ({vision_provider_name}): {e}",
+            parse_mode=None,
+        )
         return
 
     # Guarda só texto no memory pra próximo turno (sem reusar bytes da imagem).

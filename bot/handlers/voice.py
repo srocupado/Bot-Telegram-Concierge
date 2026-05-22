@@ -271,7 +271,9 @@ async def _dispatch_chat(
         )
     except Exception as e:
         logger.exception("voice→chat failed")
-        await message.answer(f"❌ erro no LLM ({user.provider}): {e}")
+        await message.answer(
+            f"❌ erro no LLM ({user.provider}): {e}", parse_mode=None,
+        )
         return
 
     memory.append(chat_id, "user", text)
