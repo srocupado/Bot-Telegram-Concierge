@@ -1,45 +1,51 @@
+"""Gemini provider via SDK `google-genai` 1.x.
+
+Diferente do `google-generativeai` (0.x), o `google-genai` (1.x) suporta
+combinar `function_declarations` (tool use customizado) com `google_search`
+(busca web nativa) na mesma chamada — o que destrava web search no Gemini.
+
+Voice STT continua usando `google-generativeai` 0.x (ver bot/services/voice.py)
+porque a interface multimodal pra áudio ainda é mais simples lá.
+"""
 from __future__ import annotations
 
 import asyncio
 import logging
 from typing import Any
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from bot.services.llm.base import ChatMessage, LLMProvider, Tool, ToolContext
 
 logger = logging.getLogger(__name__)
 
 
-def _to_gemini_parts(content: Any) -> list[Any]:
-    """Converte content (str ou list[block]) pra lista de parts Gemini.
-
-    Cada part é um dict {"text": ...} ou {"inline_data": {"mime_type", "data"}}.
-    """
+def _to_genai_parts(content: Any) -> list[types.Part]:
+    """Converte content (str ou list[block]) pra lista de Part do google-genai."""
     if isinstance(content, str):
-        return [{"text": content}]
-    parts: list[Any] = []
+        return [types.Part.from_text(text=content)]
+    parts: list[types.Part] = []
     for b in content:
         bt = b.get("type")
         if bt == "text":
-            parts.append({"text": b.get("text", "")})
-        elif bt == "image":
-            parts.append({
-                "inline_data": {
-                    "mime_type": b.get("media_type", "image/jpeg"),
-                    "data": b.get("data", ""),
-                }
-            })
-        elif bt == "document":
-            parts.append({
-                "inline_data": {
-                    "mime_type": b.get("media_type", "application/pdf"),
-                    "data": b.get("data", ""),
-                }
-            })
-        else:
-            parts.append(b)
+            parts.append(types.Part.from_text(text=b.get("text", "")))
+        elif bt in ("image", "document"):
+            import base64 as _b64
+            data_bytes = _b64.b64decode(b.get("data", ""))
+            mime = b.get("media_type", "image/jpeg" if bt == "image" else "application/pdf")
+            parts.append(types.Part.from_bytes(data=data_bytes, mime_type=mime))
     return parts
+
+
+def _messages_to_contents(messages: list[ChatMessage]) -> list[types.Content]:
+    """Converte messages do nosso formato pra list[Content] do google-genai."""
+    contents: list[types.Content] = []
+    for m in messages:
+        role = "user" if m["role"] == "user" else "model"
+        parts = _to_genai_parts(m["content"])
+        contents.append(types.Content(role=role, parts=parts))
+    return contents
 
 
 class GeminiProvider(LLMProvider):
@@ -48,7 +54,7 @@ class GeminiProvider(LLMProvider):
     def __init__(self, api_key: str, model: str) -> None:
         if not api_key:
             raise ValueError("GEMINI_API_KEY ausente")
-        genai.configure(api_key=api_key)
+        self.client = genai.Client(api_key=api_key)
         self.model_name = model
 
     async def chat(
@@ -58,27 +64,16 @@ class GeminiProvider(LLMProvider):
         system: str | None = None,
         max_tokens: int = 1024,
     ) -> str:
-        # Gemini: histórico estilo {role: "user"|"model", parts: [...]}.
-        history: list[dict] = []
-        last_user_parts: list[Any] | None = None
-        for m in messages:
-            role = "user" if m["role"] == "user" else "model"
-            parts = _to_gemini_parts(m["content"])
-            if m is messages[-1] and m["role"] == "user":
-                last_user_parts = parts
-                break
-            history.append({"role": role, "parts": parts})
-        if last_user_parts is None and messages:
-            last_user_parts = _to_gemini_parts(messages[-1]["content"])
+        contents = _messages_to_contents(messages)
 
         def _call() -> str:
-            model = genai.GenerativeModel(
-                self.model_name,
+            config = types.GenerateContentConfig(
                 system_instruction=system,
-                generation_config={"max_output_tokens": max_tokens},
+                max_output_tokens=max_tokens,
             )
-            chat = model.start_chat(history=history)
-            resp = chat.send_message(last_user_parts or [{"text": ""}])
+            resp = self.client.models.generate_content(
+                model=self.model_name, contents=contents, config=config,
+            )
             return (resp.text or "").strip()
 
         return await asyncio.to_thread(_call)
@@ -93,61 +88,53 @@ class GeminiProvider(LLMProvider):
         max_tokens: int = 1024,
         max_iterations: int = 5,
     ) -> str:
-        history: list[dict] = []
-        last_user_parts: list[Any] | None = None
-        for m in messages:
-            role = "user" if m["role"] == "user" else "model"
-            parts = _to_gemini_parts(m["content"])
-            if m is messages[-1] and m["role"] == "user":
-                last_user_parts = parts
-                break
-            history.append({"role": role, "parts": parts})
-        if last_user_parts is None and messages:
-            last_user_parts = _to_gemini_parts(messages[-1]["content"])
-
-        # Gemini FunctionDeclaration espera schema "OpenAPI-like" — JSON schema funciona.
+        contents = _messages_to_contents(messages)
         function_declarations = [
-            {"name": t.name, "description": t.description, "parameters": t.parameters}
+            types.FunctionDeclaration(
+                name=t.name,
+                description=t.description,
+                parameters=t.parameters,
+            )
             for t in tools
         ]
-        # google-generativeai 0.8.x não aceita combinar function_declarations
-        # com google_search no formato dict — quebra com "Unknown field for
-        # FunctionDeclaration: google_search". Web search via Gemini fica
-        # indisponível por ora; quem precisa de busca usa /provider anthropic.
-        gemini_tools = [{"function_declarations": function_declarations}]
+        # SDK novo aceita combinar google_search com function_declarations.
+        genai_tools = [
+            types.Tool(google_search=types.GoogleSearch()),
+            types.Tool(function_declarations=function_declarations),
+        ]
         tool_by_name = {t.name: t for t in tools}
 
-        model = genai.GenerativeModel(
-            self.model_name,
-            system_instruction=system,
-            tools=gemini_tools,
-            generation_config={"max_output_tokens": max_tokens},
-        )
-        chat = model.start_chat(history=history)
-
-        def _send(payload):
-            return chat.send_message(payload)
-
-        pending: Any = last_user_parts or [{"text": ""}]
         for _ in range(max_iterations):
-            resp = await asyncio.to_thread(_send, pending)
-            fcs: list = []
+            def _call() -> Any:
+                config = types.GenerateContentConfig(
+                    system_instruction=system,
+                    tools=genai_tools,
+                    max_output_tokens=max_tokens,
+                )
+                return self.client.models.generate_content(
+                    model=self.model_name, contents=contents, config=config,
+                )
+
+            resp = await asyncio.to_thread(_call)
+
+            # Extrai function_calls de qualquer parte da resposta.
+            fcs: list[Any] = []
+            model_parts: list[types.Part] = []
             for cand in resp.candidates or []:
-                for part in (cand.content.parts if cand.content else []):
+                for part in (cand.content.parts if cand.content else []) or []:
+                    model_parts.append(part)
                     fc = getattr(part, "function_call", None)
                     if fc and fc.name:
                         fcs.append(fc)
 
             if not fcs:
-                # Sem function_call: extrai texto. Pode falhar se a resposta foi
-                # truncada por max_tokens ou bloqueada por safety filters.
+                # Tenta texto da resposta.
                 try:
                     text = (resp.text or "").strip()
                     if text:
                         return text
                 except Exception as e:
                     logger.warning("Gemini resp.text raised: %s", e)
-                # Diagnóstico: log finish_reason e safety_ratings se houver.
                 for cand in resp.candidates or []:
                     fr = getattr(cand, "finish_reason", None)
                     sr = getattr(cand, "safety_ratings", None)
@@ -157,8 +144,10 @@ class GeminiProvider(LLMProvider):
                     )
                 return ""
 
-            # Executa cada function_call e monta function_response parts.
-            response_parts = []
+            # Adiciona resposta do model (com function_calls) e executa cada tool.
+            contents.append(types.Content(role="model", parts=model_parts))
+
+            response_parts: list[types.Part] = []
             for fc in fcs:
                 args = dict(fc.args) if fc.args else {}
                 tool = tool_by_name.get(fc.name)
@@ -170,12 +159,11 @@ class GeminiProvider(LLMProvider):
                     except Exception as e:
                         logger.exception("tool %s failed", fc.name)
                         result = f"erro: {e}"
-                response_parts.append({
-                    "function_response": {
-                        "name": fc.name,
-                        "response": {"result": result},
-                    }
-                })
-            pending = response_parts
+                response_parts.append(
+                    types.Part.from_function_response(
+                        name=fc.name, response={"result": result},
+                    )
+                )
+            contents.append(types.Content(role="user", parts=response_parts))
 
         return "(limite de iterações de tool use atingido)"
