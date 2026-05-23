@@ -84,10 +84,15 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "data_iso. Cardio exige cardio_minutos.\n"
     "- Quando perguntar sobre rotina/semana/malhação/academia ('como tá "
     "minha semana', 'quantos dias treinei'), chame consultar_treinos (sem "
-    "args — sempre retorna a semana atual; histórico zera no domingo).\n"
+    "args — sempre retorna a semana atual; histórico zera no domingo). "
+    "REPASSE o output da tool fielmente — NÃO especule sobre duplicatas, "
+    "erros ou problemas que você não consegue confirmar olhando os números. "
+    "Se algo parecer estranho pra você, apenas mostre o resumo e deixe o "
+    "usuário decidir.\n"
     "- Quando errar lançamento ('apaga o treino de hoje', 'errei, não "
     "treinei isso ontem'), chame apagar_treino_dia. Default hoje; passe "
-    "data_iso pra dias específicos.\n\n"
+    "data_iso pra dias específicos. NÃO ofereça apagar proativamente — só "
+    "execute quando o usuário pedir.\n\n"
     "Se a intenção do usuário for ambígua, pergunte antes de agir."
 )
 
