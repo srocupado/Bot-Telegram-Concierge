@@ -496,10 +496,14 @@ async def _h_consultar_lancamentos(args: dict, ctx: ToolContext) -> str:
         dias = int(dias)
     except (TypeError, ValueError):
         return "erro: 'dias' deve ser inteiro"
+    escopo_cartao = (args.get("escopo_cartao") or "fatura_aberta").strip().lower()
+    if escopo_cartao not in ("fatura_aberta", "ultimos_dias"):
+        return "erro: 'escopo_cartao' deve ser 'fatura_aberta' ou 'ultimos_dias'"
     today_iso = datetime.now(ZoneInfo(ctx.tz)).date().isoformat()
     try:
         out = await consultar_lancamentos(
             ctx.session, ctx.user, modulo, dias, today_iso,
+            escopo_cartao=escopo_cartao,
         )
     except NotConfiguredError as e:
         return f"erro: {e}"
@@ -958,11 +962,21 @@ TOOLS: list[Tool] = [
     Tool(
         name="consultar_lancamentos",
         description=(
-            "Consulta lançamentos do gerenciador-financeiro nos últimos N "
-            "dias. Use quando o usuário perguntar 'como tá meu cartão', "
-            "'meus gastos da semana', 'quanto recebi esse mês', 'meus "
-            "aportes no tesouro'. 'modulo' = 'banco' (conta), 'cartao' "
-            "(crédito), 'tesouro' (títulos) ou 'tudo'. Default dias=30."
+            "Consulta lançamentos do gerenciador-financeiro. Use quando o "
+            "usuário perguntar 'como tá meu cartão', 'meus gastos da "
+            "semana', 'quanto recebi esse mês', 'meus aportes no "
+            "tesouro'.\n"
+            "Módulos: 'banco' (conta), 'cartao' (crédito), 'tesouro' "
+            "(títulos) ou 'tudo'.\n"
+            "Janela padrão para 'banco' e 'tesouro' = últimos 'dias' "
+            "dias (default 30).\n"
+            "Para 'cartao' o escopo padrão é a FATURA EM ABERTO (não "
+            "últimos N dias). Use escopo_cartao='ultimos_dias' apenas "
+            "quando o usuário explicitamente pedir histórico mais longo "
+            "do cartão (ex: 'gastos do cartão dos últimos 90 dias', "
+            "'meu cartão nos últimos 2 meses'). Pedidos genéricos como "
+            "'lista meus gastos do cartão', 'como tá o cartão', 'fatura "
+            "do cartão' → use o default fatura_aberta."
         ),
         parameters={
             "type": "object",
@@ -971,7 +985,12 @@ TOOLS: list[Tool] = [
                     "type": "string",
                     "enum": ["banco", "cartao", "tesouro", "tudo"],
                 },
-                "dias": {"type": "integer", "description": "Janela em dias (default 30)"},
+                "dias": {"type": "integer", "description": "Janela em dias (default 30; aplicável a banco/tesouro e a cartão apenas quando escopo_cartao='ultimos_dias')"},
+                "escopo_cartao": {
+                    "type": "string",
+                    "enum": ["fatura_aberta", "ultimos_dias"],
+                    "description": "Como filtrar cartão. Default 'fatura_aberta' (mês corrente de fatura). 'ultimos_dias' só quando o usuário pedir histórico explicitamente.",
+                },
             },
             "required": ["modulo"],
         },

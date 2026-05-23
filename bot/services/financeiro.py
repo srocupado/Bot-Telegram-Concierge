@@ -16,7 +16,7 @@ import json
 import logging
 import secrets
 import string
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -448,6 +448,80 @@ async def apagar_lancamento(
     )
 
 
+def _get_card_closing_day(state: dict) -> int | None:
+    """Procura o dia de fechamento da fatura no settings do state.
+    Suporta vários nomes (frontend ainda pode mudar). Retorna 1-31 ou None."""
+    settings = state.get("settings") or {}
+    for key in (
+        "cardClosingDay", "closingDay", "card_closing_day",
+        "diaFechamento", "dia_fechamento", "fechamentoCartao",
+    ):
+        v = settings.get(key)
+        if isinstance(v, (int, float)) and 1 <= int(v) <= 31:
+            return int(v)
+    return None
+
+
+def _open_invoice_range(state: dict, today: date) -> tuple[date, date, str]:
+    """Calcula intervalo [início, fim] da fatura em aberto, mais um label.
+    Compras com date no intervalo fazem parte da fatura corrente.
+
+    Com closing day D:
+      - se today.day > D: fatura em aberto vai de (D+1 do mês atual) até
+        (D do mês seguinte). today está dentro.
+      - se today.day <= D: ainda dentro da fatura aberta do mês anterior,
+        que vai de (D+1 do mês anterior) até (D do mês atual).
+    Sem closing day configurado: mês calendário (dia 1 → último dia).
+    """
+    from calendar import monthrange
+
+    closing = _get_card_closing_day(state)
+    if closing is None:
+        first = today.replace(day=1)
+        last_day = monthrange(today.year, today.month)[1]
+        last = today.replace(day=last_day)
+        return first, last, f"fatura em aberto ({first.strftime('%d/%m')} → {last.strftime('%d/%m')}, mês calendário)"
+
+    if today.day > closing:
+        # fatura abriu neste mês, fecha no próximo
+        start_year, start_month = today.year, today.month
+    else:
+        # fatura abriu no mês passado, fecha neste
+        if today.month == 1:
+            start_year, start_month = today.year - 1, 12
+        else:
+            start_year, start_month = today.year, today.month - 1
+
+    last_day_start_month = monthrange(start_year, start_month)[1]
+    start_day = min(closing + 1, last_day_start_month)
+    start = date(start_year, start_month, start_day)
+
+    if start_month == 12:
+        end_year, end_month = start_year + 1, 1
+    else:
+        end_year, end_month = start_year, start_month + 1
+    last_day_end_month = monthrange(end_year, end_month)[1]
+    end_day = min(closing, last_day_end_month)
+    end = date(end_year, end_month, end_day)
+
+    return start, end, (
+        f"fatura em aberto ({start.strftime('%d/%m')} → "
+        f"{end.strftime('%d/%m')}, fechamento dia {closing})"
+    )
+
+
+def _filter_by_range(arr: list[dict], start: date, end: date) -> list[dict]:
+    out = []
+    for it in arr:
+        try:
+            d = datetime.fromisoformat(it.get("date", "")).date()
+        except ValueError:
+            continue
+        if start <= d <= end:
+            out.append(it)
+    return out
+
+
 def _filter_by_days(arr: list[dict], dias: int, today_iso: str) -> list[dict]:
     """Itens com `date` >= (today - dias)."""
     try:
@@ -472,6 +546,7 @@ async def consultar_lancamentos(
     modulo: str,
     dias: int,
     today_iso: str,
+    escopo_cartao: str = "fatura_aberta",
 ) -> str:
     uid = _require_uid(user)
     db = await _get_db(session)
@@ -506,13 +581,26 @@ async def consultar_lancamentos(
             parts.append("\n".join(lines))
 
     if mod in ("cartao", "cartão", "tudo"):
-        card = _filter_by_days(state.get("cardEntries") or [], dias, today_iso)
-        if not card:
-            parts.append(f"cartão ({dias}d): sem compras")
+        try:
+            today_d = datetime.fromisoformat(today_iso).date()
+        except ValueError:
+            today_d = datetime.utcnow().date()
+
+        all_card = state.get("cardEntries") or []
+        if escopo_cartao == "ultimos_dias":
+            card = _filter_by_days(all_card, dias, today_iso)
+            header = f"cartão de crédito (últimos {dias}d)"
         else:
-            lines = [f"cartão ({dias}d):"]
+            start, end, range_label = _open_invoice_range(state, today_d)
+            card = _filter_by_range(all_card, start, end)
+            header = f"cartão de crédito — {range_label}"
+
+        if not card:
+            parts.append(f"{header}: sem compras")
+        else:
+            lines = [f"{header}:"]
             total = 0.0
-            for it in card[-15:]:
+            for it in card[-30:]:
                 amt = float(it.get("amount") or 0)
                 total += amt
                 par = it.get("installments") or 1
@@ -522,7 +610,7 @@ async def consultar_lancamentos(
                     f"  [{it.get('id', '?')}|{tag}] {it.get('date', '?')} -{amt:.2f} "
                     f"{it.get('desc', '?')}{par_label} [{it.get('category', '?')}]"
                 )
-            lines.append(f"  total: -{total:.2f}")
+            lines.append(f"  total: -R$ {total:.2f} ({len(card)} compra(s))")
             parts.append("\n".join(lines))
 
     if mod in ("tesouro", "tudo"):
