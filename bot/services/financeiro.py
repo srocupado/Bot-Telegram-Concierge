@@ -474,24 +474,58 @@ def _bill_month_for_date(purchase_date: date, closing_day: int | None) -> tuple[
     return purchase_date.year, purchase_date.month
 
 
-def _entry_installment_in_bill(
+def _entry_in_bill(
     entry: dict, target_year: int, target_month: int, closing_day: int | None,
-) -> int | None:
-    """Replica getCardBillForMonth do frontend. Retorna o número da parcela
-    (1..N) que aparece na fatura target, ou None se a entry não entra nessa
-    fatura."""
+) -> dict | None:
+    """Decide se uma cardEntry aparece na fatura (target_year, target_month).
+    Replica getCardBillForMonth do frontend, cobrindo:
+    - compras à vista (installments=1)
+    - parcelas (installments>1) — parcela N aparece no mês de início + (N-1)
+    - recorrentes (recurring=true) — aparecem em todo mês a partir do início,
+      respeitando recurringEndMonth e recurringExcludedMonths
+
+    Retorna dict com 'kind' ('parcela' | 'recorrente' | 'avista'), 'value'
+    (valor exibido na fatura), e campos extras dependendo do kind. None
+    se a entry não entra nessa fatura.
+    """
     try:
         pd = datetime.fromisoformat((entry.get("date") or "").replace(" ", "T")).date()
     except ValueError:
         return None
+
+    target_key = f"{target_year:04d}-{target_month:02d}"
+    start_year, start_month = _bill_month_for_date(pd, closing_day)
+    start_key = f"{start_year:04d}-{start_month:02d}"
+    if target_key < start_key:
+        return None  # fatura é anterior à compra
+
+    if entry.get("recurring"):
+        end = entry.get("recurringEndMonth")
+        if end and str(end) and target_key > str(end):
+            return None
+        excluded = entry.get("recurringExcludedMonths") or []
+        if target_key in excluded:
+            return None
+        amt = float(entry.get("amount") or 0)
+        return {"kind": "recorrente", "value": amt}
+
     installments = int(entry.get("installments") or 1)
     base_inst = int(entry.get("currentInstallment") or 1)
-    start_year, start_month = _bill_month_for_date(pd, closing_day)
     months_diff = (target_year - start_year) * 12 + (target_month - start_month)
     current = base_inst + months_diff
-    if 1 <= current <= installments:
-        return current
-    return None
+    if not (1 <= current <= installments):
+        return None
+
+    amt_total = float(entry.get("amount") or 0)
+    value = amt_total / installments if installments else amt_total
+    if installments > 1:
+        return {
+            "kind": "parcela",
+            "num": current,
+            "total": installments,
+            "value": value,
+        }
+    return {"kind": "avista", "value": value}
 
 
 def _open_invoice_range(state: dict, today: date) -> tuple[date, date, str]:
@@ -622,20 +656,26 @@ async def consultar_lancamentos(
         closing = _get_card_closing_day(state)
 
         if escopo_cartao == "ultimos_dias":
-            card_items = [
-                (it, None) for it in _filter_by_days(all_card, dias, today_iso)
-            ]
+            card_items: list[tuple[dict, dict]] = []
+            for it in _filter_by_days(all_card, dias, today_iso):
+                amt_total = float(it.get("amount") or 0)
+                installments = int(it.get("installments") or 1)
+                value = amt_total / installments if installments > 1 else amt_total
+                kind = "recorrente" if it.get("recurring") else (
+                    "parcela" if installments > 1 else "avista"
+                )
+                card_items.append((it, {"kind": kind, "value": value}))
             header = f"cartão de crédito (últimos {dias}d, pela data de compra)"
         else:
             # Fatura em aberto = a que está acumulando (fechará na próxima data
             # de fechamento). Replica getCardBillForMonth do frontend.
             target_year, target_month = _bill_month_for_date(today_d, closing)
-            start, end, range_label = _open_invoice_range(state, today_d)
+            _, _, range_label = _open_invoice_range(state, today_d)
             card_items = []
             for it in all_card:
-                inst = _entry_installment_in_bill(it, target_year, target_month, closing)
-                if inst is not None:
-                    card_items.append((it, inst))
+                info = _entry_in_bill(it, target_year, target_month, closing)
+                if info is not None:
+                    card_items.append((it, info))
             header = (
                 f"cartão de crédito — {range_label}, fecha em "
                 f"{target_month:02d}/{target_year}"
@@ -646,27 +686,25 @@ async def consultar_lancamentos(
         else:
             lines = [f"{header}:"]
             total = 0.0
-            for it, inst in card_items[-30:]:
-                amt_total = float(it.get("amount") or 0)
-                installments = int(it.get("installments") or 1)
-                # Frontend: valor exibido por parcela = amount / installments.
-                installment_value = amt_total / installments if installments else amt_total
-                if installments > 1 and inst is not None:
-                    par_label = (
-                        f" ({inst}/{installments} de R$ {installment_value:.2f})"
-                    )
-                elif installments > 1:
-                    par_label = f" ({installments}x)"
+            for it, info in card_items[-30:]:
+                value = float(info.get("value") or 0)
+                kind = info.get("kind")
+                if kind == "parcela":
+                    par_label = f" ({info['num']}/{info['total']})"
+                elif kind == "recorrente":
+                    par_label = " (recorrente)"
                 else:
                     par_label = ""
-                total += installment_value
+                total += value
                 tag = "bot" if it.get("source") == "bot" else "web"
                 lines.append(
                     f"  [{it.get('id', '?')}|{tag}] {it.get('date', '?')} "
-                    f"-R$ {installment_value:.2f} "
+                    f"-R$ {value:.2f} "
                     f"{it.get('desc', '?')}{par_label} [{it.get('category', '?')}]"
                 )
-            lines.append(f"  total da fatura: -R$ {total:.2f} ({len(card_items)} item(ns))")
+            lines.append(
+                f"  total da fatura: -R$ {total:.2f} ({len(card_items)} item(ns))"
+            )
             parts.append("\n".join(lines))
 
     if mod in ("tesouro", "tudo"):
