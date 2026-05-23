@@ -919,17 +919,27 @@ TOOLS: list[Tool] = [
             "Registra uma compra no cartão de crédito do gerenciador-"
             "financeiro. Use quando o usuário falar 'no cartão', 'cartão de "
             "crédito', 'parcelei', 'comprei no crédito'. Se for débito/PIX/"
-            "boleto, use lancar_movimento_banco. Para parcelado, passe "
-            "'parcelas' (ex: '10x de 200' → valor=200, parcelas=10 — o "
-            "frontend cuida das próximas faturas). Data = data da compra "
-            "(que vira mês da fatura). CHAME UMA VEZ por pedido."
+            "boleto, use lancar_movimento_banco.\n"
+            "IMPORTANTE — 'valor' é SEMPRE o VALOR TOTAL DA COMPRA, "
+            "nunca o valor da parcela:\n"
+            "  - 'comprei celular 2400 em 12x' → valor=2400, parcelas=12 "
+            "(NÃO valor=200).\n"
+            "  - '10x de 200' → valor=2000, parcelas=10 (multiplique).\n"
+            "  - 'fone 350 à vista' → valor=350, parcelas=1.\n"
+            "O frontend calcula o valor de cada parcela como "
+            "amount/installments na hora de exibir.\n"
+            "Data = data da compra (frontend usa isso pra decidir em qual "
+            "fatura cair). CHAME UMA VEZ por pedido."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "desc": {"type": "string"},
-                "valor": {"type": "number", "description": "Valor da parcela (ou total à vista)"},
-                "data_iso": {"type": "string", "description": "Data ISO 'YYYY-MM-DD' (default: hoje)"},
+                "valor": {
+                    "type": "number",
+                    "description": "VALOR TOTAL da compra em reais (sempre o total, NUNCA da parcela)",
+                },
+                "data_iso": {"type": "string", "description": "Data ISO 'YYYY-MM-DD' da COMPRA (default: hoje)"},
                 "categoria": {"type": "string", "description": "Id de categoria (default 'outros')"},
                 "parcelas": {"type": "integer", "description": "Número de parcelas (default 1)"},
             },

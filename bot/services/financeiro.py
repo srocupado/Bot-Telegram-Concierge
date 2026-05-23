@@ -647,21 +647,26 @@ async def consultar_lancamentos(
             lines = [f"{header}:"]
             total = 0.0
             for it, inst in card_items[-30:]:
-                amt = float(it.get("amount") or 0)
+                amt_total = float(it.get("amount") or 0)
                 installments = int(it.get("installments") or 1)
+                # Frontend: valor exibido por parcela = amount / installments.
+                installment_value = amt_total / installments if installments else amt_total
                 if installments > 1 and inst is not None:
-                    par_label = f" ({inst}/{installments})"
+                    par_label = (
+                        f" ({inst}/{installments} de R$ {installment_value:.2f})"
+                    )
                 elif installments > 1:
                     par_label = f" ({installments}x)"
                 else:
                     par_label = ""
-                total += amt
+                total += installment_value
                 tag = "bot" if it.get("source") == "bot" else "web"
                 lines.append(
-                    f"  [{it.get('id', '?')}|{tag}] {it.get('date', '?')} -{amt:.2f} "
+                    f"  [{it.get('id', '?')}|{tag}] {it.get('date', '?')} "
+                    f"-R$ {installment_value:.2f} "
                     f"{it.get('desc', '?')}{par_label} [{it.get('category', '?')}]"
                 )
-            lines.append(f"  total: -R$ {total:.2f} ({len(card_items)} item(ns))")
+            lines.append(f"  total da fatura: -R$ {total:.2f} ({len(card_items)} item(ns))")
             parts.append("\n".join(lines))
 
     if mod in ("tesouro", "tudo"):
