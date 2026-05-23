@@ -167,3 +167,18 @@ async def purge_old_weeks(session: AsyncSession, tz_name: str) -> int:
     )
     await session.commit()
     return result.rowcount or 0
+
+
+async def delete_workouts_on_date(
+    session: AsyncSession, user_id: int, workout_date: date,
+) -> int:
+    """Apaga TODAS as entradas do usuário em um dia específico. Retorna a
+    quantidade removida (0 se não havia)."""
+    result = await session.execute(
+        delete(WorkoutLog).where(
+            WorkoutLog.user_id == user_id,
+            WorkoutLog.date == workout_date,
+        )
+    )
+    await session.commit()
+    return result.rowcount or 0

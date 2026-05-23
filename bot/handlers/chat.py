@@ -28,7 +28,7 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "- criar_lembrete, criar_lembrete_pagamento, criar_lembrete_recorrente, listar_lembretes, apagar_lembrete, agendar_comando\n"
     "- consultar_clima, consultar_transito\n"
     "- lembrar_fato, recuperar_fato, listar_fatos, esquecer_fato\n"
-    "- registrar_treino, consultar_treinos\n\n"
+    "- registrar_treino, apagar_treino_dia, consultar_treinos\n\n"
     "Quando rodando no Anthropic, você tem busca web nativa (web_search). "
     "Use SEMPRE que o usuário pedir notícias, eventos atuais, cotações, "
     "resultados ou informação que dependa de dados recentes. Cite fontes "
@@ -84,7 +84,10 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "data_iso. Cardio exige cardio_minutos.\n"
     "- Quando perguntar sobre rotina/semana/malhação/academia ('como tá "
     "minha semana', 'quantos dias treinei'), chame consultar_treinos (sem "
-    "args — sempre retorna a semana atual; histórico zera no domingo).\n\n"
+    "args — sempre retorna a semana atual; histórico zera no domingo).\n"
+    "- Quando errar lançamento ('apaga o treino de hoje', 'errei, não "
+    "treinei isso ontem'), chame apagar_treino_dia. Default hoje; passe "
+    "data_iso pra dias específicos.\n\n"
     "Se a intenção do usuário for ambígua, pergunte antes de agir."
 )
 

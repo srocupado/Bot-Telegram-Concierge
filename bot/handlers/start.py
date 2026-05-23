@@ -48,6 +48,8 @@ HELP_TEXT = (
     "• Categorias: <code>peito</code>, <code>costas</code>, <code>pernas</code>, <code>cardio</code>. "
     "Subdivisões (supino/panturrilha/esteira) são normalizadas; ombros/braço/abdomen não entram.\n"
     "• <i>\"como tá minha semana de academia?\"</i> → resumo dom → sab.\n"
+    "• <i>\"apaga o treino de hoje\"</i> / <i>\"errei, não treinei isso ontem\"</i> "
+    "→ limpa os registros do dia pra você regravar.\n"
     "• Histórico zera todo domingo — só a semana corrente fica.\n\n"
     "<b>Imagens</b>:\n"
     "• Mande uma foto (com ou sem caption) — o bot analisa via LLM agente. "

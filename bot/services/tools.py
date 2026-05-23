@@ -29,6 +29,7 @@ from bot.services.user_facts import (
 )
 from bot.services.workouts import (
     CANONICAL_GROUPS,
+    delete_workouts_on_date,
     format_summary,
     log_workout,
     normalize_groups,
@@ -321,6 +322,23 @@ async def _h_registrar_treino(args: dict, ctx: ToolContext) -> str:
 async def _h_consultar_treinos(_args: dict, ctx: ToolContext) -> str:
     summary = await summary_current_week(ctx.session, ctx.user.id, ctx.tz)
     return "ok: " + format_summary(summary)
+
+
+async def _h_apagar_treino_dia(args: dict, ctx: ToolContext) -> str:
+    tz = ZoneInfo(ctx.tz)
+    data_iso = (args.get("data_iso") or "").strip()
+    if data_iso:
+        try:
+            target = datetime.fromisoformat(data_iso.replace(" ", "T")).date()
+        except ValueError:
+            return f"erro: 'data_iso' inválido ({data_iso!r}). Use 'YYYY-MM-DD'."
+    else:
+        target = datetime.now(tz).date()
+    n = await delete_workouts_on_date(ctx.session, ctx.user.id, target)
+    if n == 0:
+        return f"ok: nenhum treino registrado em {target.strftime('%d/%m')}"
+    plural = "treino" if n == 1 else "treinos"
+    return f"ok: {n} {plural} apagado(s) em {target.strftime('%d/%m')}"
 
 
 async def _h_consultar_clima(args: dict, ctx: ToolContext) -> str:
@@ -644,6 +662,26 @@ TOOLS: list[Tool] = [
         ),
         parameters={"type": "object", "properties": {}},
         handler=_h_consultar_treinos,
+    ),
+    Tool(
+        name="apagar_treino_dia",
+        description=(
+            "Apaga TODOS os registros de treino de um dia (corrige erro de "
+            "lançamento). Use quando o usuário disser 'apaga o treino de "
+            "hoje/ontem/X', 'errei o treino', 'na verdade não treinei isso'. "
+            "Default: hoje. Pra dia específico, passe data_iso usando a "
+            "Data/hora atual do system prompt como referência."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "data_iso": {
+                    "type": "string",
+                    "description": "Data ISO 'YYYY-MM-DD' (default: hoje)",
+                },
+            },
+        },
+        handler=_h_apagar_treino_dia,
     ),
     Tool(
         name="consultar_clima",
