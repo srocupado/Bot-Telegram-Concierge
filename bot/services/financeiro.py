@@ -172,9 +172,14 @@ def _append_in_transaction(db, uid: str, array_name: str, entry: dict) -> None:
     _txn(db.transaction())
 
 
+class NotOwnedError(FinanceiroError):
+    """Entrada existe mas não foi criada pelo bot (source != 'bot')."""
+
+
 def _delete_from_state_array(db, uid: str, array_name: str, entry_id: str) -> dict | None:
-    """Remove entrada por id de state[array_name]. Retorna o item removido
-    (ou None se não achou). Bloqueante."""
+    """Remove entrada por id de state[array_name] SOMENTE se source=='bot'.
+    Retorna o item removido, None se id não existe, ou levanta
+    NotOwnedError se a entrada foi criada por outro cliente."""
     from firebase_admin import firestore as _fs
 
     ref = db.collection("users").document(uid)
@@ -185,22 +190,25 @@ def _delete_from_state_array(db, uid: str, array_name: str, entry_id: str) -> di
         data = snap.to_dict() if snap.exists else {}
         state = dict(data.get("state") or {})
         arr = list(state.get(array_name) or [])
-        removed = None
-        new_arr = []
-        for it in arr:
-            if removed is None and it.get("id") == entry_id:
-                removed = it
-                continue
-            new_arr.append(it)
-        if removed is None:
+        target_idx = next(
+            (i for i, it in enumerate(arr) if it.get("id") == entry_id),
+            None,
+        )
+        if target_idx is None:
             return None
+        target = arr[target_idx]
+        if target.get("source") != "bot":
+            raise NotOwnedError(
+                f"lançamento {entry_id} não foi criado pelo bot — apague pelo app web."
+            )
+        new_arr = arr[:target_idx] + arr[target_idx + 1:]
         state[array_name] = new_arr
         transaction.set(
             ref,
             {"state": state, "updatedAt": _fs.SERVER_TIMESTAMP},
             merge=True,
         )
-        return removed
+        return target
 
     return _txn(db.transaction())
 
@@ -220,24 +228,28 @@ def _delete_treasury_contribution(db, uid: str, contribution_id: str) -> dict | 
         holdings = list(state.get("treasuryHoldings") or [])
         for i, h in enumerate(holdings):
             contribs = list(h.get("contributions") or [])
-            new_contribs = []
-            removed = None
-            for c in contribs:
-                if removed is None and c.get("id") == contribution_id:
-                    removed = c
-                    continue
-                new_contribs.append(c)
-            if removed is not None:
-                holding = dict(h)
-                holding["contributions"] = new_contribs
-                holdings[i] = holding
-                state["treasuryHoldings"] = holdings
-                transaction.set(
-                    ref,
-                    {"state": state, "updatedAt": _fs.SERVER_TIMESTAMP},
-                    merge=True,
+            target_idx = next(
+                (j for j, c in enumerate(contribs) if c.get("id") == contribution_id),
+                None,
+            )
+            if target_idx is None:
+                continue
+            target = contribs[target_idx]
+            if target.get("source") != "bot":
+                raise NotOwnedError(
+                    f"aporte {contribution_id} não foi criado pelo bot — apague pelo app web."
                 )
-                return {"titulo": h.get("name", "?"), "contribution": removed}
+            new_contribs = contribs[:target_idx] + contribs[target_idx + 1:]
+            holding = dict(h)
+            holding["contributions"] = new_contribs
+            holdings[i] = holding
+            state["treasuryHoldings"] = holdings
+            transaction.set(
+                ref,
+                {"state": state, "updatedAt": _fs.SERVER_TIMESTAMP},
+                merge=True,
+            )
+            return {"titulo": h.get("name", "?"), "contribution": target}
         return None
 
     return _txn(db.transaction())
@@ -341,6 +353,7 @@ async def lancar_movimento_banco(
         "category": (categoria or "outros").strip() or "outros",
         "amount": amount,
         "type": type_str,
+        "source": "bot",
     }
     if recorrente:
         entry["recurring"] = True
@@ -369,6 +382,7 @@ async def lancar_despesa_cartao(
         "amount": abs(float(valor)),
         "installments": parcelas,
         "currentInstallment": 1,
+        "source": "bot",
     }
     await _run_blocking(_append_in_transaction, db, uid, "cardEntries", entry)
     return entry
@@ -388,6 +402,7 @@ async def registrar_aporte_tesouro(
         "id": _gen_id(),
         "date": data_iso,
         "amount": abs(float(valor)),
+        "source": "bot",
     }
     if taxa is not None:
         contrib["rate"] = float(taxa)
@@ -482,8 +497,9 @@ async def consultar_lancamentos(
                 amt = float(it.get("amount") or 0)
                 saldo += amt
                 sign = "+" if amt >= 0 else ""
+                tag = "bot" if it.get("source") == "bot" else "web"
                 lines.append(
-                    f"  [{it.get('id', '?')}] {it.get('date', '?')} {sign}{amt:.2f} "
+                    f"  [{it.get('id', '?')}|{tag}] {it.get('date', '?')} {sign}{amt:.2f} "
                     f"{it.get('desc', '?')} [{it.get('category', '?')}]"
                 )
             lines.append(f"  saldo do período: {saldo:+.2f}")
@@ -501,8 +517,9 @@ async def consultar_lancamentos(
                 total += amt
                 par = it.get("installments") or 1
                 par_label = f" ({par}x)" if par > 1 else ""
+                tag = "bot" if it.get("source") == "bot" else "web"
                 lines.append(
-                    f"  [{it.get('id', '?')}] {it.get('date', '?')} -{amt:.2f} "
+                    f"  [{it.get('id', '?')}|{tag}] {it.get('date', '?')} -{amt:.2f} "
                     f"{it.get('desc', '?')}{par_label} [{it.get('category', '?')}]"
                 )
             lines.append(f"  total: -{total:.2f}")
@@ -528,8 +545,9 @@ async def consultar_lancamentos(
                         f"      últimos {dias}d: +R$ {recent_amount:.2f} em {len(recent)} aporte(s):"
                     )
                     for c in recent[-10:]:
+                        tag = "bot" if c.get("source") == "bot" else "web"
                         lines.append(
-                            f"        [{c.get('id', '?')}] {c.get('date', '?')} "
+                            f"        [{c.get('id', '?')}|{tag}] {c.get('date', '?')} "
                             f"+R$ {float(c.get('amount') or 0):.2f}"
                         )
             parts.append("\n".join(lines))
