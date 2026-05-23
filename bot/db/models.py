@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from bot.db.base import Base
@@ -40,6 +40,10 @@ class User(Base):
     last_congress_digest_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     congress_hour: Mapped[int | None] = mapped_column(Integer, nullable=True)
     congress_minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Integração gerenciador-financeiro (Firestore)
+    firebase_uid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    awaiting_firebase_json_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -119,6 +123,20 @@ class Reminder(Base):
     recurrence: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     user: Mapped[User] = relationship(back_populates="reminders")
+
+
+class KVSetting(Base):
+    """Configurações globais singleton (chave/valor). Usado pra guardar
+    o JSON do service account do Firebase, etc. Não é por-usuário porque
+    a service account é credencial do projeto inteiro."""
+
+    __tablename__ = "kv_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
 
 
 class WorkoutLog(Base):

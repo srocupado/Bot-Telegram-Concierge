@@ -60,6 +60,16 @@ async def _ensure_columns(conn) -> None:
             "ALTER TABLE users ADD COLUMN vision_provider VARCHAR(32)"
         )
         logger.info("migrated: added users.vision_provider")
+    if "firebase_uid" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE users ADD COLUMN firebase_uid VARCHAR(64)"
+        )
+        logger.info("migrated: added users.firebase_uid")
+    if "awaiting_firebase_json_until" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE users ADD COLUMN awaiting_firebase_json_until DATETIME"
+        )
+        logger.info("migrated: added users.awaiting_firebase_json_until")
 
     rem_cols = await conn.exec_driver_sql("PRAGMA table_info(reminders)")
     cols = {row[1] for row in rem_cols.fetchall()}

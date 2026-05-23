@@ -27,6 +27,14 @@ from bot.services.user_facts import (
     list_facts,
     upsert_fact,
 )
+from bot.services.financeiro import (
+    FinanceiroError,
+    NotConfiguredError,
+    consultar_lancamentos,
+    lancar_despesa_cartao,
+    lancar_movimento_banco,
+    registrar_aporte_tesouro,
+)
 from bot.services.workouts import (
     CANONICAL_GROUPS,
     delete_workouts_on_date,
@@ -351,6 +359,134 @@ async def _h_consultar_clima(args: dict, ctx: ToolContext) -> str:
     except WeatherError as e:
         return f"erro: {e}"
     return "ok: " + format_weather_line(w)
+
+
+def _resolve_data_iso(args: dict, tz_name: str) -> str:
+    raw = (args.get("data_iso") or "").strip()
+    if raw:
+        try:
+            return datetime.fromisoformat(raw.replace(" ", "T")).date().isoformat()
+        except ValueError:
+            return ""  # sinaliza erro pro chamador
+    return datetime.now(ZoneInfo(tz_name)).date().isoformat()
+
+
+async def _h_lancar_movimento_banco(args: dict, ctx: ToolContext) -> str:
+    desc = (args.get("desc") or "").strip()
+    valor = args.get("valor")
+    tipo = (args.get("tipo") or "").strip()
+    if not desc or valor is None or not tipo:
+        return "erro: 'desc', 'valor' e 'tipo' são obrigatórios"
+    try:
+        valor_f = float(valor)
+    except (TypeError, ValueError):
+        return "erro: 'valor' deve ser número (em reais)"
+    data_iso = _resolve_data_iso(args, ctx.tz)
+    if not data_iso:
+        return f"erro: 'data_iso' inválido ({args.get('data_iso')!r}). Use 'YYYY-MM-DD'."
+    categoria = (args.get("categoria") or "outros").strip() or "outros"
+    recorrente = bool(args.get("recorrente") or False)
+    try:
+        entry = await lancar_movimento_banco(
+            ctx.session, ctx.user, desc, valor_f, tipo, data_iso,
+            categoria=categoria, recorrente=recorrente,
+        )
+    except NotConfiguredError as e:
+        return f"erro: {e}"
+    except FinanceiroError as e:
+        return f"erro: {e}"
+    sign = "+" if entry["amount"] >= 0 else ""
+    return (
+        f"ok: lançamento {entry['id']} no banco — "
+        f"{sign}R$ {entry['amount']:.2f} {entry['desc']} "
+        f"em {entry['date']} [{entry['category']}]"
+    )
+
+
+async def _h_lancar_despesa_cartao(args: dict, ctx: ToolContext) -> str:
+    desc = (args.get("desc") or "").strip()
+    valor = args.get("valor")
+    if not desc or valor is None:
+        return "erro: 'desc' e 'valor' são obrigatórios"
+    try:
+        valor_f = float(valor)
+    except (TypeError, ValueError):
+        return "erro: 'valor' deve ser número (em reais)"
+    data_iso = _resolve_data_iso(args, ctx.tz)
+    if not data_iso:
+        return f"erro: 'data_iso' inválido ({args.get('data_iso')!r}). Use 'YYYY-MM-DD'."
+    categoria = (args.get("categoria") or "outros").strip() or "outros"
+    parcelas = args.get("parcelas") or 1
+    try:
+        parcelas = int(parcelas)
+    except (TypeError, ValueError):
+        return "erro: 'parcelas' deve ser inteiro"
+    try:
+        entry = await lancar_despesa_cartao(
+            ctx.session, ctx.user, desc, valor_f, data_iso,
+            categoria=categoria, parcelas=parcelas,
+        )
+    except NotConfiguredError as e:
+        return f"erro: {e}"
+    except FinanceiroError as e:
+        return f"erro: {e}"
+    par_label = f" em {parcelas}x" if parcelas > 1 else ""
+    return (
+        f"ok: compra {entry['id']} no cartão — -R$ {entry['amount']:.2f} "
+        f"{entry['desc']}{par_label} em {entry['date']} [{entry['category']}]"
+    )
+
+
+async def _h_registrar_aporte_tesouro(args: dict, ctx: ToolContext) -> str:
+    titulo = (args.get("titulo") or "").strip()
+    valor = args.get("valor")
+    if not titulo or valor is None:
+        return "erro: 'titulo' e 'valor' são obrigatórios"
+    try:
+        valor_f = float(valor)
+    except (TypeError, ValueError):
+        return "erro: 'valor' deve ser número"
+    data_iso = _resolve_data_iso(args, ctx.tz)
+    if not data_iso:
+        return f"erro: 'data_iso' inválido ({args.get('data_iso')!r}). Use 'YYYY-MM-DD'."
+    taxa = args.get("taxa")
+    if taxa is not None:
+        try:
+            taxa = float(taxa)
+        except (TypeError, ValueError):
+            return "erro: 'taxa' deve ser número"
+    try:
+        res = await registrar_aporte_tesouro(
+            ctx.session, ctx.user, titulo, valor_f, data_iso, taxa=taxa,
+        )
+    except NotConfiguredError as e:
+        return f"erro: {e}"
+    except FinanceiroError as e:
+        return f"erro: {e}"
+    taxa_label = f" @ {taxa}%" if taxa is not None else ""
+    return (
+        f"ok: aporte de R$ {valor_f:.2f}{taxa_label} no '{res['titulo']}' "
+        f"em {data_iso}"
+    )
+
+
+async def _h_consultar_lancamentos(args: dict, ctx: ToolContext) -> str:
+    modulo = (args.get("modulo") or "tudo").strip().lower()
+    dias = args.get("dias") or 30
+    try:
+        dias = int(dias)
+    except (TypeError, ValueError):
+        return "erro: 'dias' deve ser inteiro"
+    today_iso = datetime.now(ZoneInfo(ctx.tz)).date().isoformat()
+    try:
+        out = await consultar_lancamentos(
+            ctx.session, ctx.user, modulo, dias, today_iso,
+        )
+    except NotConfiguredError as e:
+        return f"erro: {e}"
+    except FinanceiroError as e:
+        return f"erro: {e}"
+    return "ok:\n" + out
 
 
 async def _h_consultar_transito(args: dict, ctx: ToolContext) -> str:
@@ -721,6 +857,106 @@ TOOLS: list[Tool] = [
             "required": ["origem", "destino"],
         },
         handler=_h_consultar_transito,
+    ),
+    Tool(
+        name="lancar_movimento_banco",
+        description=(
+            "Registra um lançamento na conta bancária do gerenciador-financeiro. "
+            "Use quando o usuário falar de pagamento de conta, recebimento, "
+            "transferência, depósito, débito automático etc. (que NÃO seja "
+            "cartão de crédito). 'tipo': use 'credito' para entradas "
+            "('recebi', 'salário', 'pix de fulano') e 'debito' para saídas "
+            "('paguei', 'gastei', 'conta de luz'). Normalize valores em PT-BR "
+            "(ex: 'R$ 1.250,50' → 1250.50, 'mil e duzentos' → 1200). "
+            "Categoria default 'outros' se não inferir. Data: usa Data/hora "
+            "atual pra resolver 'hoje', 'ontem', 'dia 15'. CHAME UMA VEZ "
+            "por pedido — não duplique."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "desc": {"type": "string", "description": "Descrição curta (ex: 'Mercado', 'Salário')"},
+                "valor": {"type": "number", "description": "Valor em reais (sempre positivo; tipo define o sinal)"},
+                "tipo": {
+                    "type": "string",
+                    "enum": ["credito", "debito", "credit", "debit", "receita", "despesa"],
+                    "description": "credito/receita = entrada; debito/despesa = saída",
+                },
+                "data_iso": {"type": "string", "description": "Data ISO 'YYYY-MM-DD' (default: hoje na tz do usuário)"},
+                "categoria": {"type": "string", "description": "Id de categoria (default 'outros')"},
+                "recorrente": {"type": "boolean", "description": "true se é despesa fixa mensal"},
+            },
+            "required": ["desc", "valor", "tipo"],
+        },
+        handler=_h_lancar_movimento_banco,
+    ),
+    Tool(
+        name="lancar_despesa_cartao",
+        description=(
+            "Registra uma compra no cartão de crédito do gerenciador-"
+            "financeiro. Use quando o usuário falar 'no cartão', 'cartão de "
+            "crédito', 'parcelei', 'comprei no crédito'. Se for débito/PIX/"
+            "boleto, use lancar_movimento_banco. Para parcelado, passe "
+            "'parcelas' (ex: '10x de 200' → valor=200, parcelas=10 — o "
+            "frontend cuida das próximas faturas). Data = data da compra "
+            "(que vira mês da fatura). CHAME UMA VEZ por pedido."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "desc": {"type": "string"},
+                "valor": {"type": "number", "description": "Valor da parcela (ou total à vista)"},
+                "data_iso": {"type": "string", "description": "Data ISO 'YYYY-MM-DD' (default: hoje)"},
+                "categoria": {"type": "string", "description": "Id de categoria (default 'outros')"},
+                "parcelas": {"type": "integer", "description": "Número de parcelas (default 1)"},
+            },
+            "required": ["desc", "valor"],
+        },
+        handler=_h_lancar_despesa_cartao,
+    ),
+    Tool(
+        name="registrar_aporte_tesouro",
+        description=(
+            "Registra um aporte (contribuição) em um título de Tesouro Direto "
+            "já existente. NÃO cria título novo — se o usuário pedir aporte "
+            "em algo não cadastrado, a tool retorna erro listando os títulos "
+            "disponíveis; pra criar título precisa ser feito no app web. "
+            "Use quando ouvir 'aportei X no Tesouro Y', 'comprei X de IPCA+', "
+            "etc. 'titulo' pode ser nome parcial (match case-insensitive)."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "titulo": {"type": "string", "description": "Nome (ou trecho) do título já cadastrado"},
+                "valor": {"type": "number", "description": "Valor aportado em reais"},
+                "data_iso": {"type": "string", "description": "Data ISO 'YYYY-MM-DD' (default: hoje)"},
+                "taxa": {"type": "number", "description": "Taxa específica do aporte (% a.a.), se mencionada"},
+            },
+            "required": ["titulo", "valor"],
+        },
+        handler=_h_registrar_aporte_tesouro,
+    ),
+    Tool(
+        name="consultar_lancamentos",
+        description=(
+            "Consulta lançamentos do gerenciador-financeiro nos últimos N "
+            "dias. Use quando o usuário perguntar 'como tá meu cartão', "
+            "'meus gastos da semana', 'quanto recebi esse mês', 'meus "
+            "aportes no tesouro'. 'modulo' = 'banco' (conta), 'cartao' "
+            "(crédito), 'tesouro' (títulos) ou 'tudo'. Default dias=30."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "modulo": {
+                    "type": "string",
+                    "enum": ["banco", "cartao", "tesouro", "tudo"],
+                },
+                "dias": {"type": "integer", "description": "Janela em dias (default 30)"},
+            },
+            "required": ["modulo"],
+        },
+        handler=_h_consultar_lancamentos,
     ),
 ]
 
