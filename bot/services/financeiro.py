@@ -462,6 +462,38 @@ def _get_card_closing_day(state: dict) -> int | None:
     return None
 
 
+def _bill_month_for_date(purchase_date: date, closing_day: int | None) -> tuple[int, int]:
+    """Retorna (ano, mês) da fatura que contém uma compra nessa data.
+    Sem closing_day: usa mês calendário (mês da própria data)."""
+    if closing_day is None:
+        return purchase_date.year, purchase_date.month
+    if purchase_date.day > closing_day:
+        if purchase_date.month == 12:
+            return purchase_date.year + 1, 1
+        return purchase_date.year, purchase_date.month + 1
+    return purchase_date.year, purchase_date.month
+
+
+def _entry_installment_in_bill(
+    entry: dict, target_year: int, target_month: int, closing_day: int | None,
+) -> int | None:
+    """Replica getCardBillForMonth do frontend. Retorna o número da parcela
+    (1..N) que aparece na fatura target, ou None se a entry não entra nessa
+    fatura."""
+    try:
+        pd = datetime.fromisoformat((entry.get("date") or "").replace(" ", "T")).date()
+    except ValueError:
+        return None
+    installments = int(entry.get("installments") or 1)
+    base_inst = int(entry.get("currentInstallment") or 1)
+    start_year, start_month = _bill_month_for_date(pd, closing_day)
+    months_diff = (target_year - start_year) * 12 + (target_month - start_month)
+    current = base_inst + months_diff
+    if 1 <= current <= installments:
+        return current
+    return None
+
+
 def _open_invoice_range(state: dict, today: date) -> tuple[date, date, str]:
     """Calcula intervalo [início, fim] da fatura em aberto, mais um label.
     Compras com date no intervalo fazem parte da fatura corrente.
@@ -587,30 +619,49 @@ async def consultar_lancamentos(
             today_d = datetime.utcnow().date()
 
         all_card = state.get("cardEntries") or []
-        if escopo_cartao == "ultimos_dias":
-            card = _filter_by_days(all_card, dias, today_iso)
-            header = f"cartão de crédito (últimos {dias}d)"
-        else:
-            start, end, range_label = _open_invoice_range(state, today_d)
-            card = _filter_by_range(all_card, start, end)
-            header = f"cartão de crédito — {range_label}"
+        closing = _get_card_closing_day(state)
 
-        if not card:
+        if escopo_cartao == "ultimos_dias":
+            card_items = [
+                (it, None) for it in _filter_by_days(all_card, dias, today_iso)
+            ]
+            header = f"cartão de crédito (últimos {dias}d, pela data de compra)"
+        else:
+            # Fatura em aberto = a que está acumulando (fechará na próxima data
+            # de fechamento). Replica getCardBillForMonth do frontend.
+            target_year, target_month = _bill_month_for_date(today_d, closing)
+            start, end, range_label = _open_invoice_range(state, today_d)
+            card_items = []
+            for it in all_card:
+                inst = _entry_installment_in_bill(it, target_year, target_month, closing)
+                if inst is not None:
+                    card_items.append((it, inst))
+            header = (
+                f"cartão de crédito — {range_label}, fecha em "
+                f"{target_month:02d}/{target_year}"
+            )
+
+        if not card_items:
             parts.append(f"{header}: sem compras")
         else:
             lines = [f"{header}:"]
             total = 0.0
-            for it in card[-30:]:
+            for it, inst in card_items[-30:]:
                 amt = float(it.get("amount") or 0)
+                installments = int(it.get("installments") or 1)
+                if installments > 1 and inst is not None:
+                    par_label = f" ({inst}/{installments})"
+                elif installments > 1:
+                    par_label = f" ({installments}x)"
+                else:
+                    par_label = ""
                 total += amt
-                par = it.get("installments") or 1
-                par_label = f" ({par}x)" if par > 1 else ""
                 tag = "bot" if it.get("source") == "bot" else "web"
                 lines.append(
                     f"  [{it.get('id', '?')}|{tag}] {it.get('date', '?')} -{amt:.2f} "
                     f"{it.get('desc', '?')}{par_label} [{it.get('category', '?')}]"
                 )
-            lines.append(f"  total: -R$ {total:.2f} ({len(card)} compra(s))")
+            lines.append(f"  total: -R$ {total:.2f} ({len(card_items)} item(ns))")
             parts.append("\n".join(lines))
 
     if mod in ("tesouro", "tudo"):
