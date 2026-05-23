@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from bot.db.base import Base
@@ -119,3 +119,21 @@ class Reminder(Base):
     recurrence: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     user: Mapped[User] = relationship(back_populates="reminders")
+
+
+class WorkoutLog(Base):
+    """Registro de treino do dia. Categorias canônicas: peito, costas,
+    pernas, cardio. `groups` é CSV (ex: 'peito,cardio'). Várias entradas
+    por dia são permitidas (sessões separadas). Purge semanal apaga
+    entradas anteriores ao domingo da semana corrente.
+    """
+
+    __tablename__ = "workout_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True, nullable=False)
+    date: Mapped[date] = mapped_column(Date, index=True, nullable=False)
+    groups: Mapped[str] = mapped_column(String(128), nullable=False)
+    cardio_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    notes: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)

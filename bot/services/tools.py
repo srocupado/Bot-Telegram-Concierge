@@ -27,6 +27,13 @@ from bot.services.user_facts import (
     list_facts,
     upsert_fact,
 )
+from bot.services.workouts import (
+    CANONICAL_GROUPS,
+    format_summary,
+    log_workout,
+    normalize_groups,
+    summary_current_week,
+)
 from bot.services.weather import WeatherError, fetch_today_weather, format_weather_line
 
 logger = logging.getLogger(__name__)
@@ -264,6 +271,56 @@ async def _h_esquecer_fato(args: dict, ctx: ToolContext) -> str:
     if not ok:
         return f"erro: nenhum fato com chave '{chave}'"
     return f"ok: fato '{chave}' apagado"
+
+
+async def _h_registrar_treino(args: dict, ctx: ToolContext) -> str:
+    grupos_raw = args.get("grupos") or []
+    if not isinstance(grupos_raw, list):
+        return "erro: 'grupos' deve ser lista (ex: ['peito', 'cardio'])"
+    grupos = normalize_groups(grupos_raw)
+    if not grupos:
+        return (
+            f"erro: nenhum grupo canônico encontrado em {grupos_raw}. "
+            f"Use {sorted(CANONICAL_GROUPS)}."
+        )
+
+    tz = ZoneInfo(ctx.tz)
+    data_iso = (args.get("data_iso") or "").strip()
+    if data_iso:
+        try:
+            workout_date = datetime.fromisoformat(data_iso.replace(" ", "T")).date()
+        except ValueError:
+            return f"erro: 'data_iso' inválido ({data_iso!r}). Use 'YYYY-MM-DD'."
+    else:
+        workout_date = datetime.now(tz).date()
+
+    cardio_min = args.get("cardio_minutos")
+    if cardio_min is not None:
+        try:
+            cardio_min = int(cardio_min)
+        except (TypeError, ValueError):
+            return "erro: 'cardio_minutos' deve ser inteiro"
+    if "cardio" in grupos and cardio_min is None:
+        return "erro: cardio mencionado mas cardio_minutos não fornecido"
+
+    observacao = (args.get("observacao") or "").strip() or None
+    try:
+        log = await log_workout(
+            ctx.session, ctx.user.id, workout_date, grupos,
+            cardio_minutes=cardio_min, notes=observacao,
+        )
+    except ValueError as e:
+        return f"erro: {e}"
+
+    label = " + ".join(log.groups.split(","))
+    if log.cardio_minutes:
+        label += f" ({log.cardio_minutes}min cardio)"
+    return f"ok: treino #{log.id} registrado em {log.date.strftime('%d/%m')} — {label}"
+
+
+async def _h_consultar_treinos(_args: dict, ctx: ToolContext) -> str:
+    summary = await summary_current_week(ctx.session, ctx.user.id, ctx.tz)
+    return "ok: " + format_summary(summary)
 
 
 async def _h_consultar_clima(args: dict, ctx: ToolContext) -> str:
@@ -538,6 +595,55 @@ TOOLS: list[Tool] = [
             "required": ["chave"],
         },
         handler=_h_esquecer_fato,
+    ),
+    Tool(
+        name="registrar_treino",
+        description=(
+            "Registra um treino de academia. Categorias canônicas: 'peito', "
+            "'costas', 'pernas', 'cardio'. Normalize variações: supino/voador/"
+            "crossover → 'peito'; remada/puxada → 'costas'; agachamento/leg "
+            "press/panturrilha → 'pernas'; corrida/esteira/bike → 'cardio'. "
+            "Ombros/braços/abdomen NÃO entram (usuário não quer detalhar). "
+            "Quando 'cardio' está em grupos, OBRIGATÓRIO informar "
+            "cardio_minutos. Se usuário diz 'ontem' ou data específica, "
+            "calcule data_iso usando a Data/hora atual do system prompt."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "grupos": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["peito", "costas", "pernas", "cardio"]},
+                    "description": "Grupos canônicos treinados",
+                },
+                "cardio_minutos": {
+                    "type": "integer",
+                    "description": "Minutos de cardio (obrigatório se 'cardio' em grupos)",
+                },
+                "data_iso": {
+                    "type": "string",
+                    "description": "Data ISO 'YYYY-MM-DD' (default: hoje na timezone do usuário)",
+                },
+                "observacao": {
+                    "type": "string",
+                    "description": "Nota livre opcional sobre o treino",
+                },
+            },
+            "required": ["grupos"],
+        },
+        handler=_h_registrar_treino,
+    ),
+    Tool(
+        name="consultar_treinos",
+        description=(
+            "Retorna resumo da semana atual de academia (domingo → sábado): "
+            "treinos por dia, totais por grupo e cardio acumulado. Histórico "
+            "é descartado todo domingo, então só mostra a semana corrente. "
+            "Use quando o usuário perguntar sobre rotina, malhação, semana "
+            "de academia, quantos dias treinou, etc."
+        ),
+        parameters={"type": "object", "properties": {}},
+        handler=_h_consultar_treinos,
     ),
     Tool(
         name="consultar_clima",

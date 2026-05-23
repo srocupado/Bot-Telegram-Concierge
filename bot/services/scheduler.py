@@ -394,6 +394,25 @@ async def run_purge(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
             logger.info("purged %d old traffic_samples", n)
 
 
+async def run_workout_purge(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    """Zera registros de academia anteriores ao domingo atual.
+
+    Roda no domingo às 00:01 BRT. Defesa em profundidade: a consulta
+    semanal já filtra por week_start, então mesmo se essa purge falhar
+    o usuário só vê a semana corrente.
+    """
+    from bot.services.workouts import purge_old_weeks
+
+    now_brt = datetime.now(BRT)
+    # Domingo (weekday=6), 00:01-00:02 BRT.
+    if now_brt.weekday() != 6 or now_brt.hour != 0 or now_brt.minute > 1:
+        return
+    async with sessionmaker() as session:
+        n = await purge_old_weeks(session, "America/Sao_Paulo")
+        if n:
+            logger.info("purged %d old workout_logs", n)
+
+
 async def tick(
     sessionmaker: async_sessionmaker[AsyncSession],
     bot: Bot,
@@ -422,6 +441,11 @@ async def tick(
         await run_purge(sessionmaker)
     except Exception:
         logger.exception("purge crashed")
+
+    try:
+        await run_workout_purge(sessionmaker)
+    except Exception:
+        logger.exception("workout purge crashed")
 
 
 async def scheduler_loop(
