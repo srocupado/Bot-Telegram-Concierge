@@ -30,6 +30,7 @@ from bot.services.user_facts import (
 from bot.services.financeiro import (
     FinanceiroError,
     NotConfiguredError,
+    apagar_lancamento,
     consultar_lancamentos,
     lancar_despesa_cartao,
     lancar_movimento_banco,
@@ -468,6 +469,24 @@ async def _h_registrar_aporte_tesouro(args: dict, ctx: ToolContext) -> str:
         f"ok: aporte de R$ {valor_f:.2f}{taxa_label} no '{res['titulo']}' "
         f"em {data_iso}"
     )
+
+
+async def _h_apagar_lancamento(args: dict, ctx: ToolContext) -> str:
+    modulo = (args.get("modulo") or "").strip().lower()
+    entry_id = (args.get("id") or "").strip()
+    if not modulo or not entry_id:
+        return "erro: 'modulo' e 'id' são obrigatórios"
+    try:
+        res = await apagar_lancamento(ctx.session, ctx.user, modulo, entry_id)
+    except NotConfiguredError as e:
+        return f"erro: {e}"
+    except FinanceiroError as e:
+        return f"erro: {e}"
+    rem = res.get("removido") or res.get("contribution") or {}
+    desc = rem.get("desc") or f"aporte em {res.get('titulo', '?')}"
+    amt = float(rem.get("amount") or 0)
+    date = rem.get("date", "?")
+    return f"ok: removido {entry_id} ({res['modulo']}) — {desc} R$ {abs(amt):.2f} em {date}"
 
 
 async def _h_consultar_lancamentos(args: dict, ctx: ToolContext) -> str:
@@ -957,6 +976,40 @@ TOOLS: list[Tool] = [
             "required": ["modulo"],
         },
         handler=_h_consultar_lancamentos,
+    ),
+    Tool(
+        name="apagar_lancamento",
+        description=(
+            "Apaga UM lançamento do gerenciador-financeiro pelo id. Use "
+            "SEMPRE que o usuário pedir pra apagar, remover, cancelar ou "
+            "deletar um lançamento — NUNCA crie um lançamento espelho com "
+            "valor oposto pra 'compensar', isso duplica registro em vez "
+            "de apagar.\n"
+            "Fluxo correto:\n"
+            "  1) Se você não tem o id em mente, chame consultar_lancamentos "
+            "primeiro pra ver os ids disponíveis (cada linha começa com "
+            "[id]).\n"
+            "  2) Confirme com o usuário qual lançamento apagar se houver "
+            "ambiguidade (ex: dois 'Mercado R$ 100' no mesmo dia).\n"
+            "  3) Chame apagar_lancamento(modulo=..., id=...).\n"
+            "Módulos: 'banco' (bankTransactions), 'cartao' (cardEntries), "
+            "'tesouro' (contribuição de Tesouro Direto)."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "modulo": {
+                    "type": "string",
+                    "enum": ["banco", "cartao", "tesouro"],
+                },
+                "id": {
+                    "type": "string",
+                    "description": "Id do lançamento (7 chars; aparece entre [] em consultar_lancamentos)",
+                },
+            },
+            "required": ["modulo", "id"],
+        },
+        handler=_h_apagar_lancamento,
     ),
 ]
 

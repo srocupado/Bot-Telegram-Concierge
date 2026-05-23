@@ -172,6 +172,77 @@ def _append_in_transaction(db, uid: str, array_name: str, entry: dict) -> None:
     _txn(db.transaction())
 
 
+def _delete_from_state_array(db, uid: str, array_name: str, entry_id: str) -> dict | None:
+    """Remove entrada por id de state[array_name]. Retorna o item removido
+    (ou None se não achou). Bloqueante."""
+    from firebase_admin import firestore as _fs
+
+    ref = db.collection("users").document(uid)
+
+    @_fs.transactional
+    def _txn(transaction):
+        snap = ref.get(transaction=transaction)
+        data = snap.to_dict() if snap.exists else {}
+        state = dict(data.get("state") or {})
+        arr = list(state.get(array_name) or [])
+        removed = None
+        new_arr = []
+        for it in arr:
+            if removed is None and it.get("id") == entry_id:
+                removed = it
+                continue
+            new_arr.append(it)
+        if removed is None:
+            return None
+        state[array_name] = new_arr
+        transaction.set(
+            ref,
+            {"state": state, "updatedAt": _fs.SERVER_TIMESTAMP},
+            merge=True,
+        )
+        return removed
+
+    return _txn(db.transaction())
+
+
+def _delete_treasury_contribution(db, uid: str, contribution_id: str) -> dict | None:
+    """Procura contribuição por id em todos os títulos. Retorna
+    {'titulo': name, 'contribution': {...}} ou None."""
+    from firebase_admin import firestore as _fs
+
+    ref = db.collection("users").document(uid)
+
+    @_fs.transactional
+    def _txn(transaction):
+        snap = ref.get(transaction=transaction)
+        data = snap.to_dict() if snap.exists else {}
+        state = dict(data.get("state") or {})
+        holdings = list(state.get("treasuryHoldings") or [])
+        for i, h in enumerate(holdings):
+            contribs = list(h.get("contributions") or [])
+            new_contribs = []
+            removed = None
+            for c in contribs:
+                if removed is None and c.get("id") == contribution_id:
+                    removed = c
+                    continue
+                new_contribs.append(c)
+            if removed is not None:
+                holding = dict(h)
+                holding["contributions"] = new_contribs
+                holdings[i] = holding
+                state["treasuryHoldings"] = holdings
+                transaction.set(
+                    ref,
+                    {"state": state, "updatedAt": _fs.SERVER_TIMESTAMP},
+                    merge=True,
+                )
+                return {"titulo": h.get("name", "?"), "contribution": removed}
+        return None
+
+    return _txn(db.transaction())
+
+
 def _set_treasury_contribution(
     db, uid: str, titulo_query: str, contribution: dict,
 ) -> str:
@@ -327,6 +398,41 @@ async def registrar_aporte_tesouro(
     return {"titulo": matched_name, "contribution": contrib}
 
 
+async def apagar_lancamento(
+    session: AsyncSession,
+    user,
+    modulo: str,
+    entry_id: str,
+) -> dict:
+    """Apaga lançamento por id no módulo dado. Retorna o item removido.
+    `modulo` ∈ {'banco', 'cartao', 'tesouro'}."""
+    uid = _require_uid(user)
+    db = await _get_db(session)
+    mod = (modulo or "").strip().lower()
+    if mod in ("banco", "bank"):
+        removed = await _run_blocking(
+            _delete_from_state_array, db, uid, "bankTransactions", entry_id,
+        )
+        if removed is None:
+            raise FinanceiroError(f"lançamento {entry_id} não encontrado no banco.")
+        return {"modulo": "banco", "removido": removed}
+    if mod in ("cartao", "cartão", "card"):
+        removed = await _run_blocking(
+            _delete_from_state_array, db, uid, "cardEntries", entry_id,
+        )
+        if removed is None:
+            raise FinanceiroError(f"compra {entry_id} não encontrada no cartão.")
+        return {"modulo": "cartao", "removido": removed}
+    if mod in ("tesouro", "treasury"):
+        res = await _run_blocking(_delete_treasury_contribution, db, uid, entry_id)
+        if res is None:
+            raise FinanceiroError(f"aporte {entry_id} não encontrado no tesouro.")
+        return {"modulo": "tesouro", **res}
+    raise FinanceiroError(
+        f"módulo '{modulo}' inválido (use 'banco', 'cartao' ou 'tesouro')."
+    )
+
+
 def _filter_by_days(arr: list[dict], dias: int, today_iso: str) -> list[dict]:
     """Itens com `date` >= (today - dias)."""
     try:
@@ -377,7 +483,7 @@ async def consultar_lancamentos(
                 saldo += amt
                 sign = "+" if amt >= 0 else ""
                 lines.append(
-                    f"  {it.get('date', '?')} {sign}{amt:.2f} "
+                    f"  [{it.get('id', '?')}] {it.get('date', '?')} {sign}{amt:.2f} "
                     f"{it.get('desc', '?')} [{it.get('category', '?')}]"
                 )
             lines.append(f"  saldo do período: {saldo:+.2f}")
@@ -396,7 +502,7 @@ async def consultar_lancamentos(
                 par = it.get("installments") or 1
                 par_label = f" ({par}x)" if par > 1 else ""
                 lines.append(
-                    f"  {it.get('date', '?')} -{amt:.2f} "
+                    f"  [{it.get('id', '?')}] {it.get('date', '?')} -{amt:.2f} "
                     f"{it.get('desc', '?')}{par_label} [{it.get('category', '?')}]"
                 )
             lines.append(f"  total: -{total:.2f}")
@@ -414,12 +520,18 @@ async def consultar_lancamentos(
                 recent = _filter_by_days(contribs, dias, today_iso)
                 total_aportado = sum(float(c.get("amount") or 0) for c in contribs)
                 recent_amount = sum(float(c.get("amount") or 0) for c in recent)
-                line = (
+                lines.append(
                     f"  • {name} — total aportado R$ {total_aportado:.2f}"
                 )
                 if recent:
-                    line += f" (últimos {dias}d: +R$ {recent_amount:.2f}, {len(recent)} aporte(s))"
-                lines.append(line)
+                    lines.append(
+                        f"      últimos {dias}d: +R$ {recent_amount:.2f} em {len(recent)} aporte(s):"
+                    )
+                    for c in recent[-10:]:
+                        lines.append(
+                            f"        [{c.get('id', '?')}] {c.get('date', '?')} "
+                            f"+R$ {float(c.get('amount') or 0):.2f}"
+                        )
             parts.append("\n".join(lines))
 
     return "\n\n".join(parts) if parts else "(sem dados)"
