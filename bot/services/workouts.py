@@ -119,9 +119,15 @@ async def summary_current_week(
         if cardio_min:
             cardio_min_total += cardio_min
 
+    hoje = now_local.date()
+    dias_passados = (hoje - start).days + 1  # inclui hoje
+    dias_restantes = max(0, 6 - (hoje - start).days)  # depois de hoje
     return {
         "inicio": start,
         "fim": end,
+        "hoje": hoje,
+        "dias_passados": dias_passados,
+        "dias_restantes": dias_restantes,
         "dias_treinou": dias_treinou,
         "dias_descansou": 7 - dias_treinou,
         "por_grupo": por_grupo,
@@ -133,18 +139,32 @@ async def summary_current_week(
 def format_summary(summary: dict) -> str:
     inicio = summary["inicio"]
     fim = summary["fim"]
+    hoje = summary.get("hoje")
     lines = [
         f"semana {inicio.strftime('%d/%m')} (dom) → {fim.strftime('%d/%m')} (sab) "
-        f"— {summary['dias_treinou']} treinos, {summary['dias_descansou']} descansos"
+        f"— {summary['dias_treinou']} treinos, {summary['dias_descansou']} dias sem treino"
     ]
+    if hoje is not None:
+        lines.append(
+            f"hoje: {_format_dia_label(hoje)} "
+            f"(dia {summary['dias_passados']}/7 da semana — "
+            f"{summary['dias_restantes']} dia(s) ainda por vir)"
+        )
     for d, groups, cardio in summary["por_dia"]:
+        if hoje is not None and d > hoje:
+            marker = "futuro"
+        elif hoje is not None and d == hoje:
+            marker = "hoje"
+        else:
+            marker = "passado"
         if not groups:
-            lines.append(f"  • {_format_dia_label(d)}: descanso")
+            label = "sem treino" if marker != "futuro" else "—"
+            lines.append(f"  • {_format_dia_label(d)} [{marker}]: {label}")
             continue
         label = " + ".join(groups)
         if cardio:
             label += f" ({cardio}min cardio)"
-        lines.append(f"  • {_format_dia_label(d)}: {label}")
+        lines.append(f"  • {_format_dia_label(d)} [{marker}]: {label}")
     pg = summary["por_grupo"]
     pg_items = [f"{k}:{v}" for k, v in pg.items() if v > 0]
     extras = []
