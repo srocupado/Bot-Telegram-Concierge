@@ -44,6 +44,24 @@ class Settings(BaseSettings):
     # Medidas Provisórias
     congress_digest_enabled: bool = Field(True, alias="CONGRESS_DIGEST_ENABLED")
 
+    # Monitor de MPs no Diário Oficial (Inlabs/DOU). Independente do Monitor-de-MP
+    # externo — credencial própria do cadastro gratuito em inlabs.in.gov.br.
+    dou_mp_enabled: bool = Field(True, alias="DOU_MP_ENABLED")
+    dou_mp_hour: int = Field(18, alias="DOU_MP_HOUR")
+    dou_mp_minute: int = Field(0, alias="DOU_MP_MINUTE")
+    # Pesquisa de contexto via web search (Passo 2 das diretrizes).
+    # Desligue se a conta não tiver acesso ou se estiver lenta.
+    dou_mp_web_research: bool = Field(True, alias="DOU_MP_WEB_RESEARCH")
+    # Provider da nota técnica. "gemini" é bem mais barato (Flash + Google
+    # Search grounding nativo); "anthropic" usa Claude + web_search.
+    dou_mp_provider: Provider = Field("gemini", alias="DOU_MP_PROVIDER")
+    dou_mp_gemini_model: str = Field("gemini-2.5-pro", alias="DOU_MP_GEMINI_MODEL")
+    # Fallback automático quando o modelo principal estoura cota/429 (free
+    # tier do Pro tem limite baixo). Vazio desliga o fallback.
+    dou_mp_gemini_model_fallback: str = Field("gemini-2.5-flash", alias="DOU_MP_GEMINI_MODEL_FALLBACK")
+    inlabs_email: str | None = Field(None, alias="INLABS_EMAIL")
+    inlabs_password: SecretStr | None = Field(None, alias="INLABS_PASSWORD")
+
     # Scheduler
     scheduler_tick_seconds: int = Field(60, alias="SCHEDULER_TICK_SECONDS")
     timezone: str = Field("America/Sao_Paulo", alias="TIMEZONE")

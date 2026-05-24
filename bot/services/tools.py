@@ -747,6 +747,37 @@ async def _h_analisar_gastos(args: dict, ctx: ToolContext) -> str:
     return "ok:\n" + out
 
 
+async def _h_consultar_mp_dou(args: dict, ctx: ToolContext) -> str:
+    from datetime import date as _date
+
+    from bot.services.dou_monitor import DouError, fetch_mps
+
+    data_iso = (args.get("data_iso") or "").strip()
+    if data_iso:
+        try:
+            target = _date.fromisoformat(data_iso)
+        except ValueError:
+            return f"erro: 'data_iso' inválido ({data_iso!r}). Use 'YYYY-MM-DD'."
+    else:
+        target = datetime.now(ZoneInfo(ctx.tz)).date()
+
+    try:
+        mps = await fetch_mps(target)
+    except DouError as e:
+        return f"erro: {e}"
+    except Exception:
+        return "erro: falha ao consultar o DOU"
+
+    if not mps:
+        return f"ok: nenhuma MP publicada no DOU em {target.strftime('%d/%m/%Y')}"
+    linhas = [f"ok: {len(mps)} MP(s) no DOU em {target.strftime('%d/%m/%Y')}:"]
+    for mp in mps:
+        ementa = (mp.get("ementa") or "")[:160]
+        linhas.append(f"  • MP {mp['numero']}/{mp['ano']}: {ementa}")
+    linhas.append("(nota técnica completa + DOCX via /mp_dou_agora ou no digest diário)")
+    return "\n".join(linhas)
+
+
 async def _h_consultar_transito(args: dict, ctx: ToolContext) -> str:
     origem = (args.get("origem") or "").strip()
     destino = (args.get("destino") or "").strip()
@@ -1494,6 +1525,28 @@ TOOLS: list[Tool] = [
             },
         },
         handler=_h_analisar_gastos,
+    ),
+    Tool(
+        name="consultar_mp_dou",
+        description=(
+            "Consulta Medidas Provisórias publicadas no Diário Oficial da "
+            "União (DOU) numa data. Use quando o usuário perguntar 'saiu MP "
+            "nova hoje?', 'tem medida provisória no diário oficial?', "
+            "'foi publicada alguma MP essa semana?'. Retorna número + "
+            "ementa de cada MP. Para a NOTA TÉCNICA completa + documento "
+            "DOCX, oriente o usuário a usar /mp_dou_agora (ou esperar o "
+            "digest diário se ele for assinante). Default: hoje."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "data_iso": {
+                    "type": "string",
+                    "description": "Data ISO 'YYYY-MM-DD' (default: hoje)",
+                },
+            },
+        },
+        handler=_h_consultar_mp_dou,
     ),
 ]
 

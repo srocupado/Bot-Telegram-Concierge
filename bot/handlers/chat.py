@@ -31,7 +31,8 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "- registrar_treino, apagar_treino_dia, consultar_treinos\n"
     "- lancar_movimento_banco, lancar_despesa_cartao, registrar_aporte_tesouro, consultar_lancamentos, apagar_lancamento\n"
     "- adicionar_lista_compras, listar_compras, marcar_comprado, desmarcar_compra, remover_lista_compras, limpar_comprados, zerar_lista_compras\n"
-    "- analisar_gastos, desfazer_ultima_acao\n\n"
+    "- analisar_gastos, desfazer_ultima_acao\n"
+    "- consultar_mp_dou\n\n"
     "Quando rodando no Anthropic, você tem busca web nativa (web_search). "
     "Use SEMPRE que o usuário pedir notícias, eventos atuais, cotações, "
     "resultados ou informação que dependa de dados recentes. Cite fontes "
@@ -176,6 +177,12 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "fechamento dos gastos' → agendar_comando tipo='chat' com o prompt "
     "em 'parametros' E 'recorrencia' apropriada. Calcule 'quando_iso' "
     "pro PRÓXIMO disparo a partir da Data/hora atual.\n\n"
+    "Para Medidas Provisórias no Diário Oficial (DOU):\n"
+    "- 'saiu MP nova hoje?', 'tem medida provisória no diário?', 'foi "
+    "publicada alguma MP?' → consultar_mp_dou (retorna número + ementa). "
+    "Se o usuário quiser a nota técnica completa ou o documento, oriente "
+    "a usar /mp_dou_agora. NÃO confunda com a pauta de votação do "
+    "Congresso (que é outra coisa, via /congresso_agora).\n\n"
     "Se a intenção do usuário for ambígua, pergunte antes de agir."
 )
 

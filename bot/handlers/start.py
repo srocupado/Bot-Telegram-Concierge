@@ -17,11 +17,15 @@ HELP_TEXT = (
     "• <code>/transito_at HH:MM</code> — muda horário do digest (sem arg volta ao default)\n"
     "• <code>/transito_reset</code> — zera marca de envio de hoje\n"
     "• <code>/transito_alerta_on</code> / <code>/transito_alerta_off</code> — alerta proativo se rota estiver ≥30% acima do habitual\n\n"
-    "<b>Medidas Provisórias</b>:\n"
+    "<b>Medidas Provisórias — pauta do Congresso</b>:\n"
     "• <code>/congresso_agora</code> — força resumo da semana agora\n"
     "• <code>/congresso_on</code> / <code>/congresso_off</code> — assina/desassina digest semanal (segunda)\n"
     "• <code>/congresso_at HH:MM</code> — muda horário do digest\n"
     "• <code>/congresso_reset</code> — zera marca de envio da semana\n\n"
+    "<b>Medidas Provisórias — publicação no Diário Oficial</b>:\n"
+    "• <code>/mp_dou_on</code> / <code>/mp_dou_off</code> — assina/desassina o digest diário de MPs novas no DOU\n"
+    "• <code>/mp_dou_agora [AAAA-MM-DD]</code> — busca agora; entrega nota técnica (gerada por IA) + DOCX\n"
+    "• Por voz/texto: <i>\"saiu MP nova hoje?\"</i> → lista número + ementa\n\n"
     "<b>Rota com sua localização</b>:\n"
     "• <code>/rota casa</code> | <code>/rota trabalho</code> — atalhos sem geocode\n"
     "• <code>/rota &lt;endereço&gt;</code> — bot pede sua localização e "
@@ -108,6 +112,25 @@ async def cmd_start(message: Message, user: User) -> None:
     )
 
 
+def _chunk_text(text: str, limit: int = 4000) -> list[str]:
+    """Quebra o texto em blocos < limit do Telegram (4096), preferindo
+    cortar em quebras de parágrafo pra não partir tags HTML no meio."""
+    chunks: list[str] = []
+    current = ""
+    for para in text.split("\n\n"):
+        candidate = f"{current}\n\n{para}" if current else para
+        if len(candidate) <= limit:
+            current = candidate
+        else:
+            if current:
+                chunks.append(current)
+            current = para
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
-    await message.answer(HELP_TEXT, parse_mode="HTML", disable_web_page_preview=True)
+    for chunk in _chunk_text(HELP_TEXT):
+        await message.answer(chunk, parse_mode="HTML", disable_web_page_preview=True)
