@@ -1,17 +1,29 @@
 # Bot Telegram Concierge
 
 Assistente pessoal de atividades diárias no Telegram. Combina digests automáticos
-de **trânsito + clima** (rota casa↔trabalho) e **Medidas Provisórias** do
-Congresso Nacional com **tarefas**, **lembretes**, **chat livre com LLM**
-multi-provider (Anthropic/OpenAI/Gemini) e troca de modelo em runtime.
+de **trânsito + clima** (rota casa↔trabalho), **Medidas Provisórias** do
+Congresso Nacional e **monitor de MPs no Diário Oficial** (com nota técnica
+gerada por IA), além de **tarefas**, **lembretes** e **chat livre com LLM**
+multi-provider (Anthropic/OpenAI/Gemini) com troca de modelo em runtime.
 
 ## Funcionalidades
 
 - **Trânsito diário** (seg–sex, 07:20 BRT por padrão): rota casa↔trabalho com
   tempo real (Google Directions API) + previsão do tempo (Open-Meteo)!
   Suporta rota preferida via URL do Google Maps com waypoints.
-- **Medidas Provisórias** (segunda, 07:00 BRT por padrão): agenda do
-  Congresso Nacional via web scraping (BeautifulSoup), filtrando MPs e CMMPV.
+- **Medidas Provisórias — pauta do Congresso** (segunda, 07:00 BRT por
+  padrão): agenda do Congresso Nacional via web scraping (BeautifulSoup),
+  filtrando MPs e CMMPV.
+- **Monitor de MPs no Diário Oficial** (digest diário, `DOU_MP_HOUR` BRT,
+  default 18h): autentica no **Inlabs**, baixa os ZIPs do DOU (DO1E + DO1),
+  extrai as MPs publicadas no dia e entrega no Telegram um aviso imediato
+  (título, ementa, prazos regimentais, link) + uma **nota técnica completa
+  em DOCX** no padrão institucional. A nota é gerada por IA em duas fases —
+  pesquisa de contexto com busca web (Google Search/`web_search`) +
+  redação estruturada em 5 parágrafos com análise de impacto. Provider
+  padrão **Gemini** (`gemini-2.5-pro`, mais barato), com fallback
+  automático Pro→Flash em cota; alternável para Anthropic. Independente do
+  projeto Monitor-de-MP externo (sem código/estado compartilhado).
 - **Tarefas**: lista persistente — `/nova`, `/tarefas`, `/feito`.
 - **Lembretes** com horário em linguagem natural (português, via `dateparser`):
   `/lembrar reunião amanhã 09:00`, `/lembrar tomar remédio em 30min`.
@@ -55,13 +67,23 @@ multi-provider (Anthropic/OpenAI/Gemini) e troca de modelo em runtime.
 | `/transito_reset` | Zera marca de envio de hoje (útil pra forçar reenvio) |
 | `/transito_alerta_on` / `/transito_alerta_off` | Liga/desliga alerta proativo (default ligado) |
 
-### Medidas Provisórias
+### Medidas Provisórias — pauta do Congresso
 | Comando | Descrição |
 |---|---|
 | `/congresso_agora` | Força resumo da semana agora |
 | `/congresso_on` / `/congresso_off` | Assina/desassina o digest semanal (segunda) |
 | `/congresso_at HH:MM` | Muda o horário do digest |
 | `/congresso_reset` | Zera marca de envio da semana |
+
+### Medidas Provisórias — publicação no Diário Oficial (DOU)
+| Comando | Descrição |
+|---|---|
+| `/mp_dou_on` / `/mp_dou_off` | Assina/desassina o digest diário de MPs novas no DOU |
+| `/mp_dou_agora [AAAA-MM-DD]` | Busca agora (data opcional); entrega nota técnica + DOCX (ignora dedup) |
+
+> Por voz/texto: *"saiu MP nova hoje?"* aciona a tool `consultar_mp_dou`
+> (lista número + ementa das MPs do dia). A nota completa + DOCX vêm pelo
+> digest ou por `/mp_dou_agora`.
 
 ### Rota com sua localização
 | Comando | Descrição |
@@ -136,7 +158,9 @@ O bot ecoa a transcrição antes da resposta (transparência). Áudios acima de
 - SQLAlchemy 2 async + aiosqlite (SQLite em volume)
 - httpx async, BeautifulSoup4
 - pydantic-settings, python-json-logger
-- SDKs: `anthropic`, `openai`, `google-generativeai`
+- SDKs: `anthropic`, `openai`, `google-generativeai`, `google-genai` (1.x,
+  usado no monitor de MPs — Google Search grounding + JSON mode)
+- `python-docx` para gerar a nota técnica das MPs no template institucional
 - `dateparser` para parsing de lembretes em português
 
 ## Configuração
@@ -149,6 +173,26 @@ cp .env.example .env
 ```
 
 A previsão do tempo (Open-Meteo) usa `HOME_COORDS`, sem chave própria.
+
+### Monitor de MPs no DOU
+
+```bash
+# credencial do Inlabs (cadastro gratuito em inlabs.in.gov.br/acessar.php)
+INLABS_EMAIL=...
+INLABS_PASSWORD=...
+# disparo do digest diário
+DOU_MP_ENABLED=true
+DOU_MP_HOUR=18            # horário BRT
+DOU_MP_MINUTE=0
+# geração da nota técnica
+DOU_MP_PROVIDER=gemini    # gemini (mais barato) | anthropic
+DOU_MP_GEMINI_MODEL=gemini-2.5-pro
+DOU_MP_GEMINI_MODEL_FALLBACK=gemini-2.5-flash   # fallback em cota/429
+DOU_MP_WEB_RESEARCH=true  # pesquisa de contexto via busca web
+```
+
+Reusa `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` conforme o provider. `DOU_MP_ENABLED=false`
+desliga o digest automático (o comando manual `/mp_dou_agora` continua disponível).
 
 A `GOOGLE_MAPS_API_KEY` é usada para **Directions API** (digest diário e
 `/transito_agora`) e também para **Geocoding API (New)** (`/rota <endereço>`).
@@ -245,7 +289,7 @@ sudo crontab -e
   `is_authorized`, `provider`, `timezone`, e campos de subscription:
   `traffic_subscribed`, `traffic_hour/minute`, `last_traffic_digest_at`,
   `traffic_alert_enabled`, `last_traffic_alert_at` + os equivalentes para
-  `congress_*`.
+  `congress_*`, e `dou_mp_subscribed` (monitor de MPs no DOU).
 - **`tasks`**: `id`, `user_id`, `text`, `done`, `created_at`, `done_at`.
 - **`reminders`**: `id`, `user_id`, `text`, `due_at` (UTC), `sent`, `sent_at`,
   `command_kind` (nullable: `transito_casa`/`transito_trabalho`/`congresso`/
@@ -256,6 +300,9 @@ sudo crontab -e
   `sampled_at`, `duration_seconds`. Coletado a cada 10 min na janela de
   monitoramento; usado pra calcular mediana rolling 7 dias do baseline de
   trânsito. Purge automática de samples >30 dias às 03:00 BRT.
+- **`dou_seen_mps`**: `id`, `user_id`, `numero`, `ano`, `notified_at`. Dedup
+  do monitor de MPs no DOU — evita reenviar a mesma MP ao mesmo usuário no
+  digest diário (o comando manual `/mp_dou_agora` ignora a dedup).
 
 Idempotência dos digests é via os timestamps `last_*_digest_at` no User
 (não duplica no mesmo dia/semana). Migrações de coluna são aplicadas
@@ -274,7 +321,8 @@ bot/
 ├── handlers/
 │   ├── start.py, ping.py, provider.py, reset.py
 │   ├── traffic.py                # /transito_*
-│   ├── congress.py               # /congresso_*
+│   ├── congress.py               # /congresso_* (pauta do Congresso)
+│   ├── dou_mp.py                 # /mp_dou_* (MPs no Diário Oficial)
 │   ├── tasks.py, reminders.py
 │   ├── route.py                  # /rota + F.location + botão cancelar
 │   ├── voice.py                  # F.voice|F.audio → transcribe + dispatch
@@ -287,12 +335,15 @@ bot/
 │   ├── traffic.py, weather.py    # Google Directions + Open-Meteo
 │   ├── traffic_baseline.py       # mediana rolling + alerta proativo
 │   ├── geocoding.py              # Google Geocoding (endereço → coords)
-│   ├── congress.py               # Scraper MP
+│   ├── congress.py               # Scraper pauta do Congresso
+│   ├── dou_monitor.py            # Inlabs/DOU fetch + nota técnica (Gemini/Claude) + DOCX
 │   ├── tasks.py, reminders.py
 │   ├── chat_memory.py            # in-memory TTL 30min
 │   ├── route_pending.py          # /rota aguardando localização (in-memory)
 │   ├── voice.py                  # STT via Gemini multimodal
-│   └── scheduler.py              # loop async (trânsito, MP, watch, lembretes, purge)
+│   └── scheduler.py              # loop async (trânsito, MP, DOU, watch, lembretes, purge)
+├── assets/
+│   └── nota_template.docx        # template institucional da nota técnica (placeholders)
 └── utils/
     └── timez.py
 scripts/
