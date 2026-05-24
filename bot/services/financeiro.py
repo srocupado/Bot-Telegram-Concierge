@@ -14,8 +14,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import secrets
 import string
+import unicodedata
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -48,6 +50,133 @@ def _gen_id() -> str:
     """7 chars alfanuméricos minúsculos, mesmo padrão do uid() JS."""
     alphabet = string.ascii_lowercase + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(7))
+
+
+# Categorias padrão do gerenciador-financeiro (src/store.jsx → DEFAULT_CATEGORIES).
+# Mantidas em sync manualmente; se mudarem, atualizar aqui.
+DEFAULT_CATEGORIES: list[dict[str, str]] = [
+    {"id": "alimentacao", "name": "Alimentação"},
+    {"id": "transporte", "name": "Transporte"},
+    {"id": "moradia", "name": "Moradia"},
+    {"id": "saude", "name": "Saúde"},
+    {"id": "lazer", "name": "Lazer"},
+    {"id": "educacao", "name": "Educação"},
+    {"id": "compras", "name": "Compras"},
+    {"id": "servicos", "name": "Serviços"},
+    {"id": "outros", "name": "Outros"},
+]
+
+# Sinônimos comuns → id de categoria padrão. Resolvedor passa por essa
+# tabela quando o hint do LLM não bate diretamente com id/name de
+# nenhuma categoria existente.
+_CATEGORY_SYNONYMS: dict[str, str] = {
+    # alimentacao
+    "mercado": "alimentacao", "supermercado": "alimentacao", "feira": "alimentacao",
+    "padaria": "alimentacao", "restaurante": "alimentacao", "lanche": "alimentacao",
+    "lanchonete": "alimentacao", "ifood": "alimentacao", "rappi": "alimentacao",
+    "hortifruti": "alimentacao", "acougue": "alimentacao", "comida": "alimentacao",
+    "delivery": "alimentacao", "bar": "alimentacao",
+    # transporte
+    "uber": "transporte", "99": "transporte", "taxi": "transporte",
+    "gasolina": "transporte", "posto": "transporte", "combustivel": "transporte",
+    "etanol": "transporte", "diesel": "transporte", "metro": "transporte",
+    "onibus": "transporte", "passagem": "transporte", "pedagio": "transporte",
+    "estacionamento": "transporte", "passagem aerea": "transporte",
+    # moradia
+    "aluguel": "moradia", "condominio": "moradia", "luz": "moradia",
+    "energia": "moradia", "agua": "moradia", "gas": "moradia",
+    "internet": "moradia", "iptu": "moradia", "conta de luz": "moradia",
+    "conta de agua": "moradia", "movel": "moradia", "moveis": "moradia",
+    # saude
+    "farmacia": "saude", "remedio": "saude", "medico": "saude",
+    "hospital": "saude", "exame": "saude", "consulta": "saude",
+    "plano de saude": "saude", "dentista": "saude", "psicologa": "saude",
+    "psicologo": "saude", "academia": "saude",
+    # lazer
+    "netflix": "lazer", "spotify": "lazer", "cinema": "lazer",
+    "show": "lazer", "viagem": "lazer", "hotel": "lazer",
+    "passeio": "lazer", "festa": "lazer", "streaming": "lazer",
+    "disney": "lazer", "hbo": "lazer", "prime video": "lazer",
+    # educacao
+    "escola": "educacao", "curso": "educacao", "livro": "educacao",
+    "faculdade": "educacao", "mensalidade": "educacao", "udemy": "educacao",
+    "alura": "educacao",
+    # compras
+    "roupa": "compras", "shopping": "compras", "presente": "compras",
+    "eletronico": "compras", "magazine": "compras", "amazon": "compras",
+    "mercado livre": "compras", "shopee": "compras", "calcado": "compras",
+    "tenis": "compras",
+    # servicos
+    "encanador": "servicos", "eletricista": "servicos", "faxina": "servicos",
+    "manutencao": "servicos", "lavanderia": "servicos", "barbeiro": "servicos",
+    "cabelo": "servicos",
+}
+
+
+def _normalize_text(s: str) -> str:
+    """Lowercase, sem acento, sem espaços extras."""
+    s = (s or "").strip().lower()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def _effective_categories(state: dict) -> list[dict]:
+    """Defaults + customCategories do state. customCategories sobrescrevem
+    defaults se compartilharem id."""
+    custom = state.get("customCategories") or []
+    by_id: dict[str, dict] = {c["id"]: c for c in DEFAULT_CATEGORIES}
+    for c in custom:
+        if isinstance(c, dict) and c.get("id"):
+            by_id[c["id"]] = c
+    return list(by_id.values())
+
+
+def _resolve_category_id(hint: str | None, state: dict) -> str:
+    """Resolve um hint de categoria (vindo do LLM) pra um id válido.
+
+    Ordem de tentativa:
+      1. Match exato no id (normalizado)
+      2. Match exato no name (normalizado)
+      3. Substring no name (ex: 'plano de saude' bate em 'Saúde')
+      4. Tabela de sinônimos
+      5. Fallback 'outros'
+    """
+    if not hint:
+        return "outros"
+    cats = _effective_categories(state)
+    norm_hint = _normalize_text(hint)
+    if not norm_hint:
+        return "outros"
+
+    # 1 + 2
+    for c in cats:
+        if _normalize_text(c.get("id", "")) == norm_hint:
+            return c["id"]
+    for c in cats:
+        if _normalize_text(c.get("name", "")) == norm_hint:
+            return c["id"]
+    # 3: substring contra nome
+    for c in cats:
+        nname = _normalize_text(c.get("name", ""))
+        if nname and (norm_hint in nname or nname in norm_hint):
+            return c["id"]
+    # 4: sinônimos
+    syn = _CATEGORY_SYNONYMS.get(norm_hint)
+    if syn:
+        # garante que o id resolvido existe no conjunto efetivo
+        if any(c.get("id") == syn for c in cats):
+            return syn
+    return "outros"
+
+
+async def _read_state(db, uid: str) -> dict:
+    """Lê o doc do usuário e devolve state (ou {})."""
+    ref = db.collection("users").document(uid)
+    snap = await _run_blocking(ref.get)
+    data = snap.to_dict() if snap.exists else {}
+    return data.get("state") or {}
 
 
 async def get_service_account_json(session: AsyncSession) -> str | None:
@@ -346,11 +475,14 @@ async def lancar_movimento_banco(
             f"tipo '{tipo}' inválido (use credito/debito/despesa/receita)."
         )
 
+    state = await _read_state(db, uid)
+    category_id = _resolve_category_id(categoria, state)
+
     entry = {
         "id": _gen_id(),
         "date": data_iso,
         "desc": desc.strip(),
-        "category": (categoria or "outros").strip() or "outros",
+        "category": category_id,
         "amount": amount,
         "type": type_str,
         "source": "bot",
@@ -374,11 +506,13 @@ async def lancar_despesa_cartao(
     uid = _require_uid(user)
     db = await _get_db(session)
     parcelas = max(1, int(parcelas or 1))
+    state = await _read_state(db, uid)
+    category_id = _resolve_category_id(categoria, state)
     entry = {
         "id": _gen_id(),
         "date": data_iso,
         "desc": desc.strip(),
-        "category": (categoria or "outros").strip() or "outros",
+        "category": category_id,
         "amount": abs(float(valor)),
         "installments": parcelas,
         "currentInstallment": 1,
@@ -616,10 +750,7 @@ async def consultar_lancamentos(
 ) -> str:
     uid = _require_uid(user)
     db = await _get_db(session)
-    ref = db.collection("users").document(uid)
-    snap = await _run_blocking(ref.get)
-    data = snap.to_dict() if snap.exists else {}
-    state = data.get("state") or {}
+    state = await _read_state(db, uid)
 
     parts: list[str] = []
     mods = {"banco", "cartao", "cartão", "tesouro", "tudo"}
@@ -735,3 +866,99 @@ async def consultar_lancamentos(
             parts.append("\n".join(lines))
 
     return "\n\n".join(parts) if parts else "(sem dados)"
+
+
+async def build_card_closing_summary(
+    session: AsyncSession, user, today: date,
+) -> str | None:
+    """Sumário enviado quando a fatura do cartão fecha (cardClosingDay).
+
+    Retorna o texto pronto (HTML do Telegram) ou None se:
+      - service account não configurado
+      - usuário sem firebase_uid
+      - sem closingDay no state.settings
+      - hoje != closingDay
+    Não levanta exceção; loga e devolve None em qualquer falha de leitura.
+    """
+    try:
+        if not getattr(user, "firebase_uid", None):
+            return None
+        db = await _get_db(session)
+        state = await _read_state(db, user.firebase_uid)
+    except NotConfiguredError:
+        return None
+    except Exception:
+        logger.exception("card summary: failed to read state for user ", user.id)
+        return None
+
+    settings_d = state.get("settings") or {}
+    closing = _get_card_closing_day(state)
+    if closing is None:
+        return None
+    if today.day != closing:
+        return None
+
+    target_y, target_m = today.year, today.month
+    items: list[tuple[dict, dict]] = []
+    for e in state.get("cardEntries") or []:
+        info = _entry_in_bill(e, target_y, target_m, closing)
+        if info:
+            items.append((e, info))
+
+    if not items:
+        return (
+            f"🧾 <b>Sua fatura do cartão fechou hoje</b> ({today.strftime('%d/%m')}). "
+            "Sem compras nessa fatura. 🎉"
+        )
+
+    total = sum(float(i.get("value") or 0) for _, i in items)
+
+    # Top categorias
+    by_cat: dict[str, float] = {}
+    for e, i in items:
+        cat = (e.get("category") or "outros")
+        by_cat[cat] = by_cat.get(cat, 0.0) + float(i.get("value") or 0)
+    top_cats = sorted(by_cat.items(), key=lambda x: -x[1])[:3]
+
+    # Mapeia id → name pra exibir bonito
+    cats = _effective_categories(state)
+    cat_name_by_id = {c["id"]: c.get("name") or c["id"] for c in cats}
+
+    # Vencimento (cardDueDay no próximo mês, clamped)
+    from calendar import monthrange
+    due_label = ""
+    due_day_raw = settings_d.get("cardDueDay")
+    if isinstance(due_day_raw, (int, float)) and 1 <= int(due_day_raw) <= 31:
+        due_day = int(due_day_raw)
+        if today.month == 12:
+            dy, dm = today.year + 1, 1
+        else:
+            dy, dm = today.year, today.month + 1
+        last_day = monthrange(dy, dm)[1]
+        due_d = min(due_day, last_day)
+        due_label = f" — vence em <b>{due_d:02d}/{dm:02d}</b>"
+
+    lines = [
+        f"🧾 <b>Fatura do cartão fechou hoje</b> ({today.strftime('%d/%m')}){due_label}",
+        f"Total: <b>R$ {total:,.2f}</b> em {len(items)} lançamento(s)".replace(",", "X").replace(".", ",").replace("X", "."),
+        "",
+        "<i>Top categorias:</i>",
+    ]
+    for cat_id, val in top_cats:
+        name = cat_name_by_id.get(cat_id, cat_id)
+        val_fmt = f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        lines.append(f"  • {name}: {val_fmt}")
+
+    # Limite usado (se configurado)
+    limit_raw = settings_d.get("cardLimit")
+    if isinstance(limit_raw, (int, float)) and float(limit_raw) > 0:
+        pct = (total / float(limit_raw)) * 100
+        emoji = "🟢" if pct < 70 else ("🟡" if pct < 90 else "🔴")
+        lines.append("")
+        lines.append(
+            f"{emoji} Limite usado: <b>{pct:.0f}%</b> de R$ {float(limit_raw):,.2f}".replace(
+                ",", "X"
+            ).replace(".", ",").replace("X", ".")
+        )
+
+    return "\n".join(lines)

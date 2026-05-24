@@ -394,6 +394,48 @@ async def run_purge(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
             logger.info("purged %d old traffic_samples", n)
 
 
+async def run_card_closing_summary(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    bot: Bot,
+) -> None:
+    """Resumo proativo enviado no dia do fechamento da fatura do cartão.
+
+    Roda diariamente às 09:00 BRT. Pra cada usuário autorizado com
+    firebase_uid configurado, lê state.settings.cardClosingDay e dispara
+    se hoje for esse dia. A função build_card_closing_summary cuida das
+    validações (closingDay setado, hoje == closingDay, etc) e devolve
+    None pra pular silenciosamente.
+    """
+    from bot.services.financeiro import build_card_closing_summary
+
+    now_brt = datetime.now(BRT)
+    # 09:00-09:01 BRT (janela de 1min pra não duplicar a cada tick).
+    if now_brt.hour != 9 or now_brt.minute > 1:
+        return
+
+    async with sessionmaker() as session:
+        users = list((await session.scalars(
+            select(User).where(
+                User.is_authorized.is_(True),
+                User.firebase_uid.isnot(None),
+            )
+        )).all())
+
+        for u in users:
+            try:
+                msg = await build_card_closing_summary(session, u, now_brt.date())
+            except Exception:
+                logger.exception("card summary build failed for user %d", u.id)
+                continue
+            if not msg:
+                continue
+            try:
+                if not await _send_html_with_fallback(bot, u.id, msg):
+                    logger.warning("card summary send failed for user %d", u.id)
+            except Exception:
+                logger.exception("card summary send crashed for user %d", u.id)
+
+
 async def run_workout_purge(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     """Zera registros de academia anteriores ao domingo atual.
 
@@ -446,6 +488,11 @@ async def tick(
         await run_workout_purge(sessionmaker)
     except Exception:
         logger.exception("workout purge crashed")
+
+    try:
+        await run_card_closing_summary(sessionmaker, bot)
+    except Exception:
+        logger.exception("card closing summary crashed")
 
 
 async def scheduler_loop(

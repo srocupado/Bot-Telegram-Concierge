@@ -906,7 +906,18 @@ TOOLS: list[Tool] = [
                     "description": "credito/receita = entrada; debito/despesa = saída",
                 },
                 "data_iso": {"type": "string", "description": "Data ISO 'YYYY-MM-DD' (default: hoje na tz do usuário)"},
-                "categoria": {"type": "string", "description": "Id de categoria (default 'outros')"},
+                "categoria": {
+                    "type": "string",
+                    "description": (
+                        "Hint de categoria em PT-BR — pode ser nome amigável, "
+                        "id ou termo coloquial ('mercado', 'uber', 'netflix', "
+                        "'plano de saúde', 'alimentação'). Servidor normaliza "
+                        "contra defaults (alimentacao, transporte, moradia, "
+                        "saude, lazer, educacao, compras, servicos, outros) + "
+                        "customCategories do usuário, usando sinônimos comuns. "
+                        "Fallback 'outros' se nada bater."
+                    ),
+                },
                 "recorrente": {"type": "boolean", "description": "true se é despesa fixa mensal"},
             },
             "required": ["desc", "valor", "tipo"],
@@ -940,7 +951,15 @@ TOOLS: list[Tool] = [
                     "description": "VALOR TOTAL da compra em reais (sempre o total, NUNCA da parcela)",
                 },
                 "data_iso": {"type": "string", "description": "Data ISO 'YYYY-MM-DD' da COMPRA (default: hoje)"},
-                "categoria": {"type": "string", "description": "Id de categoria (default 'outros')"},
+                "categoria": {
+                    "type": "string",
+                    "description": (
+                        "Hint de categoria em PT-BR — pode ser nome amigável, "
+                        "id ou termo coloquial. Servidor normaliza contra "
+                        "defaults + customCategories e sinônimos comuns. "
+                        "Fallback 'outros'."
+                    ),
+                },
                 "parcelas": {"type": "integer", "description": "Número de parcelas (default 1)"},
             },
             "required": ["desc", "valor"],
