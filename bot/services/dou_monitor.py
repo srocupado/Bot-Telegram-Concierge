@@ -544,9 +544,9 @@ async def deliver_to_user(bot, session: AsyncSession, user, target_date: date) -
     if not novas:
         return 0
 
-    enviadas = 0
+    # 1) avisos imediatos de todas as MPs (não dependem da nota, que é lenta).
+    avisadas = []
     for mp in novas:
-        # 1) aviso imediato — não depende da nota (que é lenta).
         try:
             await bot.send_message(
                 user.id, format_telegram_message(mp, None),
@@ -557,9 +557,10 @@ async def deliver_to_user(bot, session: AsyncSession, user, target_date: date) -
                              mp["numero"], mp["ano"], user.id)
             continue
         await mark_seen(session, user.id, mp)
-        enviadas += 1
+        avisadas.append(mp)
 
-        # 2) nota técnica + DOCX (best-effort; pode demorar pela pesquisa web).
+    # 2) nota técnica + DOCX de cada MP, EM PARALELO (best-effort).
+    async def _nota_e_docx(mp: dict) -> None:
         try:
             logger.info("dou: gerando nota técnica MP %s/%s…", mp["numero"], mp["ano"])
             nota = await generate_nota_tecnica(mp)
@@ -581,4 +582,7 @@ async def deliver_to_user(bot, session: AsyncSession, user, target_date: date) -
                 )
             except Exception:
                 pass
-    return enviadas
+
+    if avisadas:
+        await asyncio.gather(*(_nota_e_docx(mp) for mp in avisadas))
+    return len(avisadas)
