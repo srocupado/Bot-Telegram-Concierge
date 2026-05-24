@@ -436,6 +436,42 @@ async def run_card_closing_summary(
                 logger.exception("card summary send crashed for user %d", u.id)
 
 
+async def run_dou_mp_monitor(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    bot: Bot,
+) -> None:
+    """Digest diário do monitor de MPs no DOU. Roda no horário configurado
+    (DOU_MP_HOUR:DOU_MP_MINUTE BRT) pra cada usuário inscrito."""
+    if not settings.dou_mp_enabled:
+        return
+    now_brt = datetime.now(BRT)
+    if now_brt.hour != settings.dou_mp_hour or abs(now_brt.minute - settings.dou_mp_minute) > 1:
+        return
+
+    from bot.services.dou_monitor import DouError, deliver_to_user
+
+    async with sessionmaker() as session:
+        users = list((await session.scalars(
+            select(User).where(
+                User.is_authorized.is_(True),
+                User.dou_mp_subscribed.is_(True),
+            )
+        )).all())
+        if not users:
+            return
+        target = now_brt.date()
+        for u in users:
+            try:
+                n = await deliver_to_user(bot, session, u, target)
+                if n:
+                    logger.info("dou: %d MP(s) entregue(s) ao user %d", n, u.id)
+            except DouError as e:
+                logger.warning("dou monitor: %s", e)
+                return  # credencial/rede: não adianta tentar os outros users
+            except Exception:
+                logger.exception("dou monitor failed for user %d", u.id)
+
+
 async def run_workout_purge(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     """Zera registros de academia anteriores ao domingo atual.
 
@@ -493,6 +529,11 @@ async def tick(
         await run_card_closing_summary(sessionmaker, bot)
     except Exception:
         logger.exception("card closing summary crashed")
+
+    try:
+        await run_dou_mp_monitor(sessionmaker, bot)
+    except Exception:
+        logger.exception("dou mp monitor crashed")
 
 
 async def scheduler_loop(

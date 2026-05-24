@@ -45,6 +45,9 @@ class User(Base):
     firebase_uid: Mapped[str | None] = mapped_column(String(64), nullable=True)
     awaiting_firebase_json_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Monitor de MPs no Diário Oficial (Inlabs/DOU)
+    dou_mp_subscribed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
@@ -173,6 +176,20 @@ class ActionLog(Base):
     undo_data: Mapped[str] = mapped_column(Text, nullable=False)
     undone: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+
+class DouSeenMP(Base):
+    """Dedup do monitor de MPs: registra (usuário, número, ano) já
+    notificados, pra não reenviar a mesma MP. Estado 100% local do bot —
+    nada compartilhado com o Monitor-de-MP externo."""
+
+    __tablename__ = "dou_seen_mps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True, nullable=False)
+    numero: Mapped[str] = mapped_column(String(32), nullable=False)
+    ano: Mapped[int] = mapped_column(Integer, nullable=False)
+    notified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
 
 class WorkoutLog(Base):

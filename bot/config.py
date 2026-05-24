@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     # Medidas Provisórias
     congress_digest_enabled: bool = Field(True, alias="CONGRESS_DIGEST_ENABLED")
 
+    # Monitor de MPs no Diário Oficial (Inlabs/DOU). Independente do Monitor-de-MP
+    # externo — credencial própria do cadastro gratuito em inlabs.in.gov.br.
+    dou_mp_enabled: bool = Field(True, alias="DOU_MP_ENABLED")
+    dou_mp_hour: int = Field(18, alias="DOU_MP_HOUR")
+    dou_mp_minute: int = Field(0, alias="DOU_MP_MINUTE")
+    inlabs_email: str | None = Field(None, alias="INLABS_EMAIL")
+    inlabs_password: SecretStr | None = Field(None, alias="INLABS_PASSWORD")
+
     # Scheduler
     scheduler_tick_seconds: int = Field(60, alias="SCHEDULER_TICK_SECONDS")
     timezone: str = Field("America/Sao_Paulo", alias="TIMEZONE")
