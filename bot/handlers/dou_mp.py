@@ -66,7 +66,7 @@ async def cmd_agora(
         parse_mode=None,
     )
     try:
-        n = await deliver_to_user(message.bot, session, user, target)
+        n = await deliver_to_user(message.bot, session, user, target, force=True)
     except DouError as e:
         await message.answer(f"⚠️ {e}", parse_mode=None)
         return
@@ -76,6 +76,6 @@ async def cmd_agora(
         return
     if n == 0:
         await message.answer(
-            "Nenhuma MP nova publicada nessa data (ou já notificadas).",
+            "Nenhuma MP encontrada no DOU nessa data.",
             parse_mode=None,
         )

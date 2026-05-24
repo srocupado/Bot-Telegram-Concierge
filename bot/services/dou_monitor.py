@@ -630,16 +630,26 @@ async def mark_seen(session: AsyncSession, user_id: int, mp: dict) -> None:
 
 # ──────────────────────── entrega (mensagem + DOCX) ────────────────────────
 
-async def deliver_to_user(bot, session: AsyncSession, user, target_date: date) -> int:
-    """Busca MPs novas (não vistas) da data, gera nota + DOCX e entrega no
-    Telegram. Marca como vistas. Retorna quantas MPs foram entregues.
+async def deliver_to_user(
+    bot, session: AsyncSession, user, target_date: date, *, force: bool = False,
+) -> int:
+    """Busca MPs da data, gera nota + DOCX e entrega no Telegram. Por padrão
+    pula as já notificadas (dedup); com force=True entrega tudo que achar
+    (usado pelo comando manual). Retorna quantas MPs foram entregues.
     Levanta DouError se o fetch falhar (credencial, rede)."""
     from aiogram.types import BufferedInputFile
 
     mps = await fetch_mps(target_date)
-    novas = await filter_unseen(session, user.id, mps)
+    if force:
+        novas = mps
+    else:
+        novas = await filter_unseen(session, user.id, mps)
     if not novas:
         return 0
+
+    # set de já-vistas pra não duplicar linhas no banco quando force=True.
+    rows = await session.scalars(select(DouSeenMP).where(DouSeenMP.user_id == user.id))
+    ja_vistas = {(r.numero, r.ano) for r in rows}
 
     # 1) avisos imediatos de todas as MPs (não dependem da nota, que é lenta).
     avisadas = []
@@ -653,7 +663,8 @@ async def deliver_to_user(bot, session: AsyncSession, user, target_date: date) -
             logger.exception("dou: falha ao avisar MP %s/%s ao user %s",
                              mp["numero"], mp["ano"], user.id)
             continue
-        await mark_seen(session, user.id, mp)
+        if (mp["numero"], mp["ano"]) not in ja_vistas:
+            await mark_seen(session, user.id, mp)
         avisadas.append(mp)
 
     # 2) nota técnica + DOCX de cada MP, EM PARALELO (best-effort).
