@@ -112,6 +112,25 @@ async def cmd_start(message: Message, user: User) -> None:
     )
 
 
+def _chunk_text(text: str, limit: int = 4000) -> list[str]:
+    """Quebra o texto em blocos < limit do Telegram (4096), preferindo
+    cortar em quebras de parágrafo pra não partir tags HTML no meio."""
+    chunks: list[str] = []
+    current = ""
+    for para in text.split("\n\n"):
+        candidate = f"{current}\n\n{para}" if current else para
+        if len(candidate) <= limit:
+            current = candidate
+        else:
+            if current:
+                chunks.append(current)
+            current = para
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
-    await message.answer(HELP_TEXT, parse_mode="HTML", disable_web_page_preview=True)
+    for chunk in _chunk_text(HELP_TEXT):
+        await message.answer(chunk, parse_mode="HTML", disable_web_page_preview=True)
