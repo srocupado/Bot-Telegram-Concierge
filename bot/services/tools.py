@@ -27,9 +27,11 @@ from bot.services.user_facts import (
     list_facts,
     upsert_fact,
 )
+from bot.services.actions import record_action, undo_last
 from bot.services.financeiro import (
     FinanceiroError,
     NotConfiguredError,
+    analisar_gastos,
     apagar_lancamento,
     consultar_lancamentos,
     lancar_despesa_cartao,
@@ -65,6 +67,10 @@ async def _h_criar_tarefa(args: dict, ctx: ToolContext) -> str:
     if not texto:
         return "erro: parâmetro 'texto' vazio"
     t = await create_task(ctx.session, ctx.user.id, texto)
+    await record_action(
+        ctx.session, ctx.user.id, "tarefa",
+        f"tarefa #{t.id}: {t.text}", {"task_id": t.id},
+    )
     return f"ok: tarefa #{t.id} criada: {t.text}"
 
 
@@ -115,6 +121,10 @@ async def _h_criar_lembrete(args: dict, ctx: ToolContext) -> str:
     if due_utc <= datetime.now(timezone.utc):
         return f"erro: data/hora ({quando_iso}) já passou"
     rem = await create_reminder(ctx.session, ctx.user.id, texto, due_utc)
+    await record_action(
+        ctx.session, ctx.user.id, "lembrete",
+        f"lembrete #{rem.id}: {texto}", {"reminder_id": rem.id},
+    )
     local = due_utc.astimezone(tz)
     return (
         f"ok: lembrete #{rem.id} criado: {texto} "
@@ -165,6 +175,11 @@ async def _h_criar_lembrete_pagamento(args: dict, ctx: ToolContext) -> str:
     if descricao:
         texto += f" ({descricao})"
     rem = await create_reminder(ctx.session, ctx.user.id, texto, due_utc)
+    await record_action(
+        ctx.session, ctx.user.id, "lembrete",
+        f"lembrete de pagamento #{rem.id}: {beneficiario} {valor_fmt}",
+        {"reminder_id": rem.id},
+    )
     local = due_utc.astimezone(tz)
     return (
         f"ok: lembrete de pagamento #{rem.id} criado: "
@@ -198,6 +213,11 @@ async def _h_criar_lembrete_recorrente(args: dict, ctx: ToolContext) -> str:
         ctx.session, ctx.user.id, texto, due_utc,
         recurrence=recurrencia,
     )
+    await record_action(
+        ctx.session, ctx.user.id, "lembrete",
+        f"lembrete recorrente #{rem.id}: {texto} ({recurrencia})",
+        {"reminder_id": rem.id},
+    )
     local = due_utc.astimezone(tz)
     return (
         f"ok: lembrete recorrente #{rem.id} criado: {texto} ({recurrencia}) "
@@ -221,12 +241,18 @@ async def _h_agendar_comando(args: dict, ctx: ToolContext) -> str:
     tipo = (args.get("tipo") or "").strip()
     parametros = (args.get("parametros") or "").strip()
     quando_iso = (args.get("quando_iso") or "").strip()
+    recorrencia = (args.get("recorrencia") or "").strip().lower()
     if not tipo or not quando_iso:
         return "erro: 'tipo' e 'quando_iso' são obrigatórios"
     if tipo not in VALID_KINDS:
         return f"erro: tipo inválido. Use um de: {sorted(VALID_KINDS)}"
     if tipo == "chat" and not parametros:
         return "erro: para tipo='chat', 'parametros' deve conter o prompt a executar"
+    if recorrencia and not is_valid_recurrence(recorrencia):
+        return (
+            "erro: recorrencia inválida. Use 'daily', 'weekday', 'weekend', "
+            "'monthly' ou 'weekly:mon,wed,fri'."
+        )
 
     tz = ZoneInfo(ctx.tz)
     try:
@@ -246,15 +272,23 @@ async def _h_agendar_comando(args: dict, ctx: ToolContext) -> str:
         "clima": "clima",
         "chat": parametros[:60] + ("…" if len(parametros) > 60 else ""),
     }
-    texto = f"[agendado] {descricao_map.get(tipo, tipo)}"
+    label = descricao_map.get(tipo, tipo)
+    texto = f"[agendado] {label}"
     rem = await create_reminder(
         ctx.session, ctx.user.id, texto, due_utc,
         command_kind=tipo, command_args=parametros or None,
+        recurrence=recorrencia or None,
+    )
+    await record_action(
+        ctx.session, ctx.user.id, "lembrete",
+        f"comando agendado #{rem.id}: {label}" + (f" ({recorrencia})" if recorrencia else ""),
+        {"reminder_id": rem.id},
     )
     local = due_utc.astimezone(tz)
+    rec_label = f" — repete: {recorrencia}" if recorrencia else ""
     return (
-        f"ok: comando #{rem.id} agendado: {descricao_map.get(tipo, tipo)} "
-        f"em {local.strftime('%d/%m %H:%M')}"
+        f"ok: comando #{rem.id} agendado: {label} "
+        f"em {local.strftime('%d/%m %H:%M')}{rec_label}"
     )
 
 
@@ -407,6 +441,11 @@ async def _h_lancar_movimento_banco(args: dict, ctx: ToolContext) -> str:
         return f"erro: {e}"
     except FinanceiroError as e:
         return f"erro: {e}"
+    await record_action(
+        ctx.session, ctx.user.id, "financeiro",
+        f"lançamento no banco: {entry['desc']} R$ {entry['amount']:.2f}",
+        {"modulo": "banco", "entry_id": entry["id"]},
+    )
     sign = "+" if entry["amount"] >= 0 else ""
     return (
         f"ok: lançamento {entry['id']} no banco — "
@@ -442,6 +481,11 @@ async def _h_lancar_despesa_cartao(args: dict, ctx: ToolContext) -> str:
         return f"erro: {e}"
     except FinanceiroError as e:
         return f"erro: {e}"
+    await record_action(
+        ctx.session, ctx.user.id, "financeiro",
+        f"compra no cartão: {entry['desc']} R$ {entry['amount']:.2f}",
+        {"modulo": "cartao", "entry_id": entry["id"]},
+    )
     par_label = f" em {parcelas}x" if parcelas > 1 else ""
     return (
         f"ok: compra {entry['id']} no cartão — -R$ {entry['amount']:.2f} "
@@ -475,6 +519,13 @@ async def _h_registrar_aporte_tesouro(args: dict, ctx: ToolContext) -> str:
         return f"erro: {e}"
     except FinanceiroError as e:
         return f"erro: {e}"
+    contrib_id = (res.get("contribution") or {}).get("id")
+    if contrib_id:
+        await record_action(
+            ctx.session, ctx.user.id, "financeiro",
+            f"aporte de R$ {valor_f:.2f} no '{res['titulo']}'",
+            {"modulo": "tesouro", "entry_id": contrib_id},
+        )
     taxa_label = f" @ {taxa}%" if taxa is not None else ""
     return (
         f"ok: aporte de R$ {valor_f:.2f}{taxa_label} no '{res['titulo']}' "
@@ -544,6 +595,11 @@ async def _h_adicionar_lista_compras(args: dict, ctx: ToolContext) -> str:
         added.append(item)
     if not added:
         return "erro: nenhum item válido em 'itens'"
+    await record_action(
+        ctx.session, ctx.user.id, "compras",
+        "itens de compra: " + ", ".join(i.text for i in added),
+        {"item_ids": [i.id for i in added]},
+    )
     if len(added) == 1:
         return f"ok: adicionado: {format_item(added[0])}"
     return "ok: adicionados " + " | ".join(format_item(i) for i in added)
@@ -653,6 +709,42 @@ async def _h_limpar_comprados(_args: dict, ctx: ToolContext) -> str:
 async def _h_zerar_lista_compras(_args: dict, ctx: ToolContext) -> str:
     n = await clear_all(ctx.session, ctx.user.id)
     return f"ok: lista zerada ({n} item(ns) removido(s))"
+
+
+async def _h_desfazer_ultima_acao(_args: dict, ctx: ToolContext) -> str:
+    msg = await undo_last(ctx.session, ctx.user)
+    return msg
+
+
+async def _h_analisar_gastos(args: dict, ctx: ToolContext) -> str:
+    agrupar_por = (args.get("agrupar_por") or "categoria").strip().lower()
+    fonte = (args.get("fonte") or "tudo").strip().lower()
+
+    today = datetime.now(ZoneInfo(ctx.tz)).date()
+    inicio_iso = (args.get("inicio_iso") or "").strip()
+    fim_iso = (args.get("fim_iso") or "").strip()
+
+    # Se não vier intervalo, aceita 'dias' (janela até hoje) ou default 30d.
+    if not inicio_iso or not fim_iso:
+        dias = args.get("dias") or 30
+        try:
+            dias = int(dias)
+        except (TypeError, ValueError):
+            return "erro: 'dias' deve ser inteiro (ou passe inicio_iso+fim_iso)"
+        from datetime import timedelta as _td
+        fim_iso = today.isoformat()
+        inicio_iso = (today - _td(days=dias)).isoformat()
+
+    try:
+        out = await analisar_gastos(
+            ctx.session, ctx.user, inicio_iso, fim_iso,
+            agrupar_por=agrupar_por, fonte=fonte,
+        )
+    except NotConfiguredError as e:
+        return f"erro: {e}"
+    except FinanceiroError as e:
+        return f"erro: {e}"
+    return "ok:\n" + out
 
 
 async def _h_consultar_transito(args: dict, ctx: ToolContext) -> str:
@@ -839,8 +931,16 @@ TOOLS: list[Tool] = [
             "- 'congresso': dispara resumo da pauta do Congresso.\n"
             "- 'clima': consulta previsão do tempo (parametros='lat,lng' opcional, default HOME_COORDS).\n"
             "- 'chat': envia um prompt livre pro assistente como se o usuário "
-            "tivesse digitado. Use parametros pro prompt completo. Ex: "
-            "'me dê um resumo das notícias da semana e clima de hoje'."
+            "tivesse digitado. Use parametros pro prompt completo. É o tipo "
+            "MAIS PODEROSO — serve pra agendar QUALQUER coisa que o bot saiba "
+            "fazer (resumo de gastos, fatura do cartão, lista de compras, "
+            "consulta de treino, etc). Ex: parametros='me manda o resumo dos "
+            "meus gastos da semana e quanto sobrou no orçamento'.\n"
+            "Para agendamentos RECORRENTES (todo dia/semana/mês), passe "
+            "'recorrencia'. Ex: 'todo domingo 20h me manda o resumo da "
+            "semana' → tipo='chat', parametros='resumo dos meus gastos e "
+            "treinos da semana', quando_iso=<próximo domingo 20h>, "
+            "recorrencia='weekly:sun'."
         ),
         parameters={
             "type": "object",
@@ -858,7 +958,15 @@ TOOLS: list[Tool] = [
                 },
                 "quando_iso": {
                     "type": "string",
-                    "description": "Data/hora local ISO 'YYYY-MM-DDTHH:MM'.",
+                    "description": "Data/hora local ISO 'YYYY-MM-DDTHH:MM' do primeiro disparo.",
+                },
+                "recorrencia": {
+                    "type": "string",
+                    "description": (
+                        "Opcional. Pra repetir: 'daily', 'weekday', 'weekend', "
+                        "'monthly' ou 'weekly:<dias>' (ex: 'weekly:mon,wed,fri' "
+                        "ou 'weekly:sun'). Vazio = dispara só uma vez."
+                    ),
                 },
             },
             "required": ["tipo", "quando_iso"],
@@ -1337,6 +1445,55 @@ TOOLS: list[Tool] = [
         ),
         parameters={"type": "object", "properties": {}},
         handler=_h_zerar_lista_compras,
+    ),
+    Tool(
+        name="desfazer_ultima_acao",
+        description=(
+            "Desfaz a ÚLTIMA ação reversível que você executou pra este "
+            "usuário (último lançamento financeiro, tarefa, lembrete, "
+            "comando agendado ou item de compras criado). Use quando o "
+            "usuário disser 'desfaz', 'desfaz isso', 'cancela o que você "
+            "acabou de fazer', 'errei, desfaz'. Chamar de novo desfaz a "
+            "ação anterior a essa (encadeia). NÃO reverte ações feitas no "
+            "app web — só o que o bot criou. Repasse a mensagem de "
+            "retorno fielmente."
+        ),
+        parameters={"type": "object", "properties": {}},
+        handler=_h_desfazer_ultima_acao,
+    ),
+    Tool(
+        name="analisar_gastos",
+        description=(
+            "Análise de gastos num intervalo, agrupada por categoria, mês "
+            "ou semana. Considera só SAÍDAS (débitos do banco + gastos do "
+            "cartão por fatura). Use pra perguntas analíticas: 'quanto "
+            "gastei com alimentação em maio', 'qual minha maior categoria "
+            "no trimestre', 'evolução dos meus gastos mês a mês', 'comparar "
+            "maio com junho' (use agrupar_por='mes' cobrindo os dois "
+            "meses).\n"
+            "Passe inicio_iso+fim_iso pra intervalo exato, OU 'dias' pra "
+            "janela até hoje (default 30). Para cruzar com outros dados "
+            "(ex: treinos), combine com consultar_treinos numa mesma "
+            "resposta e sintetize você mesmo."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "inicio_iso": {"type": "string", "description": "Início 'YYYY-MM-DD' (opcional se usar 'dias')"},
+                "fim_iso": {"type": "string", "description": "Fim 'YYYY-MM-DD' (opcional se usar 'dias')"},
+                "dias": {"type": "integer", "description": "Janela em dias até hoje (default 30; ignorado se inicio+fim vierem)"},
+                "agrupar_por": {
+                    "type": "string",
+                    "enum": ["categoria", "mes", "semana"],
+                },
+                "fonte": {
+                    "type": "string",
+                    "enum": ["banco", "cartao", "tudo"],
+                    "description": "Default 'tudo'",
+                },
+            },
+        },
+        handler=_h_analisar_gastos,
     ),
 ]
 

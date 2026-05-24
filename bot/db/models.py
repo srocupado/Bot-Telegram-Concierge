@@ -155,6 +155,26 @@ class ShoppingItem(Base):
     checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class ActionLog(Base):
+    """Log de ações mutativas do agente, pra suportar 'desfaz a última'.
+
+    `kind` identifica como reverter ('tarefa', 'lembrete', 'compras',
+    'financeiro'). `undo_data` é JSON com o necessário pra desfazer
+    (ids, módulo, etc). `undone=True` marca já revertido — o undo pega
+    sempre a ação não-revertida mais recente do usuário.
+    """
+
+    __tablename__ = "action_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True, nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    summary: Mapped[str] = mapped_column(String(512), nullable=False)
+    undo_data: Mapped[str] = mapped_column(Text, nullable=False)
+    undone: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+
 class WorkoutLog(Base):
     """Registro de treino do dia. Categorias canônicas: peito, costas,
     pernas, cardio. `groups` é CSV (ex: 'peito,cardio'). Várias entradas

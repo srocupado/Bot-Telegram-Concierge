@@ -962,3 +962,109 @@ async def build_card_closing_summary(
         )
 
     return "\n".join(lines)
+
+
+def _months_between(start: date, end: date):
+    """Itera (ano, mês) de start até end inclusive."""
+    y, m = start.year, start.month
+    while (y, m) <= (end.year, end.month):
+        yield y, m
+        if m == 12:
+            y, m = y + 1, 1
+        else:
+            m += 1
+
+
+def _fmt_brl(v: float) -> str:
+    return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+async def analisar_gastos(
+    session: AsyncSession,
+    user,
+    inicio_iso: str,
+    fim_iso: str,
+    agrupar_por: str = "categoria",
+    fonte: str = "tudo",
+) -> str:
+    """Analítico de gastos num intervalo, agrupado por categoria/mês/semana.
+
+    Considera só SAÍDAS: débitos do banco (amount<0) e gastos do cartão
+    (valor da parcela que cai em cada fatura do período). Crédito/receita
+    não entra. Pensado pra perguntas tipo 'quanto gastei com alimentação
+    em maio', 'maior categoria do trimestre', 'evolução mês a mês'.
+    """
+    uid = _require_uid(user)
+    db = await _get_db(session)
+    state = await _read_state(db, uid)
+
+    try:
+        inicio = date.fromisoformat(inicio_iso)
+        fim = date.fromisoformat(fim_iso)
+    except ValueError:
+        raise FinanceiroError("datas inválidas (use 'YYYY-MM-DD').")
+    if inicio > fim:
+        inicio, fim = fim, inicio
+
+    fonte = (fonte or "tudo").strip().lower()
+    agrupar_por = (agrupar_por or "categoria").strip().lower()
+    if agrupar_por not in ("categoria", "mes", "mês", "semana"):
+        raise FinanceiroError("agrupar_por deve ser 'categoria', 'mes' ou 'semana'.")
+
+    closing = _get_card_closing_day(state)
+    cat_name = {c["id"]: (c.get("name") or c["id"]) for c in _effective_categories(state)}
+
+    # events: lista de (date, category_id, value)
+    events: list[tuple[date, str, float]] = []
+
+    if fonte in ("banco", "tudo"):
+        for it in state.get("bankTransactions") or []:
+            try:
+                d = date.fromisoformat((it.get("date") or "").replace(" ", "T")[:10])
+            except ValueError:
+                continue
+            amt = float(it.get("amount") or 0)
+            if amt < 0 and inicio <= d <= fim:
+                events.append((d, it.get("category") or "outros", abs(amt)))
+
+    if fonte in ("cartao", "cartão", "tudo"):
+        entries = state.get("cardEntries") or []
+        for y, m in _months_between(inicio, fim):
+            for it in entries:
+                info = _entry_in_bill(it, y, m, closing)
+                if info:
+                    events.append((date(y, m, 1), it.get("category") or "outros", float(info["value"])))
+
+    if not events:
+        return f"sem gastos entre {inicio.strftime('%d/%m/%Y')} e {fim.strftime('%d/%m/%Y')}."
+
+    total_geral = sum(v for _, _, v in events)
+    header = (
+        f"gastos {inicio.strftime('%d/%m/%Y')} → {fim.strftime('%d/%m/%Y')} "
+        f"(fonte: {fonte}) — total {_fmt_brl(total_geral)}"
+    )
+    lines = [header]
+
+    if agrupar_por == "categoria":
+        by: dict[str, float] = {}
+        for _, cat, v in events:
+            by[cat] = by.get(cat, 0.0) + v
+        for cat, v in sorted(by.items(), key=lambda x: -x[1]):
+            pct = (v / total_geral * 100) if total_geral else 0
+            lines.append(f"  • {cat_name.get(cat, cat)}: {_fmt_brl(v)} ({pct:.0f}%)")
+    elif agrupar_por in ("mes", "mês"):
+        by_m: dict[str, float] = {}
+        for d, _, v in events:
+            by_m[f"{d.year:04d}-{d.month:02d}"] = by_m.get(f"{d.year:04d}-{d.month:02d}", 0.0) + v
+        for key in sorted(by_m):
+            lines.append(f"  • {key}: {_fmt_brl(by_m[key])}")
+    else:  # semana
+        by_w: dict[str, float] = {}
+        for d, _, v in events:
+            iso = d.isocalendar()
+            by_w.setdefault(f"{iso[0]}-S{iso[1]:02d}", 0.0)
+            by_w[f"{iso[0]}-S{iso[1]:02d}"] += v
+        for key in sorted(by_w):
+            lines.append(f"  • {key}: {_fmt_brl(by_w[key])}")
+
+    return "\n".join(lines)
