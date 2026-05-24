@@ -139,6 +139,22 @@ class KVSetting(Base):
     )
 
 
+class ShoppingItem(Base):
+    """Item da lista de compras (genérica — mercado, farmácia, ferragem,
+    o que for). Persiste entre sessões. `checked=True` significa que o
+    usuário marcou como comprado mas ainda não limpou da lista."""
+
+    __tablename__ = "shopping_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True, nullable=False)
+    text: Mapped[str] = mapped_column(String(256), nullable=False)
+    quantity: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    checked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class WorkoutLog(Base):
     """Registro de treino do dia. Categorias canônicas: peito, costas,
     pernas, cardio. `groups` é CSV (ex: 'peito,cardio'). Várias entradas

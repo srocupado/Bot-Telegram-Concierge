@@ -36,6 +36,17 @@ from bot.services.financeiro import (
     lancar_movimento_banco,
     registrar_aporte_tesouro,
 )
+from bot.db.models import ShoppingItem
+from bot.services.shopping import (
+    add_item,
+    clear_all,
+    clear_checked,
+    find_by_text,
+    format_item,
+    list_items,
+    mark_checked,
+    remove_item,
+)
 from bot.services.workouts import (
     CANONICAL_GROUPS,
     delete_workouts_on_date,
@@ -510,6 +521,138 @@ async def _h_consultar_lancamentos(args: dict, ctx: ToolContext) -> str:
     except FinanceiroError as e:
         return f"erro: {e}"
     return "ok:\n" + out
+
+
+async def _h_adicionar_lista_compras(args: dict, ctx: ToolContext) -> str:
+    itens = args.get("itens") or []
+    if not isinstance(itens, list) or not itens:
+        return "erro: 'itens' deve ser lista não vazia"
+    added = []
+    for raw in itens:
+        if isinstance(raw, str):
+            text, qty = raw, None
+        elif isinstance(raw, dict):
+            text = (raw.get("text") or raw.get("texto") or "").strip()
+            qty = (raw.get("quantidade") or raw.get("quantity") or None)
+            if qty is not None:
+                qty = qty.strip() if isinstance(qty, str) else str(qty)
+        else:
+            continue
+        if not text:
+            continue
+        item = await add_item(ctx.session, ctx.user.id, text, qty)
+        added.append(item)
+    if not added:
+        return "erro: nenhum item válido em 'itens'"
+    if len(added) == 1:
+        return f"ok: adicionado: {format_item(added[0])}"
+    return "ok: adicionados " + " | ".join(format_item(i) for i in added)
+
+
+async def _h_listar_compras(args: dict, ctx: ToolContext) -> str:
+    escopo = (args.get("escopo") or "pendentes").strip().lower()
+    only_pending = escopo != "todos"
+    items = await list_items(ctx.session, ctx.user.id, only_pending=only_pending)
+    if not items:
+        if only_pending:
+            return "ok: lista de compras vazia (sem itens pendentes)"
+        return "ok: lista de compras vazia"
+    head = "lista de compras (pendentes)" if only_pending else "lista de compras (todos)"
+    return "ok: " + head + ":\n" + "\n".join(format_item(i) for i in items)
+
+
+async def _h_marcar_comprado(args: dict, ctx: ToolContext) -> str:
+    ids_raw = args.get("ids") or []
+    texto = (args.get("texto") or "").strip()
+    if not ids_raw and not texto:
+        return "erro: passe 'ids' (lista de inteiros) ou 'texto' (busca por nome)"
+
+    targets: list = []
+    if ids_raw:
+        if not isinstance(ids_raw, list):
+            return "erro: 'ids' deve ser lista"
+        for x in ids_raw:
+            if not isinstance(x, int):
+                return f"erro: id inválido em 'ids': {x!r}"
+            item = await ctx.session.get(ShoppingItem, x)
+            if item is None or item.user_id != ctx.user.id:
+                return f"erro: item #{x} não encontrado"
+            targets.append(item)
+    else:
+        matches = await find_by_text(ctx.session, ctx.user.id, texto, include_checked=False)
+        if not matches:
+            return f"erro: nenhum item pendente com '{texto}' na lista"
+        if len(matches) > 1:
+            names = " | ".join(f"#{m.id} {m.text}" for m in matches)
+            return f"erro: ambíguo — vários itens batem em '{texto}': {names}. Use 'ids' pra desambiguar."
+        targets = matches
+
+    marked = []
+    for t in targets:
+        m = await mark_checked(ctx.session, ctx.user.id, t.id, checked=True)
+        if m is not None:
+            marked.append(m)
+    if not marked:
+        return "erro: nada foi marcado"
+    return "ok: comprado(s): " + " | ".join(format_item(i) for i in marked)
+
+
+async def _h_desmarcar_compra(args: dict, ctx: ToolContext) -> str:
+    ids_raw = args.get("ids") or []
+    if not isinstance(ids_raw, list) or not ids_raw:
+        return "erro: 'ids' deve ser lista não vazia"
+    unmarked = []
+    for x in ids_raw:
+        if not isinstance(x, int):
+            return f"erro: id inválido: {x!r}"
+        m = await mark_checked(ctx.session, ctx.user.id, x, checked=False)
+        if m is not None:
+            unmarked.append(m)
+    if not unmarked:
+        return "erro: nada foi desmarcado"
+    return "ok: desmarcado(s): " + " | ".join(format_item(i) for i in unmarked)
+
+
+async def _h_remover_lista_compras(args: dict, ctx: ToolContext) -> str:
+    ids_raw = args.get("ids") or []
+    texto = (args.get("texto") or "").strip()
+    if not ids_raw and not texto:
+        return "erro: passe 'ids' ou 'texto'"
+
+    if ids_raw:
+        if not isinstance(ids_raw, list):
+            return "erro: 'ids' deve ser lista"
+        removed = []
+        for x in ids_raw:
+            if not isinstance(x, int):
+                return f"erro: id inválido: {x!r}"
+            r = await remove_item(ctx.session, ctx.user.id, x)
+            if r is not None:
+                removed.append(r)
+        if not removed:
+            return "erro: nenhum item removido"
+        return "ok: removido(s): " + " | ".join(f"#{r.id} {r.text}" for r in removed)
+
+    matches = await find_by_text(ctx.session, ctx.user.id, texto, include_checked=True)
+    if not matches:
+        return f"erro: nenhum item bate em '{texto}'"
+    if len(matches) > 1:
+        names = " | ".join(f"#{m.id} {m.text}" for m in matches)
+        return f"erro: ambíguo: {names}. Use 'ids' pra desambiguar."
+    r = await remove_item(ctx.session, ctx.user.id, matches[0].id)
+    return f"ok: removido #{r.id} {r.text}"
+
+
+async def _h_limpar_comprados(_args: dict, ctx: ToolContext) -> str:
+    n = await clear_checked(ctx.session, ctx.user.id)
+    if n == 0:
+        return "ok: nenhum item comprado pra limpar"
+    return f"ok: {n} item(ns) comprado(s) removido(s) da lista"
+
+
+async def _h_zerar_lista_compras(_args: dict, ctx: ToolContext) -> str:
+    n = await clear_all(ctx.session, ctx.user.id)
+    return f"ok: lista zerada ({n} item(ns) removido(s))"
 
 
 async def _h_consultar_transito(args: dict, ctx: ToolContext) -> str:
@@ -1062,6 +1205,138 @@ TOOLS: list[Tool] = [
             "required": ["modulo", "id"],
         },
         handler=_h_apagar_lancamento,
+    ),
+    Tool(
+        name="adicionar_lista_compras",
+        description=(
+            "Adiciona um ou mais itens à lista de compras do usuário "
+            "(persistente entre sessões). Use sempre que ouvir 'acabou X', "
+            "'preciso comprar Y', 'adiciona Z na lista', 'bota arroz na "
+            "lista', 'lembra de Z amanhã no mercado'.\n"
+            "Aceita uma lista de strings simples ou de objetos {text, "
+            "quantidade}. Se o usuário falar várias coisas de uma vez "
+            "('compra detergente, papel higiênico e 2kg de açúcar'), "
+            "passe os 3 itens numa única chamada — NÃO chame a tool 3 "
+            "vezes. Extraia quantidade quando explícita ('2kg de "
+            "açúcar' → text='açúcar', quantidade='2kg')."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "itens": {
+                    "type": "array",
+                    "items": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "text": {"type": "string"},
+                                    "quantidade": {"type": "string"},
+                                },
+                                "required": ["text"],
+                            },
+                        ],
+                    },
+                },
+            },
+            "required": ["itens"],
+        },
+        handler=_h_adicionar_lista_compras,
+    ),
+    Tool(
+        name="listar_compras",
+        description=(
+            "Lista os itens da lista de compras. Use quando o usuário "
+            "perguntar 'o que tem na minha lista', 'to indo no mercado', "
+            "'minha lista de compras', 'o que preciso comprar'. "
+            "Por padrão mostra só os PENDENTES (não comprados). Passe "
+            "escopo='todos' pra incluir os já marcados como comprados."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "escopo": {
+                    "type": "string",
+                    "enum": ["pendentes", "todos"],
+                },
+            },
+        },
+        handler=_h_listar_compras,
+    ),
+    Tool(
+        name="marcar_comprado",
+        description=(
+            "Marca item(ns) da lista como comprado. Use quando o usuário "
+            "disser 'comprei o sal', 'já peguei o detergente', 'tenho o "
+            "açúcar'. Aceita 'ids' (lista de int — preferível quando você "
+            "tem certeza) ou 'texto' (busca substring case-insensitive). "
+            "Se 'texto' bater em vários itens, a tool retorna erro listando "
+            "as opções — você então confirma com o usuário e usa 'ids'."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "ids": {"type": "array", "items": {"type": "integer"}},
+                "texto": {"type": "string"},
+            },
+        },
+        handler=_h_marcar_comprado,
+    ),
+    Tool(
+        name="desmarcar_compra",
+        description=(
+            "Desmarca item(ns) que tinham sido marcados como comprados "
+            "(volta pra pendente). Use quando o usuário disser 'na verdade "
+            "não comprei o X', 'desmarca o Y'. Aceita só 'ids'."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "ids": {"type": "array", "items": {"type": "integer"}},
+            },
+            "required": ["ids"],
+        },
+        handler=_h_desmarcar_compra,
+    ),
+    Tool(
+        name="remover_lista_compras",
+        description=(
+            "Remove um ou mais itens da lista (apaga permanentemente, "
+            "diferente de marcar como comprado). Use quando o usuário "
+            "disser 'tira X da lista', 'apaga o Y', 'não preciso mais "
+            "do Z'. Aceita 'ids' ou 'texto' (busca substring)."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "ids": {"type": "array", "items": {"type": "integer"}},
+                "texto": {"type": "string"},
+            },
+        },
+        handler=_h_remover_lista_compras,
+    ),
+    Tool(
+        name="limpar_comprados",
+        description=(
+            "Remove da lista TODOS os itens já marcados como comprados, "
+            "deixando só os pendentes. Use quando o usuário disser "
+            "'voltei do mercado, limpa os comprados', 'tira tudo que "
+            "comprei', 'limpa a lista'."
+        ),
+        parameters={"type": "object", "properties": {}},
+        handler=_h_limpar_comprados,
+    ),
+    Tool(
+        name="zerar_lista_compras",
+        description=(
+            "Zera TODA a lista de compras (apaga pendentes e comprados). "
+            "Só use quando o usuário PEDIR EXPLICITAMENTE 'zera a lista', "
+            "'apaga tudo'. NÃO use ao voltar do mercado — pra isso use "
+            "limpar_comprados, que preserva pendentes."
+        ),
+        parameters={"type": "object", "properties": {}},
+        handler=_h_zerar_lista_compras,
     ),
 ]
 
