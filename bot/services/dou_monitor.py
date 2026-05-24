@@ -428,6 +428,20 @@ _GEMINI_SCHEMA_PROPS = {
 }
 
 
+def _gemini_models() -> list[str]:
+    """Modelo principal + fallback (sem repetir)."""
+    models = [settings.dou_mp_gemini_model]
+    fb = settings.dou_mp_gemini_model_fallback
+    if fb and fb != settings.dou_mp_gemini_model:
+        models.append(fb)
+    return models
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    s = str(exc).lower()
+    return any(t in s for t in ("429", "resource_exhausted", "quota", "rate limit"))
+
+
 async def _pesquisar_contexto_gemini(client, mp: dict) -> str:
     if not settings.dou_mp_web_research:
         return ""
@@ -440,21 +454,24 @@ async def _pesquisar_contexto_gemini(client, mp: dict) -> str:
         "fatos com fonte."
     )
 
-    def _call() -> str:
+    def _call(model: str) -> str:
         config = types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())],
             max_output_tokens=1500,
         )
-        resp = client.models.generate_content(
-            model=settings.dou_mp_gemini_model, contents=prompt, config=config,
-        )
+        resp = client.models.generate_content(model=model, contents=prompt, config=config)
         return (resp.text or "").strip()
 
-    try:
-        return await asyncio.wait_for(asyncio.to_thread(_call), timeout=120.0)
-    except Exception as exc:
-        logger.warning("dou: pesquisa web (gemini) indisponível p/ MP %s (%s)", mp["numero"], exc)
-        return ""
+    for model in _gemini_models():
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(_call, model), timeout=120.0)
+        except Exception as exc:
+            if _is_quota_error(exc) and model != _gemini_models()[-1]:
+                logger.warning("dou: pesquisa gemini %s estourou cota; tentando fallback", model)
+                continue
+            logger.warning("dou: pesquisa web (gemini) indisponível p/ MP %s (%s)", mp["numero"], exc)
+            return ""
+    return ""
 
 
 async def _gen_nota_gemini(mp: dict) -> dict | None:
@@ -466,6 +483,7 @@ async def _gen_nota_gemini(mp: dict) -> dict | None:
         from google.genai import types
     except ImportError:
         return None
+    import json
     client = genai.Client(api_key=settings.gemini_api_key)
     dossie = await _pesquisar_contexto_gemini(client, mp)
     user_content = _nota_user_content(mp, dossie)
@@ -479,28 +497,33 @@ async def _gen_nota_gemini(mp: dict) -> dict | None:
         required=["ementa", "p1_contexto", "p2_dispositivos"],
     )
 
-    def _call() -> str:
+    def _call(model: str) -> str:
         config = types.GenerateContentConfig(
             system_instruction=_NOTA_SYSTEM,
             response_mime_type="application/json",
             response_schema=schema,
             max_output_tokens=6144,
         )
-        resp = client.models.generate_content(
-            model=settings.dou_mp_gemini_model, contents=user_content, config=config,
-        )
+        resp = client.models.generate_content(model=model, contents=user_content, config=config)
         return (resp.text or "").strip()
 
-    try:
-        raw = await asyncio.wait_for(asyncio.to_thread(_call), timeout=120.0)
-        import json
-        data = json.loads(raw)
-        if not data.get("p1_contexto") or not data.get("p2_dispositivos"):
-            logger.warning("dou: nota gemini incompleta MP %s/%s", mp["numero"], mp["ano"])
-        return data
-    except Exception:
-        logger.exception("dou: falha (gemini) na nota MP %s/%s", mp["numero"], mp["ano"])
-        return None
+    models = _gemini_models()
+    for model in models:
+        try:
+            raw = await asyncio.wait_for(asyncio.to_thread(_call, model), timeout=120.0)
+            data = json.loads(raw)
+            if not data.get("p1_contexto") or not data.get("p2_dispositivos"):
+                logger.warning("dou: nota gemini incompleta MP %s/%s (%s)", mp["numero"], mp["ano"], model)
+            logger.info("dou: nota gerada MP %s/%s via %s", mp["numero"], mp["ano"], model)
+            return data
+        except Exception as exc:
+            if _is_quota_error(exc) and model != models[-1]:
+                logger.warning("dou: nota gemini %s estourou cota MP %s; tentando fallback",
+                               model, mp["numero"])
+                continue
+            logger.exception("dou: falha (gemini/%s) na nota MP %s/%s", model, mp["numero"], mp["ano"])
+            return None
+    return None
 
 
 # ──────────────────────── prazos + formatação ────────────────────────
@@ -705,6 +728,7 @@ async def deliver_to_user(
             except Exception:
                 pass
 
-    if avisadas:
-        await asyncio.gather(*(_nota_e_docx(mp) for mp in avisadas))
+    # Serial (não paralelo) pra não estourar o RPM do free tier do Gemini.
+    for mp in avisadas:
+        await _nota_e_docx(mp)
     return len(avisadas)

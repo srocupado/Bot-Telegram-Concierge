@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     # Search grounding nativo); "anthropic" usa Claude + web_search.
     dou_mp_provider: Provider = Field("gemini", alias="DOU_MP_PROVIDER")
     dou_mp_gemini_model: str = Field("gemini-2.5-pro", alias="DOU_MP_GEMINI_MODEL")
+    # Fallback automático quando o modelo principal estoura cota/429 (free
+    # tier do Pro tem limite baixo). Vazio desliga o fallback.
+    dou_mp_gemini_model_fallback: str = Field("gemini-2.5-flash", alias="DOU_MP_GEMINI_MODEL_FALLBACK")
     inlabs_email: str | None = Field(None, alias="INLABS_EMAIL")
     inlabs_password: SecretStr | None = Field(None, alias="INLABS_PASSWORD")
 
