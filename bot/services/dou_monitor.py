@@ -306,7 +306,10 @@ _WEB_TOOLS = [
 
 async def _pesquisar_contexto(client, mp: dict) -> str:
     """Fase 1: pesquisa contexto político/noticioso da MP via web search.
-    Retorna um dossiê textual (ou string vazia se indisponível)."""
+    Retorna um dossiê textual (ou string vazia se desligado/indisponível).
+    Limitado no tempo pra não pendurar a entrega."""
+    if not settings.dou_mp_web_research:
+        return ""
     prompt = (
         f"Pesquise o contexto da Medida Provisória nº {mp['numero']}, de "
         f"{mp['ano']} (publicada no DOU em {mp['data_publicacao']}). "
@@ -319,24 +322,28 @@ async def _pesquisar_contexto(client, mp: dict) -> str:
         "redigir a nota ainda."
     )
     messages = [{"role": "user", "content": prompt}]
+    bounded = client.with_options(timeout=60.0, max_retries=1)
     try:
-        for _ in range(5):
-            resp = await client.messages.create(
-                model=settings.anthropic_model,
-                max_tokens=2048,
-                tools=_WEB_TOOLS,
-                messages=messages,
-            )
-            if resp.stop_reason == "pause_turn":
-                messages = [
-                    {"role": "user", "content": prompt},
-                    {"role": "assistant", "content": resp.content},
-                ]
-                continue
-            return "\n".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
-        return ""
+        async def _run() -> str:
+            msgs = messages
+            for _ in range(3):
+                resp = await bounded.messages.create(
+                    model=settings.anthropic_model,
+                    max_tokens=2048,
+                    tools=_WEB_TOOLS,
+                    messages=msgs,
+                )
+                if resp.stop_reason == "pause_turn":
+                    msgs = [
+                        {"role": "user", "content": prompt},
+                        {"role": "assistant", "content": resp.content},
+                    ]
+                    continue
+                return "\n".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+            return ""
+        return await asyncio.wait_for(_run(), timeout=150.0)
     except Exception as exc:
-        logger.warning("dou: web search indisponível p/ MP %s (%s); seguindo sem dossiê",
+        logger.warning("dou: pesquisa web indisponível/lenta p/ MP %s (%s); seguindo sem dossiê",
                        mp["numero"], exc)
         return ""
 
@@ -368,7 +375,7 @@ async def generate_nota_tecnica(mp: dict) -> dict | None:
         "Emita a nota técnica chamando a ferramenta nota_tecnica."
     )
     try:
-        resp = await client.messages.create(
+        resp = await client.with_options(timeout=120.0, max_retries=1).messages.create(
             model=settings.anthropic_model,
             max_tokens=4096,
             system=[{"type": "text", "text": _NOTA_SYSTEM, "cache_control": {"type": "ephemeral"}}],
@@ -539,21 +546,39 @@ async def deliver_to_user(bot, session: AsyncSession, user, target_date: date) -
 
     enviadas = 0
     for mp in novas:
-        nota = await generate_nota_tecnica(mp)
+        # 1) aviso imediato — não depende da nota (que é lenta).
         try:
             await bot.send_message(
-                user.id, format_telegram_message(mp, nota),
+                user.id, format_telegram_message(mp, None),
                 parse_mode="HTML", disable_web_page_preview=True,
             )
-            docx_bytes = await asyncio.to_thread(build_docx, mp, nota)
-            await bot.send_document(
-                user.id,
-                BufferedInputFile(docx_bytes, filename=docx_filename(mp)),
-            )
         except Exception:
-            logger.exception("dou: falha ao entregar MP %s/%s ao user %s",
+            logger.exception("dou: falha ao avisar MP %s/%s ao user %s",
                              mp["numero"], mp["ano"], user.id)
             continue
         await mark_seen(session, user.id, mp)
         enviadas += 1
+
+        # 2) nota técnica + DOCX (best-effort; pode demorar pela pesquisa web).
+        try:
+            logger.info("dou: gerando nota técnica MP %s/%s…", mp["numero"], mp["ano"])
+            nota = await generate_nota_tecnica(mp)
+            docx_bytes = await asyncio.to_thread(build_docx, mp, nota)
+            await bot.send_document(
+                user.id,
+                BufferedInputFile(docx_bytes, filename=docx_filename(mp)),
+                caption=None if nota else "⚠️ Nota gerada sem análise da IA (texto base).",
+            )
+        except Exception:
+            logger.exception("dou: falha ao gerar/enviar nota da MP %s/%s",
+                             mp["numero"], mp["ano"])
+            try:
+                await bot.send_message(
+                    user.id,
+                    f"⚠️ Não consegui gerar a nota técnica da MP {mp['numero']}/{mp['ano']} "
+                    "agora. Tente /mp_dou_agora mais tarde.",
+                    parse_mode=None,
+                )
+            except Exception:
+                pass
     return enviadas
