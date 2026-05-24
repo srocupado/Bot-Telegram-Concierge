@@ -23,7 +23,7 @@ HELP_TEXT = (
     "• <code>/congresso_at HH:MM</code> — muda horário do digest\n"
     "• <code>/congresso_reset</code> — zera marca de envio da semana\n\n"
     "<b>Medidas Provisórias — publicação no Diário Oficial</b>:\n"
-    "• <code>/mp_dou_on</code> / <code>/mp_dou_off</code> — assina/desassina o digest diário (18h) de MPs novas no DOU\n"
+    "• <code>/mp_dou_on</code> / <code>/mp_dou_off</code> — assina/desassina o digest diário de MPs novas no DOU\n"
     "• <code>/mp_dou_agora [AAAA-MM-DD]</code> — busca agora; entrega nota técnica (gerada por IA) + DOCX\n"
     "• Por voz/texto: <i>\"saiu MP nova hoje?\"</i> → lista número + ementa\n\n"
     "<b>Rota com sua localização</b>:\n"
