@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import os
 import re
 import zipfile
 from datetime import date, timedelta
@@ -201,6 +202,7 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
                         for mp in _parse_dou_xml(client, xml_data, target_date):
                             if mp["numero"] not in seen_numeros:
                                 seen_numeros.add(mp["numero"])
+                                mp["edicao"] = "Extra" if section == "DO1E" else "Normal"
                                 results.append(mp)
             except zipfile.BadZipFile:
                 logger.warning("dou: ZIP inválido em %s", section)
@@ -217,43 +219,132 @@ async def fetch_mps(target_date: date) -> list[dict]:
 
 # ──────────────────────── nota técnica (Claude) ────────────────────────
 
+# Tabela da série de MPs 2026 — referência pro parágrafo de contexto cruzar
+# conexões temáticas (replicado das diretrizes do assessor). Estático.
+_SERIE_MPS_2026 = (
+    "1.337 (06/03 Extra) Fundo Social — financiamento calamidade MG; "
+    "1.338 (06/03 Extra) Apoio R$7.300/família Zona da Mata MG; "
+    "1.339 (09/03) crédito extraordinário R$266,5mi defesa civil MG; "
+    "1.340 (12/03) subvenção diesel + IE petróleo/diesel; "
+    "1.341 (12/03) drawback cacau; "
+    "1.342 (18/03) crédito extraordinário R$1,305bi SUAS+FAR+FGO+FS (MG); "
+    "1.343 (19/03 Extra) piso mínimo frete — CIOT/RNTRC; "
+    "1.344 (19/03 Extra) crédito extraordinário R$10bi ANP subvenção diesel; "
+    "1.345 (25/03) Plano Brasil Soberano — FGE/FGCE + R$15bi BNDES; "
+    "1.346 (27/03 Extra) crédito extraordinário R$20,4mi INCRA/PR; "
+    "1.347 (27/03 Extra) crédito extraordinário R$285mi defesa civil; "
+    "1.348 (06/04 Extra) FUNAPOL; "
+    "1.349 (07/04 Extra) Regime Emergencial Combustíveis (R$31bi); "
+    "1.350 (15/04 Extra) FGHab — MCMV/Reforma Casa Brasil; "
+    "1.360 (19/05 Extra) Moto-frete — CTB + Lei 12.009/2009. "
+    "Séries: Calamidade MG (1.337→1.338→1.339→1.342); "
+    "Combustíveis (1.340→1.343→1.344→1.349); "
+    "Defesa Civil (1.339→1.342→1.346→1.347)."
+)
+
 _NOTA_SYSTEM = (
-    "Você é um analista legislativo sênior especializado em Medidas Provisórias "
-    "do governo federal brasileiro. Redige Notas Técnicas com rigor jurídico, "
-    "linguagem técnico-legislativa densa e objetiva.\n\n"
-    "REGRAS:\n"
-    "- Tom técnico-legislativo, objetivo — sem opiniões pessoais.\n"
-    "- Leis pelo número e data: 'Lei nº 11.977, de 7 de julho de 2009'.\n"
-    "- Dispositivos pelo número completo: 'art. 5º, § 1º-A, inciso II'.\n"
+    "Você é assessor legislativo sênior da Liderança do Podemos na Câmara dos "
+    "Deputados, especializado em Medidas Provisórias do governo federal. "
+    "Redige Notas Técnicas padronizadas, com rigor jurídico e linguagem "
+    "técnico-legislativa densa e objetiva.\n\n"
+    "REGRAS DE ESCRITA:\n"
+    "- Tom técnico-legislativo, objetivo — sem opiniões pessoais nem floreios.\n"
+    "- Leis pelo número e data completa: 'Lei nº 11.977, de 7 de julho de 2009'.\n"
+    "- Dispositivos pelo número completo: \"art. 5º, § 1º-A, inciso II, alínea 'h'\".\n"
+    "- Valores por extenso + algarismos: 'R$ 1.305.000.000,00 (um bilhão "
+    "trezentos e cinco milhões de reais)'.\n"
     "- Use travessões (—) para explicações incidentais.\n"
     "- Cite MPs correlatas pelo número e ano quando aplicável.\n"
-    "- NÃO mencione quem assinou ou referendou a MP.\n\n"
-    "RESUMO: um parágrafo apresentando a MP — o que faz, qual lei altera ou "
-    "regime cria, e o objetivo central.\n"
-    "ALTERAÇÕES: do segundo parágrafo em diante, descreva cada alteração legal "
-    "(artigo/parágrafo/inciso afetado, com lei e data; efeito prático; quem é "
-    "afetado; normas infralegais necessárias). Separe parágrafos com linha em "
-    "branco. Não resuma em excesso."
+    "- NÃO mencione quem assinou ou referendou a MP (Presidente, ministros).\n"
+    "- Baseie afirmações de contexto APENAS no dossiê de pesquisa e no texto "
+    "fornecidos. NUNCA invente dados, valores ou falas.\n\n"
+    "ESTRUTURA (5 parágrafos):\n"
+    "1. CONTEXTO — por que a MP foi editada: evento motivador, dados "
+    "quantitativos, atores políticos, MPs correlatas anteriores, conexão "
+    "econômica/geopolítica.\n"
+    "2. DISPOSITIVOS CENTRAIS — principais artigos: citação precisa, efeito "
+    "jurídico, valores/prazos/limites. Para crédito extraordinário, detalhe o "
+    "Anexo (órgão/UO, programa, ação, GND, fonte, localização, estimativa "
+    "física) e cite o art. 167, §3º, CF.\n"
+    "3. CONTINUAÇÃO — dispositivos adicionais, disposições transitórias, "
+    "alterações em outras leis, normas infralegais necessárias.\n"
+    "4. SÍNTESE — quadro-resumo: distribuição de recursos, eixos da MP, "
+    "natureza da despesa (investimento vs. custeio).\n"
+    "5. FECHAMENTO — contexto político, conexão com pacote normativo mais "
+    "amplo, impacto fiscal, expectativas de regulamentação.\n\n"
+    "Se a MP for curta, deixe parágrafos 3-5 vazios (string vazia) em vez de "
+    "encher de linguiça. Se for extensa, adense.\n\n"
+    f"SÉRIE DE MPs 2026 (para cruzar referências no contexto): {_SERIE_MPS_2026}"
 )
 
 _NOTA_TOOL = {
     "name": "nota_tecnica",
-    "description": "Gera o conteúdo textual da Nota Técnica da Medida Provisória.",
+    "description": "Emite o conteúdo estruturado da Nota Técnica da Medida Provisória.",
     "input_schema": {
         "type": "object",
         "properties": {
-            "titulo": {"type": "string", "description": "Nome oficial: 'Medida Provisória nº X.XXX, de AAAA'"},
-            "resumo": {"type": "string", "description": "Um parágrafo resumindo a MP."},
-            "alteracoes": {"type": "string", "description": "Parágrafos (\\n\\n) com as alterações legais."},
+            "ementa": {
+                "type": "string",
+                "description": "Ementa oficial da MP, limpa, sem aspas.",
+            },
+            "p1_contexto": {"type": "string", "description": "Parágrafo 1 — contexto."},
+            "p2_dispositivos": {"type": "string", "description": "Parágrafo 2 — dispositivos centrais."},
+            "p3_continuacao": {"type": "string", "description": "Parágrafo 3 — continuação (vazio se MP curta)."},
+            "p4_sintese": {"type": "string", "description": "Parágrafo 4 — síntese (vazio se MP curta)."},
+            "p5_fechamento": {"type": "string", "description": "Parágrafo 5 — fechamento (vazio se MP curta)."},
         },
-        "required": ["titulo", "resumo", "alteracoes"],
+        "required": ["ementa", "p1_contexto", "p2_dispositivos"],
     },
 }
 
+# Tools de web search/fetch nativas da Anthropic (Passo 2 das diretrizes).
+_WEB_TOOLS = [
+    {"type": "web_search_20260209", "name": "web_search"},
+    {"type": "web_fetch_20260209", "name": "web_fetch"},
+]
+
+
+async def _pesquisar_contexto(client, mp: dict) -> str:
+    """Fase 1: pesquisa contexto político/noticioso da MP via web search.
+    Retorna um dossiê textual (ou string vazia se indisponível)."""
+    prompt = (
+        f"Pesquise o contexto da Medida Provisória nº {mp['numero']}, de "
+        f"{mp['ano']} (publicada no DOU em {mp['data_publicacao']}). "
+        f"Ementa: {mp['ementa']}\n\n"
+        "Busque: evento motivador (calamidade, crise setorial, pacote do "
+        "governo), atores políticos (ministros, lideranças), valores e dados "
+        "quantitativos, MPs correlatas anteriores e reações de setores "
+        "afetados. Fontes: Planalto, Agência Gov, Câmara, Senado, imprensa. "
+        "Responda com um dossiê objetivo em tópicos — só fatos com fonte, sem "
+        "redigir a nota ainda."
+    )
+    messages = [{"role": "user", "content": prompt}]
+    try:
+        for _ in range(5):
+            resp = await client.messages.create(
+                model=settings.anthropic_model,
+                max_tokens=2048,
+                tools=_WEB_TOOLS,
+                messages=messages,
+            )
+            if resp.stop_reason == "pause_turn":
+                messages = [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": resp.content},
+                ]
+                continue
+            return "\n".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+        return ""
+    except Exception as exc:
+        logger.warning("dou: web search indisponível p/ MP %s (%s); seguindo sem dossiê",
+                       mp["numero"], exc)
+        return ""
+
 
 async def generate_nota_tecnica(mp: dict) -> dict | None:
-    """Gera nota técnica via Claude. Retorna {titulo, resumo, alteracoes}
-    ou None se a chave Anthropic não estiver configurada / falhar."""
+    """Gera o conteúdo da nota técnica em duas fases (pesquisa + redação
+    estruturada). Retorna dict {ementa, p1_contexto, ...} ou None se a chave
+    Anthropic não estiver configurada / falhar."""
     if not settings.anthropic_api_key:
         logger.warning("dou: ANTHROPIC_API_KEY ausente; nota técnica pulada")
         return None
@@ -262,14 +353,20 @@ async def generate_nota_tecnica(mp: dict) -> dict | None:
     except ImportError:
         return None
 
+    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    dossie = await _pesquisar_contexto(client, mp)
+
     user_content = (
-        f"MP nº {mp['numero']}/{mp['ano']}\n"
+        f"MP nº {mp['numero']}/{mp['ano']} — Edição {mp.get('edicao', 'Normal')} "
+        f"do DOU de {mp['data_publicacao']}\n"
         f"Ementa: {mp['ementa']}\n"
         f"URL: {mp.get('url_planalto', 'N/A')}\n\n"
-        f"Texto integral (use para embasar a análise):\n"
-        f"{(mp.get('texto_integral') or 'Não disponível')[:6000]}"
+        f"=== DOSSIÊ DE PESQUISA (contexto; use só o que tiver fonte) ===\n"
+        f"{dossie or '(pesquisa web indisponível — baseie-se apenas no texto da MP)'}\n\n"
+        f"=== TEXTO INTEGRAL DA MP ===\n"
+        f"{(mp.get('texto_integral') or 'Não disponível')[:8000]}\n\n"
+        "Emita a nota técnica chamando a ferramenta nota_tecnica."
     )
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
     try:
         resp = await client.messages.create(
             model=settings.anthropic_model,
@@ -302,105 +399,112 @@ def compute_prazos(pub: date) -> dict:
 def _br(d: date) -> str:
     return d.strftime("%d/%m/%Y")
 
+_MESES_PT = {
+    1: "janeiro", 2: "fevereiro", 3: "março", 4: "abril", 5: "maio", 6: "junho",
+    7: "julho", 8: "agosto", 9: "setembro", 10: "outubro", 11: "novembro", 12: "dezembro",
+}
+
+
+def _data_extenso(d: date) -> str:
+    dia = "1º" if d.day == 1 else str(d.day)
+    return f"{dia} de {_MESES_PT[d.month]} de {d.year}"
+
+
+def _num_fmt(numero: str) -> str:
+    """1361 -> '1.361' (milhar com ponto)."""
+    try:
+        return f"{int(numero):,}".replace(",", ".")
+    except ValueError:
+        return numero
+
 
 def format_telegram_message(mp: dict, nota: dict | None) -> str:
     pub = date.fromisoformat(mp["data_publicacao"])
     prazos = compute_prazos(pub)
-    titulo = (nota or {}).get("titulo") or f"Medida Provisória nº {mp['numero']}, de {mp['ano']}"
-    resumo = (nota or {}).get("resumo") or mp.get("ementa") or "(sem ementa)"
+    titulo = f"Medida Provisória nº {_num_fmt(mp['numero'])}, de {mp['ano']}"
+    resumo = (nota or {}).get("p1_contexto") or (nota or {}).get("ementa") or mp.get("ementa") or "(sem ementa)"
     lines = [
         f"📄 <b>{titulo}</b>",
-        f"<i>Publicada no DOU em {_br(pub)}</i>",
+        f"<i>Edição {mp.get('edicao', 'Normal')} do DOU de {_br(pub)}</i>",
         "",
         resumo,
         "",
         "⏱️ <b>Prazos</b>",
-        f"• Emendas até <b>{_br(prazos['emendas_fim'])}</b>",
+        f"• Emendas até <b>{_br(prazos['emendas_fim'])}</b> (23h59min)",
         f"• Sobrestamento de pauta a partir de {_br(prazos['sobrestamento'])}",
-        f"• Vigência até {_br(prazos['eficacia_fim'])} (prorrogável +60 dias)",
+        f"• Eficácia até {_br(prazos['eficacia_fim'])} (prorrogável +60 dias)",
         "",
         f'<a href="{mp.get("url_planalto", "")}">texto no Planalto</a>',
     ]
     if nota:
-        lines.append("\n📎 Nota técnica completa no anexo.")
+        lines.append("\n📎 Nota técnica completa no anexo (.docx).")
     return "\n".join(lines)
 
 
-def build_docx(mp: dict, nota: dict | None) -> bytes:
-    """Monta a Nota Técnica em DOCX (sem logo/template — limpo). Retorna bytes."""
-    from docx import Document
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
-    from docx.shared import Pt, RGBColor
+_TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "..", "assets", "nota_template.docx")
 
+
+def _xml_escape(s: str) -> str:
+    return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;"))
+
+
+def build_docx(mp: dict, nota: dict | None) -> bytes:
+    """Preenche o template institucional do Podemos (placeholders {{...}})
+    com os dados da MP + nota técnica. Retorna os bytes do .docx."""
+    nota = nota or {}
     pub = date.fromisoformat(mp["data_publicacao"])
     prazos = compute_prazos(pub)
-    titulo = (nota or {}).get("titulo") or f"Medida Provisória nº {mp['numero']}, de {mp['ano']}"
-    resumo = (nota or {}).get("resumo") or mp.get("ementa") or "(sem ementa)"
-    alteracoes = (nota or {}).get("alteracoes") or ""
+    num = _num_fmt(mp["numero"])
+    edicao_txt = "Edição Extra" if mp.get("edicao") == "Extra" else "Edição"
+    ementa = nota.get("ementa") or mp.get("ementa") or ""
 
-    doc = Document()
-    style = doc.styles["Normal"]
-    style.font.name = "Arial"
-    style.font.size = Pt(11)
+    intro = (
+        f"A {edicao_txt} do Diário Oficial da União de {_data_extenso(pub)} "
+        f"publicou a Medida Provisória nº {num}/{mp['ano']}, que "
+    )
+    paragrafos = [
+        nota.get("p1_contexto") or ementa,
+        nota.get("p2_dispositivos") or "",
+        nota.get("p3_continuacao") or " ",
+        nota.get("p4_sintese") or " ",
+        nota.get("p5_fechamento") or " ",
+    ]
 
-    h = doc.add_paragraph()
-    h.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = h.add_run("NOTA TÉCNICA")
-    r.bold = True
-    r.font.size = Pt(14)
+    repl = {
+        "{{EFICACIA}}": f"{_br(pub)} a {_br(prazos['eficacia_fim'])}, prorrogável por mais 60 dias",
+        "{{SOBRESTAMENTO}}": _br(prazos["sobrestamento"]),
+        "{{EMENDAS_RANGE}}": f"{_br(pub)} a {_br(prazos['emendas_fim'])}",
+        "{{EMENDAS_FIM}}": _br(prazos["emendas_fim"]),
+        "{{INTRO}}": intro,
+        "{{EMENTA}}": ementa,
+        "{{NUM_FULL}}": num,
+        "{{P1}}": paragrafos[0],
+        "{{P2}}": paragrafos[1],
+        "{{P3}}": paragrafos[2],
+        "{{P4}}": paragrafos[3],
+        "{{P5}}": paragrafos[4],
+    }
 
-    t = doc.add_paragraph()
-    t.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    rt = t.add_run(titulo)
-    rt.bold = True
-    rt.font.size = Pt(12)
+    with zipfile.ZipFile(_TEMPLATE_PATH) as zin:
+        names = zin.namelist()
+        contents = {n: zin.read(n) for n in names}
 
-    sub = doc.add_paragraph()
-    sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    sub.add_run(f"Publicada no DOU em {_br(pub)}").italic = True
-
-    # Prazos
-    pz = doc.add_paragraph()
-    pz.add_run("Prazos regimentais").bold = True
-    for label, value, red in [
-        ("Emendas até", _br(prazos["emendas_fim"]), True),
-        ("Sobrestamento de pauta a partir de", _br(prazos["sobrestamento"]), False),
-        ("Vigência até", f"{_br(prazos['eficacia_fim'])} (prorrogável por mais 60 dias)", False),
-    ]:
-        p = doc.add_paragraph(style="List Bullet")
-        p.add_run(f"{label}: ")
-        rv = p.add_run(value)
-        rv.bold = red
-        if red:
-            rv.font.color.rgb = RGBColor(0xC0, 0x00, 0x00)
-
-    doc.add_paragraph()
-    rp = doc.add_paragraph().add_run("RESUMO")
-    rp.bold = True
-    par = doc.add_paragraph(resumo)
-    par.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-
-    if alteracoes.strip():
-        doc.add_paragraph()
-        ra = doc.add_paragraph().add_run("ALTERAÇÕES LEGAIS")
-        ra.bold = True
-        for bloco in alteracoes.split("\n\n"):
-            bloco = bloco.strip()
-            if bloco:
-                pp = doc.add_paragraph(bloco)
-                pp.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-
-    if mp.get("url_planalto"):
-        doc.add_paragraph()
-        doc.add_paragraph(f"Texto integral: {mp['url_planalto']}")
+    for target in ("word/document.xml", "word/header1.xml"):
+        xml = contents[target].decode("utf-8")
+        for token, value in repl.items():
+            xml = xml.replace(token, _xml_escape(value))
+        contents[target] = xml.encode("utf-8")
 
     buf = io.BytesIO()
-    doc.save(buf)
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zout:
+        for n in names:
+            zout.writestr(n, contents[n])
     return buf.getvalue()
 
 
 def docx_filename(mp: dict) -> str:
-    return f"MP_{mp['numero']}_{mp['ano']}.docx"
+    return f"NOTA_TÉCNICA_-_MPV_nº_{mp['numero']}_de_{mp['ano']}.docx"
 
 
 # ──────────────────────── dedup ────────────────────────
