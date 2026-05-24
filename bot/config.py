@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     # Provider da nota técnica. "gemini" é bem mais barato (Flash + Google
     # Search grounding nativo); "anthropic" usa Claude + web_search.
     dou_mp_provider: Provider = Field("gemini", alias="DOU_MP_PROVIDER")
-    dou_mp_gemini_model: str = Field("gemini-2.5-flash", alias="DOU_MP_GEMINI_MODEL")
+    dou_mp_gemini_model: str = Field("gemini-2.5-pro", alias="DOU_MP_GEMINI_MODEL")
     inlabs_email: str | None = Field(None, alias="INLABS_EMAIL")
     inlabs_password: SecretStr | None = Field(None, alias="INLABS_PASSWORD")
 

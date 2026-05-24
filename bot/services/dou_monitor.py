@@ -258,20 +258,34 @@ _NOTA_SYSTEM = (
     "- NÃO mencione quem assinou ou referendou a MP (Presidente, ministros).\n"
     "- Baseie afirmações de contexto APENAS no dossiê de pesquisa e no texto "
     "fornecidos. NUNCA invente dados, valores ou falas.\n\n"
+    "REGRA DE IMPACTO (a mais importante — não a viole):\n"
+    "Para CADA dispositivo, NÃO basta dizer o que mudou no texto da lei. "
+    "Você DEVE explicar o EFEITO PRÁTICO da mudança:\n"
+    "- Quem é afetado (cidadãos, empresas, entes federativos, setor X) e como.\n"
+    "- O que passa a ser permitido, exigido, vedado ou facilitado na prática.\n"
+    "- Quais direitos, obrigações, sanções ou mecanismos novos são criados.\n"
+    "- O histórico da lei alterada e de MPs/leis anteriores que já a "
+    "modificaram, para situar a mudança.\n"
+    "- As normas infralegais (decreto, portaria, resolução) ainda necessárias "
+    "para operacionalizar o dispositivo.\n"
+    "Descrição que apenas parafraseia 'acrescenta o inciso X ao art. Y' SEM "
+    "explicar o que isso muda na vida real é INSUFICIENTE e deve ser evitada.\n\n"
     "ESTRUTURA (5 parágrafos):\n"
     "1. CONTEXTO — por que a MP foi editada: evento motivador, dados "
     "quantitativos, atores políticos, MPs correlatas anteriores, conexão "
     "econômica/geopolítica.\n"
-    "2. DISPOSITIVOS CENTRAIS — principais artigos: citação precisa, efeito "
-    "jurídico, valores/prazos/limites. Para crédito extraordinário, detalhe o "
-    "Anexo (órgão/UO, programa, ação, GND, fonte, localização, estimativa "
-    "física) e cite o art. 167, §3º, CF.\n"
+    "2. DISPOSITIVOS CENTRAIS — principais artigos: citação precisa + efeito "
+    "jurídico E PRÁTICO (aplique a REGRA DE IMPACTO), valores/prazos/limites. "
+    "Para crédito extraordinário, detalhe o Anexo (órgão/UO, programa, ação, "
+    "GND, fonte, localização, estimativa física) e cite o art. 167, §3º, CF.\n"
     "3. CONTINUAÇÃO — dispositivos adicionais, disposições transitórias, "
-    "alterações em outras leis, normas infralegais necessárias.\n"
+    "alterações em outras leis (com efeito prático e histórico), normas "
+    "infralegais necessárias.\n"
     "4. SÍNTESE — quadro-resumo: distribuição de recursos, eixos da MP, "
-    "natureza da despesa (investimento vs. custeio).\n"
+    "natureza da despesa (investimento vs. custeio), e o impacto consolidado.\n"
     "5. FECHAMENTO — contexto político, conexão com pacote normativo mais "
     "amplo, impacto fiscal, expectativas de regulamentação.\n\n"
+    "Cada parágrafo de análise deve ser denso e substantivo (várias frases). "
     "Se a MP for curta, deixe parágrafos 3-5 vazios (string vazia) em vez de "
     "encher de linguiça. Se for extensa, adense.\n\n"
     f"SÉRIE DE MPs 2026 (para cruzar referências no contexto): {_SERIE_MPS_2026}"
@@ -470,7 +484,7 @@ async def _gen_nota_gemini(mp: dict) -> dict | None:
             system_instruction=_NOTA_SYSTEM,
             response_mime_type="application/json",
             response_schema=schema,
-            max_output_tokens=4096,
+            max_output_tokens=6144,
         )
         resp = client.models.generate_content(
             model=settings.dou_mp_gemini_model, contents=user_content, config=config,
