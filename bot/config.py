@@ -49,9 +49,13 @@ class Settings(BaseSettings):
     dou_mp_enabled: bool = Field(True, alias="DOU_MP_ENABLED")
     dou_mp_hour: int = Field(18, alias="DOU_MP_HOUR")
     dou_mp_minute: int = Field(0, alias="DOU_MP_MINUTE")
-    # Pesquisa de contexto via web_search nativo da Anthropic (Passo 2 das
-    # diretrizes). Desligue se a conta não tiver acesso ou se estiver lenta.
+    # Pesquisa de contexto via web search (Passo 2 das diretrizes).
+    # Desligue se a conta não tiver acesso ou se estiver lenta.
     dou_mp_web_research: bool = Field(True, alias="DOU_MP_WEB_RESEARCH")
+    # Provider da nota técnica. "gemini" é bem mais barato (Flash + Google
+    # Search grounding nativo); "anthropic" usa Claude + web_search.
+    dou_mp_provider: Provider = Field("gemini", alias="DOU_MP_PROVIDER")
+    dou_mp_gemini_model: str = Field("gemini-2.5-flash", alias="DOU_MP_GEMINI_MODEL")
     inlabs_email: str | None = Field(None, alias="INLABS_EMAIL")
     inlabs_password: SecretStr | None = Field(None, alias="INLABS_PASSWORD")
 

@@ -348,22 +348,8 @@ async def _pesquisar_contexto(client, mp: dict) -> str:
         return ""
 
 
-async def generate_nota_tecnica(mp: dict) -> dict | None:
-    """Gera o conteúdo da nota técnica em duas fases (pesquisa + redação
-    estruturada). Retorna dict {ementa, p1_contexto, ...} ou None se a chave
-    Anthropic não estiver configurada / falhar."""
-    if not settings.anthropic_api_key:
-        logger.warning("dou: ANTHROPIC_API_KEY ausente; nota técnica pulada")
-        return None
-    try:
-        import anthropic
-    except ImportError:
-        return None
-
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-    dossie = await _pesquisar_contexto(client, mp)
-
-    user_content = (
+def _nota_user_content(mp: dict, dossie: str) -> str:
+    return (
         f"MP nº {mp['numero']}/{mp['ano']} — Edição {mp.get('edicao', 'Normal')} "
         f"do DOU de {mp['data_publicacao']}\n"
         f"Ementa: {mp['ementa']}\n"
@@ -372,8 +358,32 @@ async def generate_nota_tecnica(mp: dict) -> dict | None:
         f"{dossie or '(pesquisa web indisponível — baseie-se apenas no texto da MP)'}\n\n"
         f"=== TEXTO INTEGRAL DA MP ===\n"
         f"{(mp.get('texto_integral') or 'Não disponível')[:8000]}\n\n"
-        "Emita a nota técnica chamando a ferramenta nota_tecnica."
+        "Emita a nota técnica seguindo a estrutura de 5 parágrafos."
     )
+
+
+async def generate_nota_tecnica(mp: dict) -> dict | None:
+    """Gera o conteúdo da nota técnica (pesquisa + redação estruturada),
+    roteando pelo provider de DOU_MP_PROVIDER. Retorna {ementa, p1_contexto,
+    ...} ou None se indisponível/falhar."""
+    if settings.dou_mp_provider == "gemini":
+        return await _gen_nota_gemini(mp)
+    return await _gen_nota_anthropic(mp)
+
+
+# ── Anthropic (Claude + web_search) ──
+
+async def _gen_nota_anthropic(mp: dict) -> dict | None:
+    if not settings.anthropic_api_key:
+        logger.warning("dou: ANTHROPIC_API_KEY ausente; nota pulada")
+        return None
+    try:
+        import anthropic
+    except ImportError:
+        return None
+    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    dossie = await _pesquisar_contexto(client, mp)
+    user_content = _nota_user_content(mp, dossie)
     try:
         resp = await client.with_options(timeout=120.0, max_retries=1).messages.create(
             model=settings.anthropic_model,
@@ -381,14 +391,101 @@ async def generate_nota_tecnica(mp: dict) -> dict | None:
             system=[{"type": "text", "text": _NOTA_SYSTEM, "cache_control": {"type": "ephemeral"}}],
             tools=[_NOTA_TOOL],
             tool_choice={"type": "tool", "name": "nota_tecnica"},
-            messages=[{"role": "user", "content": user_content}],
+            messages=[{"role": "user", "content": user_content + " Chame a ferramenta nota_tecnica."}],
         )
         for block in resp.content:
             if getattr(block, "type", None) == "tool_use":
                 return block.input
         return None
     except Exception:
-        logger.exception("dou: falha ao gerar nota técnica MP %s/%s", mp["numero"], mp["ano"])
+        logger.exception("dou: falha (anthropic) na nota MP %s/%s", mp["numero"], mp["ano"])
+        return None
+
+
+# ── Gemini (Flash + Google Search grounding + JSON mode) ──
+
+_GEMINI_SCHEMA_PROPS = {
+    "ementa": "Ementa oficial da MP, limpa, sem aspas.",
+    "p1_contexto": "Parágrafo 1 — contexto (por que a MP foi editada).",
+    "p2_dispositivos": "Parágrafo 2 — dispositivos centrais.",
+    "p3_continuacao": "Parágrafo 3 — continuação (vazio se MP curta).",
+    "p4_sintese": "Parágrafo 4 — síntese (vazio se MP curta).",
+    "p5_fechamento": "Parágrafo 5 — fechamento (vazio se MP curta).",
+}
+
+
+async def _pesquisar_contexto_gemini(client, mp: dict) -> str:
+    if not settings.dou_mp_web_research:
+        return ""
+    from google.genai import types
+    prompt = (
+        f"Pesquise o contexto da Medida Provisória nº {mp['numero']}, de "
+        f"{mp['ano']} (DOU de {mp['data_publicacao']}). Ementa: {mp['ementa']}. "
+        "Busque evento motivador, atores políticos, valores/dados, MPs "
+        "correlatas e reações. Responda um dossiê objetivo em tópicos, só "
+        "fatos com fonte."
+    )
+
+    def _call() -> str:
+        config = types.GenerateContentConfig(
+            tools=[types.Tool(google_search=types.GoogleSearch())],
+            max_output_tokens=1500,
+        )
+        resp = client.models.generate_content(
+            model=settings.dou_mp_gemini_model, contents=prompt, config=config,
+        )
+        return (resp.text or "").strip()
+
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_call), timeout=120.0)
+    except Exception as exc:
+        logger.warning("dou: pesquisa web (gemini) indisponível p/ MP %s (%s)", mp["numero"], exc)
+        return ""
+
+
+async def _gen_nota_gemini(mp: dict) -> dict | None:
+    if not settings.gemini_api_key:
+        logger.warning("dou: GEMINI_API_KEY ausente; nota pulada")
+        return None
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError:
+        return None
+    client = genai.Client(api_key=settings.gemini_api_key)
+    dossie = await _pesquisar_contexto_gemini(client, mp)
+    user_content = _nota_user_content(mp, dossie)
+
+    schema = types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            k: types.Schema(type=types.Type.STRING, description=v)
+            for k, v in _GEMINI_SCHEMA_PROPS.items()
+        },
+        required=["ementa", "p1_contexto", "p2_dispositivos"],
+    )
+
+    def _call() -> str:
+        config = types.GenerateContentConfig(
+            system_instruction=_NOTA_SYSTEM,
+            response_mime_type="application/json",
+            response_schema=schema,
+            max_output_tokens=4096,
+        )
+        resp = client.models.generate_content(
+            model=settings.dou_mp_gemini_model, contents=user_content, config=config,
+        )
+        return (resp.text or "").strip()
+
+    try:
+        raw = await asyncio.wait_for(asyncio.to_thread(_call), timeout=120.0)
+        import json
+        data = json.loads(raw)
+        if not data.get("p1_contexto") or not data.get("p2_dispositivos"):
+            logger.warning("dou: nota gemini incompleta MP %s/%s", mp["numero"], mp["ano"])
+        return data
+    except Exception:
+        logger.exception("dou: falha (gemini) na nota MP %s/%s", mp["numero"], mp["ano"])
         return None
 
 
