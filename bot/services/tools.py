@@ -1065,7 +1065,11 @@ TOOLS: list[Tool] = [
             "Ombros/braços/abdomen NÃO entram (usuário não quer detalhar). "
             "Quando 'cardio' está em grupos, OBRIGATÓRIO informar "
             "cardio_minutos. Se usuário diz 'ontem' ou data específica, "
-            "calcule data_iso usando a Data/hora atual do system prompt."
+            "calcule data_iso usando a Data/hora atual do system prompt.\n"
+            "IMPORTANTE: registre TODOS os grupos do treino numa ÚNICA "
+            "chamada (ex: grupos=['peito','cardio'] com cardio_minutos=12). "
+            "NUNCA chame esta tool mais de uma vez para o mesmo treino — "
+            "isso duplicaria o registro e o cardio."
         ),
         parameters={
             "type": "object",

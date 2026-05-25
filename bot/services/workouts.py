@@ -60,10 +60,31 @@ async def log_workout(
         raise ValueError("nenhum grupo canônico fornecido")
     if "cardio" not in normalized:
         cardio_minutes = None  # ignora minutos se não tem cardio
+    groups_str = ",".join(normalized)
+
+    # Idempotência: se já existe um treino IDÊNTICO no mesmo dia (mesmos
+    # grupos + mesmo cardio), não cria duplicata. Protege contra o LLM
+    # chamar registrar_treino duas vezes pela mesma fala (bug "cardio em
+    # dobro"). Treinos genuinamente distintos no dia (grupos ou cardio
+    # diferentes) ainda geram registros separados.
+    dup_stmt = select(WorkoutLog).where(
+        WorkoutLog.user_id == user_id,
+        WorkoutLog.date == workout_date,
+        WorkoutLog.groups == groups_str,
+        WorkoutLog.cardio_minutes.is_(None)
+        if cardio_minutes is None
+        else WorkoutLog.cardio_minutes == cardio_minutes,
+    )
+    dup = (await session.scalars(dup_stmt)).first()
+    if dup is not None:
+        logger.info("log_workout: duplicata ignorada (user=%s date=%s groups=%s)",
+                    user_id, workout_date, groups_str)
+        return dup
+
     log = WorkoutLog(
         user_id=user_id,
         date=workout_date,
-        groups=",".join(normalized),
+        groups=groups_str,
         cardio_minutes=cardio_minutes,
         notes=notes,
     )
