@@ -1352,8 +1352,8 @@ TOOLS: list[Tool] = [
             "(persistente entre sessões). Use sempre que ouvir 'acabou X', "
             "'preciso comprar Y', 'adiciona Z na lista', 'bota arroz na "
             "lista', 'lembra de Z amanhã no mercado'.\n"
-            "Aceita uma lista de strings simples ou de objetos {text, "
-            "quantidade}. Se o usuário falar várias coisas de uma vez "
+            "Passe uma lista de objetos {text, quantidade}, sendo "
+            "'quantidade' opcional. Se o usuário falar várias coisas de uma vez "
             "('compra detergente, papel higiênico e 2kg de açúcar'), "
             "passe os 3 itens numa única chamada — NÃO chame a tool 3 "
             "vezes. Extraia quantidade quando explícita ('2kg de "
@@ -1364,18 +1364,14 @@ TOOLS: list[Tool] = [
             "properties": {
                 "itens": {
                     "type": "array",
+                    "description": "Lista de itens. Cada item é um objeto com 'text' (obrigatório) e 'quantidade' (opcional).",
                     "items": {
-                        "oneOf": [
-                            {"type": "string"},
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "text": {"type": "string"},
-                                    "quantidade": {"type": "string"},
-                                },
-                                "required": ["text"],
-                            },
-                        ],
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string", "description": "Nome do item (ex: 'açúcar')."},
+                            "quantidade": {"type": "string", "description": "Quantidade quando explícita (ex: '2kg'). Opcional."},
+                        },
+                        "required": ["text"],
                     },
                 },
             },
