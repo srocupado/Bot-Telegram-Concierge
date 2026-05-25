@@ -282,6 +282,9 @@ async def _dispatch_chat(
         )
         return
 
+    from bot.services.finance_guard import guard_financial_reply
+    reply = guard_financial_reply(text, ctx.financial_logged_ok, reply)
+
     memory.append(chat_id, "user", text)
     memory.append(chat_id, "assistant", reply)
     await message.answer(reply or "(sem resposta)")

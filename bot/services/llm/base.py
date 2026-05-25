@@ -43,6 +43,10 @@ class ToolContext:
     user: Any  # bot.db.models.User — Any para evitar import circular
     session: AsyncSession
     tz: str
+    # Marcado True quando uma tool de LANÇAMENTO financeiro grava com sucesso
+    # (lancar_movimento_banco / lancar_despesa_cartao / registrar_aporte_tesouro).
+    # Usado pela blindagem anti-alucinação no handler de chat/voz.
+    financial_logged_ok: bool = False
 
 
 ToolHandler = Callable[[dict, ToolContext], Awaitable[str]]

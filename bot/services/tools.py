@@ -446,6 +446,7 @@ async def _h_lancar_movimento_banco(args: dict, ctx: ToolContext) -> str:
         f"lançamento no banco: {entry['desc']} R$ {entry['amount']:.2f}",
         {"modulo": "banco", "entry_id": entry["id"]},
     )
+    ctx.financial_logged_ok = True
     sign = "+" if entry["amount"] >= 0 else ""
     return (
         f"ok: lançamento {entry['id']} no banco — "
@@ -486,6 +487,7 @@ async def _h_lancar_despesa_cartao(args: dict, ctx: ToolContext) -> str:
         f"compra no cartão: {entry['desc']} R$ {entry['amount']:.2f}",
         {"modulo": "cartao", "entry_id": entry["id"]},
     )
+    ctx.financial_logged_ok = True
     par_label = f" em {parcelas}x" if parcelas > 1 else ""
     return (
         f"ok: compra {entry['id']} no cartão — -R$ {entry['amount']:.2f} "
@@ -526,6 +528,7 @@ async def _h_registrar_aporte_tesouro(args: dict, ctx: ToolContext) -> str:
             f"aporte de R$ {valor_f:.2f} no '{res['titulo']}'",
             {"modulo": "tesouro", "entry_id": contrib_id},
         )
+    ctx.financial_logged_ok = True
     taxa_label = f" @ {taxa}%" if taxa is not None else ""
     return (
         f"ok: aporte de R$ {valor_f:.2f}{taxa_label} no '{res['titulo']}' "
