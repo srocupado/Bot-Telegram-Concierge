@@ -125,30 +125,57 @@ def _hora_label(local: datetime) -> str:
     return local.strftime("%Hh") if local.minute == 0 else local.strftime("%H:%M")
 
 
-def format_pending_list(items: list[Reminder], tz_name: str, *, header: bool = True) -> str:
+# Emoji contextual por palavra-chave (ordem importa: específico antes de
+# genérico — ex.: 'ipva'/'carro' antes de 'boleto').
+_EMOJI_KEYWORDS: list[tuple[tuple[str, ...], str]] = [
+    (("ipva", "carro", "veícul", "veicul", "bmw", "pneu", "combustív", "gasolina",
+      "posto", "oficina", "licenciamento", "multa", "estaciona"), "🚗"),
+    (("voo", "passagem", "viagem", "hotel", "embarque", "aeroporto"), "✈️"),
+    (("médic", "medic", "remédio", "remedio", "consulta", "dentista", "exame",
+      "vacina", "farmácia", "farmacia"), "💊"),
+    (("aniversár", "niver", "parabéns", "parabens"), "🎂"),
+    (("reunião", "reuniao", "meeting", "call", "compromisso"), "📅"),
+    (("academia", "treino", "malhar", "musculação", "musculacao", "corrida"), "🏋️"),
+    (("mercado", "supermercado", "compras", "feira"), "🛒"),
+    (("luz", "energia", "elétric", "eletric"), "💡"),
+    (("água", "agua", "saneamento"), "💧"),
+    (("internet", "wifi", "telefone", "celular", "fatura do celular"), "📶"),
+    (("aluguel", "condomínio", "condominio", "imóvel", "imovel", "casa"), "🏠"),
+    (("banco", "empréstimo", "emprestimo", "financiamento", "cartão", "cartao"), "🏦"),
+    (("escola", "prova", "aula", "faculdade", "trabalho de", "entrega"), "🎓"),
+    (("boleto", "conta", "pagar", "pagamento", "pix", "fatura"), "🧾"),
+]
+
+
+def _emoji_for(r: Reminder) -> str:
+    if r.recurrence:
+        return "🔁"
+    if r.command_kind:
+        return "⏰"
+    text = (r.text or "").lower()
+    for keywords, emoji in _EMOJI_KEYWORDS:
+        if any(k in text for k in keywords):
+            return emoji
+    return "📌"
+
+
+def format_pending_list(items: list[Reminder], tz_name: str) -> str:
     """Formatação ÚNICA e padronizada da lista de lembretes (usada pelo
     comando /lembretes e pela tool listar_lembretes, pra a saída ficar igual
-    em qualquer provider de LLM)."""
+    em qualquer provider de LLM). Padrão: lista numerada + emoji contextual."""
     if not items:
         return "📭 Nenhum lembrete pendente."
     tz = ZoneInfo(tz_name)
     today = datetime.now(tz).date()
-    lines: list[str] = []
-    if header:
-        plural = "lembrete" if len(items) == 1 else "lembretes"
-        lines.append(f"🔔 Você tem {len(items)} {plural} pendente{'s' if len(items) > 1 else ''}:\n")
-    for r in items:
+    plural = "lembrete" if len(items) == 1 else "lembretes"
+    suf = "s" if len(items) > 1 else ""
+    lines = [f"Você tem {len(items)} {plural} pendente{suf}:\n"]
+    for i, r in enumerate(items, 1):
         local = r.due_at.astimezone(tz)
-        if r.recurrence:
-            marker = "🔁"
-        elif r.command_kind:
-            marker = "⏰"
-        else:
-            marker = "📌"
-        suffix = f" ({r.recurrence})" if r.recurrence else ""
+        rec = f" ({r.recurrence})" if r.recurrence else ""
         lines.append(
-            f"{marker} #{r.id} — {_dia_label(local, today)}, {_hora_label(local)} "
-            f"→ {r.text}{suffix}"
+            f"{i}. {_emoji_for(r)} #{r.id} — {_dia_label(local, today)}, "
+            f"{_hora_label(local)} → {r.text}{rec}"
         )
     return "\n".join(lines)
 
