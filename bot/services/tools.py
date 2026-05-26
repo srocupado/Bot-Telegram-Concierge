@@ -133,15 +133,13 @@ async def _h_criar_lembrete(args: dict, ctx: ToolContext) -> str:
 
 
 async def _h_listar_lembretes(_args: dict, ctx: ToolContext) -> str:
+    from bot.services.reminders import format_pending_list
     items = await list_pending(ctx.session, ctx.user.id)
     if not items:
         return "ok: nenhum lembrete pendente"
-    tz = ZoneInfo(ctx.tz)
-    return "ok: " + " | ".join(
-        f"#{r.id} {r.due_at.astimezone(tz).strftime('%d/%m %H:%M')} {r.text}"
-        + (f" [recorrente: {r.recurrence}]" if r.recurrence else "")
-        for r in items
-    )
+    # Formatação padronizada (mesma do /lembretes). REPASSE VERBATIM.
+    return "ok (repasse estas linhas exatamente como estão, sem reformatar):\n" + \
+        format_pending_list(items, ctx.tz)
 
 
 async def _h_criar_lembrete_pagamento(args: dict, ctx: ToolContext) -> str:

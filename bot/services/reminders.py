@@ -104,6 +104,55 @@ async def list_pending(session: AsyncSession, user_id: int) -> list[Reminder]:
     return list(result.scalars().all())
 
 
+_DIAS_SEMANA = [
+    "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo",
+]
+
+
+def _dia_label(local: datetime, today) -> str:
+    d = local.date()
+    delta = (d - today).days
+    if delta == 0:
+        return "Hoje"
+    if delta == 1:
+        return "Amanhã"
+    if delta == -1:
+        return "Ontem"
+    return f"{_DIAS_SEMANA[local.weekday()]} ({local.strftime('%d/%m')})"
+
+
+def _hora_label(local: datetime) -> str:
+    return local.strftime("%Hh") if local.minute == 0 else local.strftime("%H:%M")
+
+
+def format_pending_list(items: list[Reminder], tz_name: str, *, header: bool = True) -> str:
+    """Formatação ÚNICA e padronizada da lista de lembretes (usada pelo
+    comando /lembretes e pela tool listar_lembretes, pra a saída ficar igual
+    em qualquer provider de LLM)."""
+    if not items:
+        return "📭 Nenhum lembrete pendente."
+    tz = ZoneInfo(tz_name)
+    today = datetime.now(tz).date()
+    lines: list[str] = []
+    if header:
+        plural = "lembrete" if len(items) == 1 else "lembretes"
+        lines.append(f"🔔 Você tem {len(items)} {plural} pendente{'s' if len(items) > 1 else ''}:\n")
+    for r in items:
+        local = r.due_at.astimezone(tz)
+        if r.recurrence:
+            marker = "🔁"
+        elif r.command_kind:
+            marker = "⏰"
+        else:
+            marker = "📌"
+        suffix = f" ({r.recurrence})" if r.recurrence else ""
+        lines.append(
+            f"{marker} #{r.id} — {_dia_label(local, today)}, {_hora_label(local)} "
+            f"→ {r.text}{suffix}"
+        )
+    return "\n".join(lines)
+
+
 async def due_reminders(session: AsyncSession, user_id: int, now_utc: datetime) -> list[Reminder]:
     result = await session.execute(
         select(Reminder)

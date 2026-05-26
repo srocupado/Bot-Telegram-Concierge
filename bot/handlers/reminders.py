@@ -12,6 +12,7 @@ from bot.services.reminders import (
     ReminderParseError,
     create_reminder,
     delete_reminder,
+    format_pending_list,
     list_pending,
     parse_reminder,
 )
@@ -52,22 +53,9 @@ async def cmd_lembrar(
 @router.message(Command("lembretes"))
 async def cmd_lembretes(message: Message, user: User, session: AsyncSession) -> None:
     items = await list_pending(session, user.id)
-    if not items:
-        await message.answer("📭 Nenhum lembrete pendente.")
-        return
-    tz = ZoneInfo(user.timezone)
-    lines = ["🔔 *Lembretes pendentes*\n"]
-    for r in items:
-        local = r.due_at.astimezone(tz)
-        if r.recurrence:
-            marker = "🔁"
-        elif r.command_kind:
-            marker = "⏰"
-        else:
-            marker = "•"
-        suffix = f" _({r.recurrence})_" if r.recurrence else ""
-        lines.append(f"{marker} #{r.id} — {local.strftime('%d/%m %H:%M')} — {r.text}{suffix}")
-    await message.answer("\n".join(lines), parse_mode="Markdown")
+    await message.answer(
+        format_pending_list(items, user.timezone), parse_mode=None,
+    )
 
 
 @router.message(Command("agendar_comando"))
