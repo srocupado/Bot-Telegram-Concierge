@@ -811,6 +811,19 @@ def _filter_by_days(arr: list[dict], dias: int, today_iso: str) -> list[dict]:
     return out
 
 
+def _fmt_date_br(iso: str) -> str:
+    """'2026-05-11' -> '11/05'. Fallback ao texto cru."""
+    try:
+        return datetime.fromisoformat((iso or "").replace(" ", "T")[:10]).strftime("%d/%m")
+    except ValueError:
+        return iso or "?"
+
+
+def _id_tag(it: dict) -> str:
+    """Mostra o id só pra lançamentos do bot (únicos apagáveis). '' caso web."""
+    return f"  ·  #{it.get('id', '?')}" if it.get("source") == "bot" else ""
+
+
 async def consultar_lancamentos(
     session: AsyncSession,
     user,
@@ -832,20 +845,19 @@ async def consultar_lancamentos(
     if mod in ("banco", "tudo"):
         bank = _filter_by_days(state.get("bankTransactions") or [], dias, today_iso)
         if not bank:
-            parts.append(f"banco ({dias}d): sem lançamentos")
+            parts.append(f"🏦 Banco (últimos {dias}d): sem lançamentos")
         else:
-            lines = [f"banco ({dias}d):"]
+            lines = [f"🏦 Banco (últimos {dias}d):"]
             saldo = 0.0
             for it in bank[-15:]:
                 amt = float(it.get("amount") or 0)
                 saldo += amt
-                sign = "+" if amt >= 0 else ""
-                tag = "bot" if it.get("source") == "bot" else "web"
+                sign = "➕" if amt >= 0 else "➖"
                 lines.append(
-                    f"  [{it.get('id', '?')}|{tag}] {it.get('date', '?')} {sign}{amt:.2f} "
-                    f"{it.get('desc', '?')} [{it.get('category', '?')}]"
+                    f"• {_fmt_date_br(it.get('date', ''))} — {it.get('desc', '?')} · "
+                    f"{sign} {_fmt_brl(abs(amt))} · {it.get('category', '?')}{_id_tag(it)}"
                 )
-            lines.append(f"  saldo do período: {saldo:+.2f}")
+            lines.append(f"Saldo do período: {'+' if saldo >= 0 else '−'}{_fmt_brl(abs(saldo))}")
             parts.append("\n".join(lines))
 
     if mod in ("cartao", "cartão", "tudo"):
@@ -867,7 +879,7 @@ async def consultar_lancamentos(
                     "parcela" if installments > 1 else "avista"
                 )
                 card_items.append((it, {"kind": kind, "value": value}))
-            header = f"cartão de crédito (últimos {dias}d, pela data de compra)"
+            header = f"💳 Cartão (últimos {dias}d, por data de compra)"
         else:
             # Fatura em aberto = a que está acumulando (fechará na próxima data
             # de fechamento). Replica getCardBillForMonth do frontend.
@@ -879,14 +891,14 @@ async def consultar_lancamentos(
                 if info is not None:
                     card_items.append((it, info))
             header = (
-                f"cartão de crédito — {range_label}, fecha em "
+                f"💳 Cartão — fatura aberta ({range_label}), fecha em "
                 f"{target_month:02d}/{target_year}"
             )
 
         if not card_items:
             parts.append(f"{header}: sem compras")
         else:
-            lines = [f"{header}:"]
+            lines = [header + ":"]
             total = 0.0
             for it, info in card_items[-30:]:
                 value = float(info.get("value") or 0)
@@ -898,41 +910,33 @@ async def consultar_lancamentos(
                 else:
                     par_label = ""
                 total += value
-                tag = "bot" if it.get("source") == "bot" else "web"
                 lines.append(
-                    f"  [{it.get('id', '?')}|{tag}] {it.get('date', '?')} "
-                    f"-R$ {value:.2f} "
-                    f"{it.get('desc', '?')}{par_label} [{it.get('category', '?')}]"
+                    f"• {_fmt_date_br(it.get('date', ''))} — {it.get('desc', '?')}{par_label} · "
+                    f"{_fmt_brl(value)} · {it.get('category', '?')}{_id_tag(it)}"
                 )
-            lines.append(
-                f"  total da fatura: -R$ {total:.2f} ({len(card_items)} item(ns))"
-            )
+            lines.append(f"Total da fatura: {_fmt_brl(total)} ({len(card_items)} itens)")
             parts.append("\n".join(lines))
 
     if mod in ("tesouro", "tudo"):
         holdings = state.get("treasuryHoldings") or []
         if not holdings:
-            parts.append("tesouro: nenhum título cadastrado")
+            parts.append("🏛️ Tesouro: nenhum título cadastrado")
         else:
-            lines = ["tesouro:"]
+            lines = ["🏛️ Tesouro:"]
             for h in holdings:
                 name = h.get("name", "?")
                 contribs = h.get("contributions") or []
                 recent = _filter_by_days(contribs, dias, today_iso)
                 total_aportado = sum(float(c.get("amount") or 0) for c in contribs)
                 recent_amount = sum(float(c.get("amount") or 0) for c in recent)
-                lines.append(
-                    f"  • {name} — total aportado R$ {total_aportado:.2f}"
-                )
+                lines.append(f"• {name} — total aportado {_fmt_brl(total_aportado)}")
                 if recent:
                     lines.append(
-                        f"      últimos {dias}d: +R$ {recent_amount:.2f} em {len(recent)} aporte(s):"
+                        f"   últimos {dias}d: +{_fmt_brl(recent_amount)} em {len(recent)} aporte(s):"
                     )
                     for c in recent[-10:]:
-                        tag = "bot" if c.get("source") == "bot" else "web"
                         lines.append(
-                            f"        [{c.get('id', '?')}|{tag}] {c.get('date', '?')} "
-                            f"+R$ {float(c.get('amount') or 0):.2f}"
+                            f"     {_fmt_date_br(c.get('date', ''))} +{_fmt_brl(float(c.get('amount') or 0))}{_id_tag(c)}"
                         )
             parts.append("\n".join(lines))
 

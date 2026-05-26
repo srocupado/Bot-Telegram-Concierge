@@ -563,7 +563,7 @@ async def _h_consultar_lancamentos(args: dict, ctx: ToolContext) -> str:
         return f"erro: {e}"
     except FinanceiroError as e:
         return f"erro: {e}"
-    return "ok:\n" + out
+    return "ok (repasse estas linhas EXATAMENTE como estão, sem reformatar nem trocar emojis/valores):\n" + out
 
 
 async def _h_adicionar_lista_compras(args: dict, ctx: ToolContext) -> str:
