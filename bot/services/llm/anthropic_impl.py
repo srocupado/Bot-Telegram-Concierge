@@ -73,7 +73,9 @@ class AnthropicProvider(LLMProvider):
                 "messages": anth_messages,
             }
             if system:
-                kwargs["system"] = system
+                kwargs["system"] = [
+                    {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+                ]
             resp = self.client.messages.create(**kwargs)
             parts = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
             return "".join(parts).strip()
@@ -105,7 +107,18 @@ class AnthropicProvider(LLMProvider):
             "name": "web_search",
             "max_uses": 5,
         })
+        # Prompt caching: marca o último tool como breakpoint → cacheia o
+        # bloco inteiro de tools (estável). Reaproveitado entre as rodadas de
+        # tool use da MESMA mensagem (que reenviam tudo) e entre mensagens na
+        # janela de 5 min — corta ~90% dos tokens de input repetidos.
+        tools_spec[-1] = {**tools_spec[-1], "cache_control": {"type": "ephemeral"}}
         tool_by_name = {t.name: t for t in tools}
+
+        # System como bloco cacheável (2º breakpoint, depois de tools).
+        system_blocks = (
+            [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+            if system else None
+        )
 
         for _ in range(max_iterations):
             def _call() -> anthropic.types.Message:
@@ -115,8 +128,8 @@ class AnthropicProvider(LLMProvider):
                     "messages": anth_messages,
                     "tools": tools_spec,
                 }
-                if system:
-                    kwargs["system"] = system
+                if system_blocks:
+                    kwargs["system"] = system_blocks
                 return self.client.messages.create(**kwargs)
 
             resp = await asyncio.to_thread(_call)

@@ -56,6 +56,7 @@ class GeminiProvider(LLMProvider):
             raise ValueError("GEMINI_API_KEY ausente")
         self.client = genai.Client(api_key=api_key)
         self.model_name = model
+        self.model = model  # alias p/ interface comum (ex.: /ping)
 
     async def chat(
         self,
