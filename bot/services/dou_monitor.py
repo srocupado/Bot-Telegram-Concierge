@@ -16,7 +16,7 @@ import logging
 import os
 import re
 import zipfile
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from xml.etree import ElementTree as ET
 
 import httpx
@@ -84,7 +84,23 @@ def _fetch_mp_page(client: httpx.Client, url: str) -> tuple[str, str]:
         return "", ""
 
 
-def _build_mp_dict(client: httpx.Client, numero: str, year: int, text_excerpt: str, target_date: date) -> dict:
+def _parse_pubdate(s: str | None) -> date | None:
+    """Converte a data de publicação do DOU (vários formatos) em date."""
+    if not s:
+        return None
+    s = s.strip()
+    for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _build_mp_dict(
+    client: httpx.Client, numero: str, year: int, text_excerpt: str,
+    target_date: date, pub_date: date | None = None,
+) -> dict:
     period = _planalto_period(year)
     ano2d = str(year)[-2:]
     planalto_url = f"{PLANALTO_BASE}/ccivil_03/_Ato{period}/{year}/Mpv/mpv{numero}-{ano2d}.htm"
@@ -102,18 +118,37 @@ def _build_mp_dict(client: httpx.Client, numero: str, year: int, text_excerpt: s
         "numero": numero,
         "ano": year,
         "ementa": ementa,
-        "data_publicacao": target_date.isoformat(),
+        # Data REAL de publicação no DOU (do XML); cai no dia consultado só
+        # se o XML não trouxer. É a base dos prazos regimentais.
+        "data_publicacao": (pub_date or target_date).isoformat(),
         "url_planalto": planalto_url,
         "texto_integral": texto_planalto or text_excerpt[:6000],
     }
+
+
+_PUBDATE_ATTRS = ("pubDate", "pubdate", "PubDate", "dataPublicacao", "data", "Data")
 
 
 def _parse_dou_xml(client: httpx.Client, xml_content: str, target_date: date) -> list[dict]:
     year = target_date.year
     results: list[dict] = []
     seen: set[str] = set()
+    parent_map: dict = {}
 
-    def _try(title_text: str, body_text: str) -> None:
+    def _pubdate_for(elem) -> date | None:
+        """Sobe pelos ancestrais procurando um atributo de data de publicação."""
+        cur, hops = elem, 0
+        while cur is not None and hops < 12:
+            if hasattr(cur, "get"):
+                for attr in _PUBDATE_ATTRS:
+                    d = _parse_pubdate(cur.get(attr))
+                    if d:
+                        return d
+            cur = parent_map.get(cur)
+            hops += 1
+        return None
+
+    def _try(title_text: str, body_text: str, elem=None) -> None:
         m = _TITLE_RE.match(title_text.strip().upper())
         if not m:
             return
@@ -121,7 +156,10 @@ def _parse_dou_xml(client: httpx.Client, xml_content: str, target_date: date) ->
         if numero in seen:
             return
         seen.add(numero)
-        results.append(_build_mp_dict(client, numero, year, body_text or title_text, target_date))
+        pub = _pubdate_for(elem) if elem is not None else None
+        results.append(
+            _build_mp_dict(client, numero, year, body_text or title_text, target_date, pub_date=pub)
+        )
 
     try:
         root = ET.fromstring(xml_content)
@@ -140,11 +178,11 @@ def _parse_dou_xml(client: httpx.Client, xml_content: str, target_date: date) ->
             continue
         parent = parent_map.get(elem, elem)
         body_text = ET.tostring(parent, encoding="unicode", method="text")
-        _try(text, body_text)
+        _try(text, body_text, elem)
     for elem in root.iter():
         attr_title = elem.get("title", "").strip()
         if attr_title:
-            _try(attr_title, ET.tostring(elem, encoding="unicode", method="text"))
+            _try(attr_title, ET.tostring(elem, encoding="unicode", method="text"), elem)
 
     if not results:
         for raw_line in xml_content.splitlines():
