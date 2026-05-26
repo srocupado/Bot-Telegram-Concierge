@@ -9,9 +9,14 @@ import logging
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
@@ -20,6 +25,53 @@ from bot.services.dou_monitor import DouError, deliver_to_user
 
 logger = logging.getLogger(__name__)
 router = Router(name="dou_mp")
+
+
+def nota_keyboard(date_iso: str) -> InlineKeyboardMarkup:
+    """Botões Sim/Não pra oferecer a nota técnica das MPs de uma data."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="📄 Sim, gerar nota", callback_data=f"doump:y:{date_iso}"),
+        InlineKeyboardButton(text="Não", callback_data="doump:n"),
+    ]])
+
+
+@router.callback_query(F.data == "doump:n")
+async def cb_nota_nao(query: CallbackQuery, user: User) -> None:
+    await query.answer("Ok, sem nota.")
+    try:
+        await query.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("doump:y:"))
+async def cb_nota_sim(query: CallbackQuery, user: User, session: AsyncSession) -> None:
+    """callback_data = 'doump:y:<AAAA-MM-DD>'"""
+    if not user.is_authorized:
+        await query.answer()
+        return
+    try:
+        date_iso = query.data.split(":", 2)[2]
+        target = date.fromisoformat(date_iso)
+    except (ValueError, IndexError):
+        await query.answer("⚠️ data inválida", show_alert=True)
+        return
+    await query.answer("Gerando a nota técnica…")
+    try:
+        await query.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    try:
+        n = await deliver_to_user(query.bot, session, user, target, force=True)
+    except DouError as e:
+        await query.message.answer(f"⚠️ {e}", parse_mode=None)
+        return
+    except Exception:
+        logger.exception("doump callback failed")
+        await query.message.answer("⚠️ Erro ao gerar a nota técnica.", parse_mode=None)
+        return
+    if n == 0:
+        await query.message.answer("Nenhuma MP encontrada nessa data.", parse_mode=None)
 
 
 @router.message(Command("mp_dou_on"))

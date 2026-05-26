@@ -235,4 +235,8 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
     memory.append(chat_id, "user", user_text)
     memory.append(chat_id, "assistant", reply)
 
-    await message.answer(reply or "(sem resposta)")
+    kb = None
+    if ctx.dou_mp_found:
+        from bot.handlers.dou_mp import nota_keyboard
+        kb = nota_keyboard(ctx.dou_mp_found["date_iso"])
+    await message.answer(reply or "(sem resposta)", reply_markup=kb)

@@ -773,11 +773,16 @@ async def _h_consultar_mp_dou(args: dict, ctx: ToolContext) -> str:
 
     if not mps:
         return f"ok: nenhuma MP publicada no DOU em {target.strftime('%d/%m/%Y')}"
+    # Sinaliza ao handler de chat/voz pra oferecer a nota técnica com botões.
+    ctx.dou_mp_found = {"date_iso": target.isoformat(), "count": len(mps)}
     linhas = [f"ok: {len(mps)} MP(s) no DOU em {target.strftime('%d/%m/%Y')}:"]
     for mp in mps:
         ementa = (mp.get("ementa") or "")[:160]
         linhas.append(f"  • MP {mp['numero']}/{mp['ano']}: {ementa}")
-    linhas.append("(nota técnica completa + DOCX via /mp_dou_agora ou no digest diário)")
+    linhas.append(
+        "Pergunte ao usuário se ele quer a nota técnica completa (o sistema vai "
+        "mostrar botões Sim/Não automaticamente — não cite /mp_dou_agora)."
+    )
     return "\n".join(linhas)
 
 

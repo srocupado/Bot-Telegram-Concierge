@@ -287,4 +287,8 @@ async def _dispatch_chat(
 
     memory.append(chat_id, "user", text)
     memory.append(chat_id, "assistant", reply)
-    await message.answer(reply or "(sem resposta)")
+    kb = None
+    if ctx.dou_mp_found:
+        from bot.handlers.dou_mp import nota_keyboard
+        kb = nota_keyboard(ctx.dou_mp_found["date_iso"])
+    await message.answer(reply or "(sem resposta)", reply_markup=kb)

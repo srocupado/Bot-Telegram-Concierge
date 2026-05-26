@@ -47,6 +47,9 @@ class ToolContext:
     # (lancar_movimento_banco / lancar_despesa_cartao / registrar_aporte_tesouro).
     # Usado pela blindagem anti-alucinação no handler de chat/voz.
     financial_logged_ok: bool = False
+    # Setado por consultar_mp_dou quando acha MP(s) numa data: {"date_iso", "count"}.
+    # O handler de chat/voz usa pra oferecer a nota técnica com botões Sim/Não.
+    dou_mp_found: Any = None
 
 
 ToolHandler = Callable[[dict, ToolContext], Awaitable[str]]
