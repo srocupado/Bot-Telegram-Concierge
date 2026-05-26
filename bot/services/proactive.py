@@ -16,6 +16,7 @@ cooldown por kind nos nudges, silêncio total quando não há nada.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -159,13 +160,25 @@ async def collect_mp(
             seen.add(key)
             if not force and await already_notified(session, user.id, "mp", key):
                 continue
-            ementa = (mp.get("ementa") or "")[:180]
+            ementa = _clean_ementa(mp.get("ementa") or "")
             facts.append(ProactiveFact(
                 "mp", "mp", key,
                 f"📜 MP {mp['numero']}/{mp['ano']}: {ementa}",
                 extra={"date_iso": mp.get("data_publicacao") or d.isoformat()},
             ))
     return facts
+
+
+def _clean_ementa(ementa: str, limit: int = 220) -> str:
+    """Limpa a ementa pro aviso leve: remove o título do ato que às vezes
+    vem anexado ('... MEDIDA PROVISÓRIA Nº ...') e trunca em limite com '…'."""
+    e = re.sub(r"\s+", " ", ementa).strip()
+    cut = re.search(r"\bMEDIDA\s+PROVIS", e, re.IGNORECASE)
+    if cut and cut.start() > 0:
+        e = e[:cut.start()].strip()
+    if len(e) > limit:
+        e = e[:limit].rsplit(" ", 1)[0].rstrip(" .,;") + "…"
+    return e
 
 
 async def collect_nudges(
