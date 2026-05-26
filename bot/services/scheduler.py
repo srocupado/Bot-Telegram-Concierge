@@ -392,6 +392,11 @@ async def run_purge(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
         n = await purge_old_samples(session)
         if n:
             logger.info("purged %d old traffic_samples", n)
+    from bot.services.proactive import purge_old_notices
+    async with sessionmaker() as session:
+        n = await purge_old_notices(session)
+        if n:
+            logger.info("purged %d old proactive_notices", n)
 
 
 async def run_card_closing_summary(
@@ -436,40 +441,37 @@ async def run_card_closing_summary(
                 logger.exception("card summary send crashed for user %d", u.id)
 
 
-async def run_dou_mp_monitor(
+async def run_proactive(
     sessionmaker: async_sessionmaker[AsyncSession],
     bot: Bot,
 ) -> None:
-    """Digest diário do monitor de MPs no DOU. Roda no horário configurado
-    (DOU_MP_HOUR:DOU_MP_MINUTE BRT) pra cada usuário inscrito."""
-    if not settings.dou_mp_enabled:
+    """Agente proativo (opt-in): roda nas janelas PROACTIVE_HOURS (BRT) pra
+    cada usuário com proactive_enabled. Substitui o antigo digest de MP das
+    18h — MP agora é avisada aqui (leve + nota sob demanda)."""
+    if not settings.proactive_enabled:
         return
     now_brt = datetime.now(BRT)
-    if now_brt.hour != settings.dou_mp_hour or abs(now_brt.minute - settings.dou_mp_minute) > 1:
-        return
+    from bot.services.proactive import parse_proactive_hours, run_for_user
 
-    from bot.services.dou_monitor import DouError, deliver_to_user
+    if now_brt.hour not in parse_proactive_hours(settings.proactive_hours) or now_brt.minute > 1:
+        return
+    window = "briefing" if now_brt.hour == settings.proactive_briefing_hour else "regular"
 
     async with sessionmaker() as session:
         users = list((await session.scalars(
             select(User).where(
                 User.is_authorized.is_(True),
-                User.dou_mp_subscribed.is_(True),
+                User.proactive_enabled.is_(True),
             )
         )).all())
-        if not users:
-            return
-        target = now_brt.date()
-        for u in users:
+    for u in users:
+        async with sessionmaker() as session:
             try:
-                n = await deliver_to_user(bot, session, u, target)
-                if n:
-                    logger.info("dou: %d MP(s) entregue(s) ao user %d", n, u.id)
-            except DouError as e:
-                logger.warning("dou monitor: %s", e)
-                return  # credencial/rede: não adianta tentar os outros users
+                fresh = await session.get(User, u.id)
+                if fresh is not None:
+                    await run_for_user(bot, session, fresh, now_brt, window=window)
             except Exception:
-                logger.exception("dou monitor failed for user %d", u.id)
+                logger.exception("proactive failed for user %d", u.id)
 
 
 async def run_workout_purge(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
@@ -531,9 +533,9 @@ async def tick(
         logger.exception("card closing summary crashed")
 
     try:
-        await run_dou_mp_monitor(sessionmaker, bot)
+        await run_proactive(sessionmaker, bot)
     except Exception:
-        logger.exception("dou mp monitor crashed")
+        logger.exception("proactive crashed")
 
 
 async def scheduler_loop(

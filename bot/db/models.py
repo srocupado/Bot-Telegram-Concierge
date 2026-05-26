@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from bot.db.base import Base
@@ -47,6 +47,9 @@ class User(Base):
 
     # Monitor de MPs no Diário Oficial (Inlabs/DOU)
     dou_mp_subscribed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
+
+    # Agente proativo (opt-in): avisos automáticos (vencimentos, briefing, nudges, MP)
+    proactive_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -190,6 +193,22 @@ class DouSeenMP(Base):
     numero: Mapped[str] = mapped_column(String(32), nullable=False)
     ano: Mapped[int] = mapped_column(Integer, nullable=False)
     notified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+
+class ProactiveNotice(Base):
+    """Dedup do agente proativo: registra (usuário, kind, key) já avisados,
+    pra não repetir aviso. Ex.: kind='venc_rem' key='18:2026-05-27',
+    kind='nudge_workout' key='2026-05-26', kind='mp_briefing' key='1362/2026'."""
+
+    __tablename__ = "proactive_notices"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True, nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    key: Mapped[str] = mapped_column(String(128), nullable=False)
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    __table_args__ = (Index("ix_proactive_user_kind_key", "user_id", "kind", "key"),)
 
 
 class WorkoutLog(Base):

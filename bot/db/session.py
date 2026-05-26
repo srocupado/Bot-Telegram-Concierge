@@ -75,6 +75,11 @@ async def _ensure_columns(conn) -> None:
             "ALTER TABLE users ADD COLUMN dou_mp_subscribed BOOLEAN NOT NULL DEFAULT 0"
         )
         logger.info("migrated: added users.dou_mp_subscribed")
+    if "proactive_enabled" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE users ADD COLUMN proactive_enabled BOOLEAN NOT NULL DEFAULT 0"
+        )
+        logger.info("migrated: added users.proactive_enabled")
 
     rem_cols = await conn.exec_driver_sql("PRAGMA table_info(reminders)")
     cols = {row[1] for row in rem_cols.fetchall()}

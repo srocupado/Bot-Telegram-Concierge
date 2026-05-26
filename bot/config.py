@@ -62,6 +62,21 @@ class Settings(BaseSettings):
     inlabs_email: str | None = Field(None, alias="INLABS_EMAIL")
     inlabs_password: SecretStr | None = Field(None, alias="INLABS_PASSWORD")
 
+    # Agente proativo (opt-in por usuário via /proativo_on). Gate global +
+    # janelas de checagem (BRT, CSV) + limiares dos nudges e antecedência.
+    proactive_enabled: bool = Field(True, alias="PROACTIVE_ENABLED")
+    proactive_hours: str = Field("8,13,20", alias="PROACTIVE_HOURS")
+    proactive_briefing_hour: int = Field(8, alias="PROACTIVE_BRIEFING_HOUR")
+    proactive_lookahead_hours: int = Field(24, alias="PROACTIVE_LOOKAHEAD_HOURS")
+    proactive_workout_idle_days: int = Field(4, alias="PROACTIVE_WORKOUT_IDLE_DAYS")
+    proactive_finance_idle_days: int = Field(7, alias="PROACTIVE_FINANCE_IDLE_DAYS")
+    proactive_shopping_idle_days: int = Field(5, alias="PROACTIVE_SHOPPING_IDLE_DAYS")
+    proactive_nudge_cooldown_days: int = Field(3, alias="PROACTIVE_NUDGE_COOLDOWN_DAYS")
+    proactive_use_llm: bool = Field(False, alias="PROACTIVE_USE_LLM")
+    # Sweep noturno de MP (sem enviar; alimenta o briefing da manhã).
+    proactive_mp_sweep_hour: int = Field(23, alias="PROACTIVE_MP_SWEEP_HOUR")
+    proactive_mp_sweep_minute: int = Field(59, alias="PROACTIVE_MP_SWEEP_MINUTE")
+
     # Scheduler
     scheduler_tick_seconds: int = Field(60, alias="SCHEDULER_TICK_SECONDS")
     timezone: str = Field("America/Sao_Paulo", alias="TIMEZONE")

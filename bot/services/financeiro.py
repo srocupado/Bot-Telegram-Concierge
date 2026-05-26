@@ -608,6 +608,77 @@ def _bill_month_for_date(purchase_date: date, closing_day: int | None) -> tuple[
     return purchase_date.year, purchase_date.month
 
 
+def _get_card_due_day(state: dict) -> int | None:
+    """Dia de VENCIMENTO da fatura (cardDueDay) no settings. 1-31 ou None."""
+    s = state.get("settings") or {}
+    for key in (
+        "cardDueDay", "dueDay", "card_due_day",
+        "diaVencimento", "dia_vencimento", "vencimentoCartao",
+    ):
+        v = s.get(key)
+        if isinstance(v, (int, float)) and 1 <= int(v) <= 31:
+            return int(v)
+    return None
+
+
+def _card_due_date(due_day: int, today: date) -> date:
+    """Próxima data de vencimento (>= hoje) dado o dia do mês, com clamp de
+    fim de mês. Função pura (testável sem Firestore)."""
+    from calendar import monthrange
+    y, m = today.year, today.month
+    cand = date(y, m, min(due_day, monthrange(y, m)[1]))
+    if cand < today:
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+        cand = date(y, m, min(due_day, monthrange(y, m)[1]))
+    return cand
+
+
+async def card_due_soon(session: AsyncSession, user, today: date, lookahead_days: int) -> dict | None:
+    """{'due_date', 'month_key'} se o vencimento da fatura cai em até
+    lookahead_days; senão None. Defensivo: None sem uid/SA/cardDueDay."""
+    try:
+        if not getattr(user, "firebase_uid", None):
+            return None
+        db = await _get_db(session)
+        state = await _read_state(db, user.firebase_uid)
+    except NotConfiguredError:
+        return None
+    except Exception:
+        logger.exception("card_due_soon: failed for user %s", getattr(user, "id", "?"))
+        return None
+    due_day = _get_card_due_day(state)
+    if due_day is None:
+        return None
+    due = _card_due_date(due_day, today)
+    if 0 <= (due - today).days <= lookahead_days:
+        return {"due_date": due, "month_key": due.strftime("%Y-%m")}
+    return None
+
+
+async def last_finance_activity(session: AsyncSession, user) -> date | None:
+    """Maior `date` entre bankTransactions e cardEntries; None se nada/sem uid."""
+    try:
+        if not getattr(user, "firebase_uid", None):
+            return None
+        db = await _get_db(session)
+        state = await _read_state(db, user.firebase_uid)
+    except NotConfiguredError:
+        return None
+    except Exception:
+        logger.exception("last_finance_activity: failed for user %s", getattr(user, "id", "?"))
+        return None
+    latest: date | None = None
+    for arr_name in ("bankTransactions", "cardEntries"):
+        for it in state.get(arr_name) or []:
+            try:
+                d = datetime.fromisoformat((it.get("date") or "").replace(" ", "T")[:10]).date()
+            except ValueError:
+                continue
+            if latest is None or d > latest:
+                latest = d
+    return latest
+
+
 def _entry_in_bill(
     entry: dict, target_year: int, target_month: int, closing_day: int | None,
 ) -> dict | None:

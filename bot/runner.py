@@ -17,6 +17,7 @@ from bot.db.session import SessionLocal, init_db
 from bot.handlers import chat as chat_handler
 from bot.handlers import congress as congress_handler
 from bot.handlers import dou_mp as dou_mp_handler
+from bot.handlers import proactive as proactive_handler
 from bot.handlers import ping as ping_handler
 from bot.handlers import provider as provider_handler
 from bot.handlers import reminders as reminders_handler
@@ -56,6 +57,7 @@ def _build_dispatcher() -> Dispatcher:
     dp.include_router(traffic_handler.router)
     dp.include_router(congress_handler.router)
     dp.include_router(dou_mp_handler.router)
+    dp.include_router(proactive_handler.router)
     dp.include_router(tasks_handler.router)
     dp.include_router(reminders_handler.router)
     dp.include_router(route_handler.router)  # /rota + F.location + botão cancelar
