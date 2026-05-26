@@ -230,9 +230,48 @@ async def collect_nudges(
     return facts
 
 
+async def collect_transito(user: User, now_brt: datetime) -> list[ProactiveFact]:
+    """Trânsito casa → trabalho pro briefing matinal (dias úteis). Reusa o
+    fetch do digest de trânsito. Sem dedup (leitura fresca a cada manhã)."""
+    if now_brt.weekday() > 4:  # fim de semana: sem trânsito pro trabalho
+        return []
+    if not (settings.home_coords and settings.work_coords and settings.google_maps_api_key):
+        return []
+    import httpx
+    from bot.services.traffic import (
+        USER_AGENT as TRAFFIC_USER_AGENT,
+        fetch_traffic,
+        parse_route_waypoints,
+    )
+    api_key = settings.google_maps_api_key.get_secret_value()
+    try:
+        async with httpx.AsyncClient(
+            timeout=20.0, follow_redirects=True,
+            headers={"User-Agent": TRAFFIC_USER_AGENT},
+        ) as client:
+            waypoints: list[str] = []
+            if settings.route_google_maps_url:
+                waypoints = await parse_route_waypoints(client, settings.route_google_maps_url)
+            infos = await fetch_traffic(
+                client, api_key, settings.home_coords, settings.work_coords,
+                waypoints, maps_url=settings.route_google_maps_url or "",
+            )
+        info = infos[0]
+    except Exception:
+        logger.warning("proactive: trânsito casa→trabalho falhou", exc_info=True)
+        return []
+    via = f" via {info.summary}" if info.summary else ""
+    txt = (
+        f"~<b>{info.duration_minutes} min</b>{via} (típico ~{info.typical_minutes} min) · "
+        f'<a href="{info.maps_url}">mapa</a>'
+    )
+    return [ProactiveFact("transito", "transito_trabalho", "", txt)]
+
+
 # ──────────────────────── orquestrador ────────────────────────
 
 _CAT_HEADER = {
+    "transito": "🚗 <b>Trânsito casa → trabalho</b>",
     "venc": "⏳ <b>Chegando</b>",
     "mp": "📜 <b>Diário Oficial</b>",
     "nudge": "💡 <b>Hábitos</b>",
@@ -243,7 +282,7 @@ def _compose(facts: list[ProactiveFact], *, briefing: bool) -> str:
     blocks: list[str] = []
     if briefing:
         blocks.append("☀️ <b>Bom dia! Resumo de hoje</b>")
-    for cat in ("venc", "mp", "nudge"):
+    for cat in ("transito", "venc", "mp", "nudge"):
         lines = [f.text for f in facts if f.category == cat]
         if not lines:
             continue
@@ -295,6 +334,8 @@ async def run_for_user(
     mp_dates = [today - timedelta(days=1), today] if briefing else [today]
 
     facts: list[ProactiveFact] = []
+    if briefing:
+        facts += await collect_transito(user, now_brt)
     facts += await collect_vencimentos(session, user, now_brt, force=force)
     facts += await collect_mp(session, user, mp_dates, force=force)
     facts += await collect_nudges(session, user, now_brt, force=force)
@@ -315,6 +356,8 @@ async def run_for_user(
     logger.info("proactive: user %d window=%s %d fatos enviado=%s", user.id, window, len(facts), sent)
     if sent and not force:
         for f in facts:
+            if f.category == "transito":
+                continue  # trânsito não tem dedup (leitura fresca a cada manhã)
             await mark_notified(session, user.id, f.kind, f.key)
     return sent
 
