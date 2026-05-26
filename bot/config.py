@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     database_url: str = Field("sqlite+aiosqlite:////app/data/concierge.db", alias="DATABASE_URL")
 
     # LLM
-    ai_provider: Provider = Field("gemini", alias="AI_PROVIDER")
+    ai_provider: Provider = Field("anthropic", alias="AI_PROVIDER")
     anthropic_api_key: str | None = Field(None, alias="ANTHROPIC_API_KEY")
     anthropic_model: str = Field("claude-sonnet-4-6", alias="ANTHROPIC_MODEL")
     openai_api_key: str | None = Field(None, alias="OPENAI_API_KEY")
