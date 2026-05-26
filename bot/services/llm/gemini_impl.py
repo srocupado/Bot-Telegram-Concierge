@@ -21,10 +21,22 @@ from bot.services.llm.base import ChatMessage, LLMProvider, Tool, ToolContext
 logger = logging.getLogger(__name__)
 
 # Modelos Gemini 2.5 "pensam" por padrão e o thinking consome max_output_tokens.
-# Nesta versão do SDK não há thinking_budget pra limitar, então garantimos um
-# teto alto o bastante pra sobrar tokens pro texto final (senão a resposta vem
-# vazia — "(sem resposta)"). É só um teto; respostas curtas não gastam tudo.
+# Garantimos um teto alto o bastante pra sobrar tokens pro texto final (senão a
+# resposta vem vazia — "(sem resposta)"). É só um teto; respostas curtas não gastam tudo.
 _MIN_OUTPUT_TOKENS = 8192
+
+
+def _thinking_config():
+    """ThinkingConfig conforme settings.gemini_thinking_budget. None mantém
+    o automático (sem alteração). -1 também é automático; 0 desliga; N fixa."""
+    from bot.config import settings as _s
+    budget = getattr(_s, "gemini_thinking_budget", -1)
+    if budget is None or budget == -1:
+        return None
+    try:
+        return types.ThinkingConfig(thinking_budget=int(budget))
+    except Exception:
+        return None
 
 
 def _to_genai_parts(content: Any) -> list[types.Part]:
@@ -77,6 +89,7 @@ class GeminiProvider(LLMProvider):
             config = types.GenerateContentConfig(
                 system_instruction=system,
                 max_output_tokens=max(max_tokens, _MIN_OUTPUT_TOKENS),
+                thinking_config=_thinking_config(),
             )
             resp = self.client.models.generate_content(
                 model=self.model_name, contents=contents, config=config,
@@ -121,6 +134,7 @@ class GeminiProvider(LLMProvider):
                     system_instruction=system,
                     tools=genai_tools,
                     max_output_tokens=max(max_tokens, _MIN_OUTPUT_TOKENS),
+                    thinking_config=_thinking_config(),
                 )
                 return self.client.models.generate_content(
                     model=self.model_name, contents=contents, config=config,

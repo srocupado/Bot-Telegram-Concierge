@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     openai_model: str = Field("gpt-4.1", alias="OPENAI_MODEL")
     gemini_api_key: str | None = Field(None, alias="GEMINI_API_KEY")
     gemini_model: str = Field("gemini-2.5-pro", alias="GEMINI_MODEL")
+    # Orçamento de "thinking" do agente Gemini (tokens). -1 = automático
+    # (padrão, comportamento atual); 0 = desligado (só funciona em flash/
+    # flash-lite — acelera muito); N>0 = orçamento fixo (ex.: 128 = pensa
+    # pouco, válido também no pro). Use pra reduzir latência das respostas.
+    gemini_thinking_budget: int = Field(-1, alias="GEMINI_THINKING_BUDGET")
     # Override opcional só pra entrada de imagens. Quando setado, fotos vão
     # pra esse provider independente do /provider do usuário. Vazio = usa o
     # provider atual do usuário.
