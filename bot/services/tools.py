@@ -359,10 +359,11 @@ async def _h_registrar_treino(args: dict, ctx: ToolContext) -> str:
     except ValueError as e:
         return f"erro: {e}"
 
-    label = " + ".join(log.groups.split(","))
+    from bot.services.workouts import _groups_label
+    label = _groups_label(log.groups.split(","))
     if log.cardio_minutes:
-        label += f" ({log.cardio_minutes}min cardio)"
-    return f"ok: treino #{log.id} registrado em {log.date.strftime('%d/%m')} — {label}"
+        label += f" ({log.cardio_minutes}min)"
+    return f"ok (repasse): ✅ Treino registrado em {log.date.strftime('%d/%m')}: {label}"
 
 
 async def _h_consultar_treinos(_args: dict, ctx: ToolContext) -> str:
@@ -382,9 +383,9 @@ async def _h_apagar_treino_dia(args: dict, ctx: ToolContext) -> str:
         target = datetime.now(tz).date()
     n = await delete_workouts_on_date(ctx.session, ctx.user.id, target)
     if n == 0:
-        return f"ok: nenhum treino registrado em {target.strftime('%d/%m')}"
+        return f"ok (repasse): nenhum treino registrado em {target.strftime('%d/%m')}."
     plural = "treino" if n == 1 else "treinos"
-    return f"ok: {n} {plural} apagado(s) em {target.strftime('%d/%m')}"
+    return f"ok (repasse): 🗑️ {n} {plural} apagado(s) em {target.strftime('%d/%m')}."
 
 
 async def _h_consultar_clima(args: dict, ctx: ToolContext) -> str:

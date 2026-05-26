@@ -157,17 +157,24 @@ async def summary_current_week(
     }
 
 
+_GROUP_EMOJI = {"peito": "💪", "costas": "🔙", "pernas": "🦵", "cardio": "🏃"}
+
+
+def _groups_label(groups: list[str]) -> str:
+    return " + ".join(f"{_GROUP_EMOJI.get(g, '')}{g}".strip() for g in groups)
+
+
 def format_summary(summary: dict) -> str:
     inicio = summary["inicio"]
     fim = summary["fim"]
     hoje = summary.get("hoje")
     lines = [
-        f"semana {inicio.strftime('%d/%m')} (dom) → {fim.strftime('%d/%m')} (sab) "
+        f"🏋️ Semana {inicio.strftime('%d/%m')} (dom) → {fim.strftime('%d/%m')} (sáb) "
         f"— {summary['dias_treinou']} treinos, {summary['dias_descansou']} dias sem treino"
     ]
     if hoje is not None:
         lines.append(
-            f"hoje: {_format_dia_label(hoje)} "
+            f"📅 Hoje: {_format_dia_label(hoje)} "
             f"(dia {summary['dias_passados']}/7 da semana — "
             f"{summary['dias_restantes']} dia(s) ainda por vir)"
         )
@@ -179,22 +186,23 @@ def format_summary(summary: dict) -> str:
         else:
             marker = "passado"
         if not groups:
+            emoji = "▫️" if marker == "futuro" else "⬜"
             label = "sem treino" if marker != "futuro" else "—"
-            lines.append(f"  • {_format_dia_label(d)} [{marker}]: {label}")
+            lines.append(f"{emoji} {_format_dia_label(d)} [{marker}]: {label}")
             continue
-        label = " + ".join(groups)
+        label = _groups_label(groups)
         if cardio:
-            label += f" ({cardio}min cardio)"
-        lines.append(f"  • {_format_dia_label(d)} [{marker}]: {label}")
+            label += f" ({cardio}min)"
+        lines.append(f"✅ {_format_dia_label(d)} [{marker}]: {label}")
     pg = summary["por_grupo"]
-    pg_items = [f"{k}:{v}" for k, v in pg.items() if v > 0]
+    pg_items = [f"{_GROUP_EMOJI.get(k, '')}{k}:{v}" for k, v in pg.items() if v > 0]
     extras = []
     if summary["cardio_min_total"]:
-        extras.append(f"total cardio: {summary['cardio_min_total']}min")
+        extras.append(f"🔥 cardio total: {summary['cardio_min_total']}min")
     if pg_items:
-        extras.append(" | ".join(pg_items))
+        extras.append(" · ".join(pg_items))
     if extras:
-        lines.append(" | ".join(extras))
+        lines.append(" · ".join(extras))
     return "\n".join(lines)
 
 
