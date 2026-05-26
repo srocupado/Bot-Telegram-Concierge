@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.models import User
 from bot.services.chat_memory import memory
-from bot.services.llm.base import SYSTEM_VOLATILE_MARKER, ToolContext
+from bot.services.llm.base import ToolContext
 from bot.services.llm.factory import get_provider
 from bot.services.tools import TOOLS
 
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 _SYSTEM_PROMPT_TEMPLATE = (
     "Você é o Concierge, um assistente pessoal em português brasileiro. "
     "Respostas curtas, diretas e amistosas.\n\n"
-    "A data/hora atual é informada no fim deste prompt (seção CONTEXTO).\n\n"
+    "Data/hora atual: {now_local} ({tz}).\n\n"
     "Você tem ferramentas (tools) para agir no sistema do usuário. "
     "Os nomes EXATOS das tools disponíveis são:\n"
     "- criar_tarefa, listar_tarefas, concluir_tarefa, apagar_tarefa\n"
@@ -53,7 +53,7 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "Para criar_lembrete:\n"
     "- 'texto' é o conteúdo do lembrete (ex: 'comprar morangos').\n"
     "- 'quando_iso' é a data/hora ABSOLUTA no formato ISO local "
-    "'YYYY-MM-DDTHH:MM', calculada a partir da Data/hora atual (ver CONTEXTO no fim).\n"
+    "'YYYY-MM-DDTHH:MM', calculada a partir da Data/hora atual acima.\n"
     "- 'às 16h' / 'às 4 da tarde' / '16:00' = hora absoluta 16:00 do dia indicado.\n"
     "- 'em 2h' = relativo: some 2h à Data/hora atual.\n"
     "- Sempre confira mentalmente: 'às' vira hora absoluta, 'em' vira soma.\n"
@@ -194,14 +194,10 @@ _SYSTEM_PROMPT_TEMPLATE = (
 
 
 def _build_system_prompt(tz_name: str) -> str:
-    # Parte estável (cacheável) + marcador + contexto volátil (data/hora).
-    # O provider Anthropic cacheia só a parte antes do marcador, então o
-    # relógio mudando a cada minuto não invalida o cache de system+tools.
-    now_local = datetime.now(ZoneInfo(tz_name)).strftime("%Y-%m-%d %H:%M %A")
-    return (
-        _SYSTEM_PROMPT_TEMPLATE
-        + SYSTEM_VOLATILE_MARKER
-        + f"CONTEXTO — Data/hora atual: {now_local} ({tz_name})."
+    now_local = datetime.now(ZoneInfo(tz_name))
+    return _SYSTEM_PROMPT_TEMPLATE.format(
+        now_local=now_local.strftime("%Y-%m-%d %H:%M %A"),
+        tz=tz_name,
     )
 
 

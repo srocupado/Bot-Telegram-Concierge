@@ -8,12 +8,6 @@ from typing import Any, Awaitable, Callable, TypedDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# Marcador que separa a parte ESTÁVEL do system prompt (cacheável) do
-# CONTEXTO VOLÁTIL no fim (ex.: data/hora atual). O provider Anthropic usa
-# isso pra cachear só o prefixo estável e deixar o volátil fora do cache.
-SYSTEM_VOLATILE_MARKER = "\n\n<<<CTX_VOLATIL>>>\n"
-
-
 class ChatMessage(TypedDict):
     role: str  # "user" | "assistant" | "system"
     # content é str pra mensagens só-texto, ou list[ContentBlock] pra multimodal.
