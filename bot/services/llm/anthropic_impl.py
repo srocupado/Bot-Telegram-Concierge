@@ -6,7 +6,13 @@ from typing import Any
 
 import anthropic
 
-from bot.services.llm.base import ChatMessage, LLMProvider, Tool, ToolContext
+from bot.services.llm.base import (
+    SYSTEM_VOLATILE_MARKER,
+    ChatMessage,
+    LLMProvider,
+    Tool,
+    ToolContext,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +31,22 @@ def _log_usage(where: str, resp: Any) -> None:
         getattr(u, "cache_read_input_tokens", 0),
         getattr(u, "output_tokens", "?"),
     )
+
+
+def _system_blocks(system: str | None) -> list[dict] | None:
+    """Monta o system pra Anthropic com cache no prefixo ESTÁVEL. Se houver
+    o marcador de contexto volátil, cacheia só a parte antes dele (o relógio
+    no fim fica fora do cache, não invalidando system+tools a cada minuto)."""
+    if not system:
+        return None
+    head, sep, tail = system.partition(SYSTEM_VOLATILE_MARKER)
+    if sep:
+        blocks = [{"type": "text", "text": head, "cache_control": {"type": "ephemeral"}}]
+        if tail.strip():
+            blocks.append({"type": "text", "text": tail})
+        return blocks
+    # sem marcador: cacheia o system inteiro
+    return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
 
 
 def _to_anth_content(content: Any) -> Any:
@@ -88,10 +110,9 @@ class AnthropicProvider(LLMProvider):
                 "max_tokens": max_tokens,
                 "messages": anth_messages,
             }
-            if system:
-                kwargs["system"] = [
-                    {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
-                ]
+            blocks = _system_blocks(system)
+            if blocks:
+                kwargs["system"] = blocks
             resp = self.client.messages.create(**kwargs)
             _log_usage("chat", resp)
             parts = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
@@ -131,11 +152,9 @@ class AnthropicProvider(LLMProvider):
         tools_spec[-1] = {**tools_spec[-1], "cache_control": {"type": "ephemeral"}}
         tool_by_name = {t.name: t for t in tools}
 
-        # System como bloco cacheável (2º breakpoint, depois de tools).
-        system_blocks = (
-            [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
-            if system else None
-        )
+        # System como bloco(s) cacheável(is): cacheia só o prefixo estável,
+        # deixando o contexto volátil (data/hora) fora do cache.
+        system_blocks = _system_blocks(system)
 
         for _ in range(max_iterations):
             def _call() -> anthropic.types.Message:
