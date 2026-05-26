@@ -11,6 +11,22 @@ from bot.services.llm.base import ChatMessage, LLMProvider, Tool, ToolContext
 logger = logging.getLogger(__name__)
 
 
+def _log_usage(where: str, resp: Any) -> None:
+    """Loga uso de tokens incl. métricas de prompt caching, pra avaliar o
+    efeito do cache. cache_read > 0 = cache funcionando."""
+    u = getattr(resp, "usage", None)
+    if u is None:
+        return
+    logger.info(
+        "anthropic[%s] usage: input=%s cache_write=%s cache_read=%s output=%s",
+        where,
+        getattr(u, "input_tokens", "?"),
+        getattr(u, "cache_creation_input_tokens", 0),
+        getattr(u, "cache_read_input_tokens", 0),
+        getattr(u, "output_tokens", "?"),
+    )
+
+
 def _to_anth_content(content: Any) -> Any:
     """Converte content (str ou list[block]) pro formato esperado pela API Anthropic."""
     if isinstance(content, str):
@@ -77,6 +93,7 @@ class AnthropicProvider(LLMProvider):
                     {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
                 ]
             resp = self.client.messages.create(**kwargs)
+            _log_usage("chat", resp)
             parts = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
             return "".join(parts).strip()
 
@@ -133,6 +150,7 @@ class AnthropicProvider(LLMProvider):
                 return self.client.messages.create(**kwargs)
 
             resp = await asyncio.to_thread(_call)
+            _log_usage("chat_with_tools", resp)
 
             if resp.stop_reason != "tool_use":
                 parts = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
