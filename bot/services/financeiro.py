@@ -819,11 +819,6 @@ def _fmt_date_br(iso: str) -> str:
         return iso or "?"
 
 
-def _id_tag(it: dict) -> str:
-    """Mostra o id só pra lançamentos do bot (únicos apagáveis). '' caso web."""
-    return f"  ·  #{it.get('id', '?')}" if it.get("source") == "bot" else ""
-
-
 async def consultar_lancamentos(
     session: AsyncSession,
     user,
@@ -837,6 +832,7 @@ async def consultar_lancamentos(
     state = await _read_state(db, uid)
 
     parts: list[str] = []
+    internal: list[str] = []  # ids dos lançamentos do bot (uso interno do LLM)
     mods = {"banco", "cartao", "cartão", "tesouro", "tudo"}
     mod = (modulo or "tudo").strip().lower()
     if mod not in mods:
@@ -855,8 +851,10 @@ async def consultar_lancamentos(
                 sign = "➕" if amt >= 0 else "➖"
                 lines.append(
                     f"• {_fmt_date_br(it.get('date', ''))} — {it.get('desc', '?')} · "
-                    f"{sign} {_fmt_brl(abs(amt))} · {it.get('category', '?')}{_id_tag(it)}"
+                    f"{sign} {_fmt_brl(abs(amt))} · {it.get('category', '?')}"
                 )
+                if it.get("source") == "bot":
+                    internal.append(f"banco · {it.get('desc', '?')} ({_fmt_date_br(it.get('date', ''))}) → #{it.get('id', '?')}")
             lines.append(f"Saldo do período: {'+' if saldo >= 0 else '−'}{_fmt_brl(abs(saldo))}")
             parts.append("\n".join(lines))
 
@@ -909,8 +907,10 @@ async def consultar_lancamentos(
                 total += value
                 lines.append(
                     f"• {_fmt_date_br(it.get('date', ''))} — {it.get('desc', '?')}{par_label} · "
-                    f"{_fmt_brl(value)} · {it.get('category', '?')}{_id_tag(it)}"
+                    f"{_fmt_brl(value)} · {it.get('category', '?')}"
                 )
+                if it.get("source") == "bot":
+                    internal.append(f"cartao · {it.get('desc', '?')} ({_fmt_date_br(it.get('date', ''))}) → #{it.get('id', '?')}")
             lines.append(f"Total da fatura: {_fmt_brl(total)} ({len(card_items)} itens)")
             parts.append("\n".join(lines))
 
@@ -933,10 +933,17 @@ async def consultar_lancamentos(
                     )
                     for c in recent[-10:]:
                         lines.append(
-                            f"     {_fmt_date_br(c.get('date', ''))} +{_fmt_brl(float(c.get('amount') or 0))}{_id_tag(c)}"
+                            f"     {_fmt_date_br(c.get('date', ''))} +{_fmt_brl(float(c.get('amount') or 0))}"
                         )
+                        if c.get("source") == "bot":
+                            internal.append(f"tesouro · {name} ({_fmt_date_br(c.get('date', ''))}) → #{c.get('id', '?')}")
             parts.append("\n".join(lines))
 
+    if internal:
+        parts.append(
+            "[IDS_INTERNOS — NÃO mostre ao usuário; use SÓ para apagar_lancamento]\n"
+            + "\n".join(internal)
+        )
     return "\n\n".join(parts) if parts else "(sem dados)"
 
 
