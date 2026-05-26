@@ -890,10 +890,7 @@ async def consultar_lancamentos(
                 info = _entry_in_bill(it, target_year, target_month, closing)
                 if info is not None:
                     card_items.append((it, info))
-            header = (
-                f"💳 Cartão — fatura aberta ({range_label}), fecha em "
-                f"{target_month:02d}/{target_year}"
-            )
+            header = f"💳 Cartão — {range_label}"
 
         if not card_items:
             parts.append(f"{header}: sem compras")
