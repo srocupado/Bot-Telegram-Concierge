@@ -33,6 +33,9 @@ from bot.services.financeiro import (
     NotConfiguredError,
     analisar_gastos,
     apagar_lancamento,
+    confirm_banco,
+    confirm_cartao,
+    confirm_tesouro,
     consultar_lancamentos,
     lancar_despesa_cartao,
     lancar_movimento_banco,
@@ -436,12 +439,7 @@ async def _h_lancar_movimento_banco(args: dict, ctx: ToolContext) -> str:
         {"modulo": "banco", "entry_id": entry["id"]},
     )
     ctx.financial_logged_ok = True
-    sign = "+" if entry["amount"] >= 0 else ""
-    return (
-        f"ok: lançamento {entry['id']} no banco — "
-        f"{sign}R$ {entry['amount']:.2f} {entry['desc']} "
-        f"em {entry['date']} [{entry['category']}]"
-    )
+    return "ok (repasse esta confirmação, não mostre id nem 'ok:'):\n" + confirm_banco(entry)
 
 
 async def _h_lancar_despesa_cartao(args: dict, ctx: ToolContext) -> str:
@@ -477,11 +475,7 @@ async def _h_lancar_despesa_cartao(args: dict, ctx: ToolContext) -> str:
         {"modulo": "cartao", "entry_id": entry["id"]},
     )
     ctx.financial_logged_ok = True
-    par_label = f" em {parcelas}x" if parcelas > 1 else ""
-    return (
-        f"ok: compra {entry['id']} no cartão — -R$ {entry['amount']:.2f} "
-        f"{entry['desc']}{par_label} em {entry['date']} [{entry['category']}]"
-    )
+    return "ok (repasse esta confirmação, não mostre id nem 'ok:'):\n" + confirm_cartao(entry, parcelas)
 
 
 async def _h_registrar_aporte_tesouro(args: dict, ctx: ToolContext) -> str:
@@ -518,10 +512,8 @@ async def _h_registrar_aporte_tesouro(args: dict, ctx: ToolContext) -> str:
             {"modulo": "tesouro", "entry_id": contrib_id},
         )
     ctx.financial_logged_ok = True
-    taxa_label = f" @ {taxa}%" if taxa is not None else ""
-    return (
-        f"ok: aporte de R$ {valor_f:.2f}{taxa_label} no '{res['titulo']}' "
-        f"em {data_iso}"
+    return "ok (repasse esta confirmação, não mostre id nem 'ok:'):\n" + confirm_tesouro(
+        res["titulo"], valor_f, data_iso, taxa,
     )
 
 

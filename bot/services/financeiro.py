@@ -819,6 +819,32 @@ def _fmt_date_br(iso: str) -> str:
         return iso or "?"
 
 
+def confirm_banco(entry: dict) -> str:
+    """Confirmação amigável de um lançamento no banco (sem id/ok:)."""
+    amt = float(entry.get("amount") or 0)
+    sign = "➕" if amt >= 0 else "➖"
+    return (
+        f"✅ Lançado no banco: {sign} {_fmt_brl(abs(amt))} — "
+        f"{entry.get('desc', '?')} · {_fmt_date_br(entry.get('date', ''))} · "
+        f"{entry.get('category', 'outros')}"
+    )
+
+
+def confirm_cartao(entry: dict, parcelas: int = 1) -> str:
+    total = float(entry.get("amount") or 0)
+    par = f" em {parcelas}x" if parcelas and parcelas > 1 else ""
+    return (
+        f"✅ Compra no cartão: {_fmt_brl(total)}{par} — "
+        f"{entry.get('desc', '?')} · {_fmt_date_br(entry.get('date', ''))} · "
+        f"{entry.get('category', 'outros')}"
+    )
+
+
+def confirm_tesouro(titulo: str, valor: float, data_iso: str, taxa=None) -> str:
+    taxa_s = f" @ {taxa}%" if taxa is not None else ""
+    return f"✅ Aporte: {_fmt_brl(valor)} — {titulo} · {_fmt_date_br(data_iso)}{taxa_s}"
+
+
 async def consultar_lancamentos(
     session: AsyncSession,
     user,
