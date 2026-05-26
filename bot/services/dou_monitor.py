@@ -157,6 +157,11 @@ def _parse_dou_xml(client: httpx.Client, xml_content: str, target_date: date) ->
             return
         seen.add(numero)
         pub = _pubdate_for(elem) if elem is not None else None
+        logger.info(
+            "dou: MP %s — pubDate do XML=%s | target=%s | base usada=%s",
+            numero, pub.isoformat() if pub else "NÃO ENCONTRADO",
+            target_date.isoformat(), (pub or target_date).isoformat(),
+        )
         results.append(
             _build_mp_dict(client, numero, year, body_text or title_text, target_date, pub_date=pub)
         )
