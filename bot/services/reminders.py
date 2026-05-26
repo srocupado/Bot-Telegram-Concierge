@@ -159,24 +159,34 @@ def _emoji_for(r: Reminder) -> str:
     return "📌"
 
 
+def format_reminder_line(r: Reminder, tz_name: str) -> str:
+    """Uma linha padronizada do lembrete: '{emoji} #id — Dia, hora → texto'."""
+    tz = ZoneInfo(tz_name)
+    local = r.due_at.astimezone(tz)
+    today = datetime.now(tz).date()
+    rec = f" ({r.recurrence})" if r.recurrence else ""
+    return (
+        f"{_emoji_for(r)} #{r.id} — {_dia_label(local, today)}, "
+        f"{_hora_label(local)} → {r.text}{rec}"
+    )
+
+
+def format_reminder_confirmation(r: Reminder, tz_name: str, *, verb: str = "criado") -> str:
+    """Confirmação padronizada ao criar/agendar um lembrete, com o teor."""
+    return f"✅ Lembrete {verb}:\n{format_reminder_line(r, tz_name)}"
+
+
 def format_pending_list(items: list[Reminder], tz_name: str) -> str:
     """Formatação ÚNICA e padronizada da lista de lembretes (usada pelo
     comando /lembretes e pela tool listar_lembretes, pra a saída ficar igual
     em qualquer provider de LLM). Padrão: lista numerada + emoji contextual."""
     if not items:
         return "📭 Nenhum lembrete pendente."
-    tz = ZoneInfo(tz_name)
-    today = datetime.now(tz).date()
     plural = "lembrete" if len(items) == 1 else "lembretes"
     suf = "s" if len(items) > 1 else ""
     lines = [f"Você tem {len(items)} {plural} pendente{suf}:\n"]
     for i, r in enumerate(items, 1):
-        local = r.due_at.astimezone(tz)
-        rec = f" ({r.recurrence})" if r.recurrence else ""
-        lines.append(
-            f"{i}. {_emoji_for(r)} #{r.id} — {_dia_label(local, today)}, "
-            f"{_hora_label(local)} → {r.text}{rec}"
-        )
+        lines.append(f"{i}. {format_reminder_line(r, tz_name)}")
     return "\n".join(lines)
 
 

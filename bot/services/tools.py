@@ -125,11 +125,9 @@ async def _h_criar_lembrete(args: dict, ctx: ToolContext) -> str:
         ctx.session, ctx.user.id, "lembrete",
         f"lembrete #{rem.id}: {texto}", {"reminder_id": rem.id},
     )
-    local = due_utc.astimezone(tz)
-    return (
-        f"ok: lembrete #{rem.id} criado: {texto} "
-        f"em {local.strftime('%d/%m %H:%M')}"
-    )
+    from bot.services.reminders import format_reminder_confirmation
+    return "ok (repasse esta confirmação com o teor, não resuma):\n" + \
+        format_reminder_confirmation(rem, ctx.tz)
 
 
 async def _h_listar_lembretes(_args: dict, ctx: ToolContext) -> str:
@@ -178,11 +176,9 @@ async def _h_criar_lembrete_pagamento(args: dict, ctx: ToolContext) -> str:
         f"lembrete de pagamento #{rem.id}: {beneficiario} {valor_fmt}",
         {"reminder_id": rem.id},
     )
-    local = due_utc.astimezone(tz)
-    return (
-        f"ok: lembrete de pagamento #{rem.id} criado: "
-        f"{beneficiario} {valor_fmt} em {local.strftime('%d/%m %H:%M')}"
-    )
+    from bot.services.reminders import format_reminder_confirmation
+    return "ok (repasse esta confirmação com o teor, não resuma):\n" + \
+        format_reminder_confirmation(rem, ctx.tz)
 
 
 async def _h_criar_lembrete_recorrente(args: dict, ctx: ToolContext) -> str:
@@ -216,11 +212,9 @@ async def _h_criar_lembrete_recorrente(args: dict, ctx: ToolContext) -> str:
         f"lembrete recorrente #{rem.id}: {texto} ({recurrencia})",
         {"reminder_id": rem.id},
     )
-    local = due_utc.astimezone(tz)
-    return (
-        f"ok: lembrete recorrente #{rem.id} criado: {texto} ({recurrencia}) "
-        f"— primeiro: {local.strftime('%d/%m %H:%M')}"
-    )
+    from bot.services.reminders import format_reminder_confirmation
+    return "ok (repasse esta confirmação com o teor, não resuma):\n" + \
+        format_reminder_confirmation(rem, ctx.tz)
 
 
 async def _h_apagar_lembrete(args: dict, ctx: ToolContext) -> str:
@@ -282,12 +276,9 @@ async def _h_agendar_comando(args: dict, ctx: ToolContext) -> str:
         f"comando agendado #{rem.id}: {label}" + (f" ({recorrencia})" if recorrencia else ""),
         {"reminder_id": rem.id},
     )
-    local = due_utc.astimezone(tz)
-    rec_label = f" — repete: {recorrencia}" if recorrencia else ""
-    return (
-        f"ok: comando #{rem.id} agendado: {label} "
-        f"em {local.strftime('%d/%m %H:%M')}{rec_label}"
-    )
+    from bot.services.reminders import format_reminder_confirmation
+    return "ok (repasse esta confirmação com o teor, não resuma):\n" + \
+        format_reminder_confirmation(rem, ctx.tz, verb="agendado")
 
 
 async def _h_lembrar_fato(args: dict, ctx: ToolContext) -> str:
