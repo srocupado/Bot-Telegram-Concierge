@@ -330,6 +330,12 @@ async def run_for_user(
     today = now_brt.date()
     mp_dates = [today - timedelta(days=1), today] if briefing else [today]
 
+    # O briefing inclui trânsito, que não tem dedup (leitura fresca). Sem uma
+    # trava de nível-janela ele re-dispararia a cada tick dentro da janela
+    # (minute<=1). Garante 1 briefing por dia.
+    if briefing and not force and await already_notified(session, user.id, "briefing", today.isoformat()):
+        return False
+
     facts: list[ProactiveFact] = []
     if briefing:
         facts += await collect_transito(user, now_brt)
@@ -352,6 +358,8 @@ async def run_for_user(
     sent = await _send(bot, user.id, text, reply_markup=reply_markup)
     logger.info("proactive: user %d window=%s %d fatos enviado=%s", user.id, window, len(facts), sent)
     if sent and not force:
+        if briefing:
+            await mark_notified(session, user.id, "briefing", today.isoformat())
         for f in facts:
             if f.category == "transito":
                 continue  # trânsito não tem dedup (leitura fresca a cada manhã)
