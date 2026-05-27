@@ -88,7 +88,10 @@ async def transcribe(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
                     {"mime_type": mime_type, "data": audio_bytes},
                     _TRANSCRIBE_PROMPT,
                 ],
-                generation_config={"max_output_tokens": 1024, "temperature": 0.0},
+                # Modelos 2.5 "pensam" e o thinking consome max_output_tokens; com
+                # teto baixo (ex.: 1024) sobra zero pro texto e a transcrição vem
+                # vazia / resp.text lança. Teto alto garante espaço pro resultado.
+                generation_config={"max_output_tokens": 8192, "temperature": 0.0},
             )
             return (resp.text or "").strip()
         except Exception as e:
