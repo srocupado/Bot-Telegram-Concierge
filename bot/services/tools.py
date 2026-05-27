@@ -585,9 +585,14 @@ async def _h_adicionar_lista_compras(args: dict, ctx: ToolContext) -> str:
         "itens de compra: " + ", ".join(i.text for i in added),
         {"item_ids": [i.id for i in added]},
     )
-    if len(added) == 1:
-        return f"ok: adicionado: {format_item(added[0])}"
-    return "ok: adicionados " + " | ".join(format_item(i) for i in added)
+    def _line(i):
+        qty = f" ({i.quantity})" if i.quantity else ""
+        return f"➕ {i.text}{qty}"
+    corpo = "\n".join(_line(i) for i in added)
+    return (
+        "ok (repasse estas linhas EXATAMENTE, com emojis, sem mostrar ids):\n"
+        "🛒 Adicionado à lista:\n" + corpo
+    )
 
 
 async def _h_listar_compras(args: dict, ctx: ToolContext) -> str:
@@ -595,11 +600,19 @@ async def _h_listar_compras(args: dict, ctx: ToolContext) -> str:
     only_pending = escopo != "todos"
     items = await list_items(ctx.session, ctx.user.id, only_pending=only_pending)
     if not items:
-        if only_pending:
-            return "ok: lista de compras vazia (sem itens pendentes)"
-        return "ok: lista de compras vazia"
-    head = "lista de compras (pendentes)" if only_pending else "lista de compras (todos)"
-    return "ok: " + head + ":\n" + "\n".join(format_item(i) for i in items)
+        return "ok (repasse): 🛒 Sua lista de compras está vazia."
+    lines = ["🛒 Lista de compras:"]
+    for it in items:
+        box = "☑️" if it.checked else "🔲"
+        qty = f" ({it.quantity})" if it.quantity else ""
+        lines.append(f"{box} {it.text}{qty}")
+    ids = " · ".join(f"{it.text}=#{it.id}" for it in items)
+    return (
+        "ok (repasse estas linhas EXATAMENTE como estão, com os emojis, sem "
+        "reformatar/resumir/numerar e sem mostrar os ids):\n"
+        + "\n".join(lines)
+        + f"\n[IDS_INTERNOS — NÃO mostre ao usuário, use só pra marcar/remover: {ids}]"
+    )
 
 
 async def _h_marcar_comprado(args: dict, ctx: ToolContext) -> str:
