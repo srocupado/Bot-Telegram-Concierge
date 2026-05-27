@@ -20,7 +20,14 @@ from bot.services.tasks import (
     list_open_tasks,
     mark_done,
 )
-from bot.services.traffic import USER_AGENT, TrafficError, fetch_traffic
+from bot.services.traffic import (
+    USER_AGENT,
+    TrafficError,
+    fetch_traffic,
+    fetch_traffic_with_alternative,
+    format_traffic_message_dual,
+    parse_route_waypoints,
+)
 from bot.services.user_facts import (
     delete_fact,
     get_fact,
@@ -809,7 +816,7 @@ async def _h_consultar_congresso(_args: dict, ctx: ToolContext) -> str:
         return "erro: não consegui acessar a agenda do Congresso agora"
     except Exception:
         return "erro: falha ao consultar a pauta do Congresso"
-    ctx.congress_text = format_week_message(items, today)
+    ctx.direct_html = format_week_message(items, today)
     ctx.short_circuit = True
     return "ok: pauta entregue ao usuário (não escreva nada, a mensagem já foi enviada)"
 
@@ -819,6 +826,41 @@ async def _h_consultar_transito(args: dict, ctx: ToolContext) -> str:
     destino = (args.get("destino") or "").strip()
     if not origem or not destino:
         return "erro: parâmetros 'origem' e 'destino' são obrigatórios"
+
+    # Caso casa↔trabalho: devolve a MESMA mensagem do /transito_agora (2 rotas,
+    # formato HTML) verbatim, em vez de deixar o LLM parafrasear.
+    o_low, d_low = origem.lower(), destino.lower()
+    if {o_low, d_low} <= {"casa", "trabalho"} and o_low != d_low:
+        if not (settings.home_coords and settings.work_coords and settings.google_maps_api_key):
+            return "erro: HOME_COORDS/WORK_COORDS/GOOGLE_MAPS_API_KEY não configurado"
+        if d_low == "trabalho":
+            origin, destination, label, reverse = (
+                settings.home_coords, settings.work_coords, "casa → trabalho", False,
+            )
+        else:
+            origin, destination, label, reverse = (
+                settings.work_coords, settings.home_coords, "trabalho → casa", True,
+            )
+        api_key = settings.google_maps_api_key.get_secret_value()
+        try:
+            async with httpx.AsyncClient(
+                timeout=20.0, follow_redirects=True, headers={"User-Agent": USER_AGENT},
+            ) as client:
+                waypoints: list[str] = []
+                if settings.route_google_maps_url:
+                    waypoints = await parse_route_waypoints(client, settings.route_google_maps_url)
+                    if reverse:
+                        waypoints = list(reversed(waypoints))
+                pref, alt = await fetch_traffic_with_alternative(
+                    client, api_key, origin, destination, waypoints,
+                    maps_url=settings.route_google_maps_url or "",
+                )
+        except TrafficError as e:
+            return f"erro: {e}"
+        ctx.direct_html = format_traffic_message_dual(pref, alt, label)
+        ctx.short_circuit = True
+        return "ok: trânsito entregue ao usuário (não escreva nada, a mensagem já foi enviada)"
+
     # Atalhos: 'casa' e 'trabalho' viram HOME_COORDS / WORK_COORDS.
     aliases = {"casa": settings.home_coords, "trabalho": settings.work_coords}
     origem_resolved = aliases.get(origem.lower(), origem)

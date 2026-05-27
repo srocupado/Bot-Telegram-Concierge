@@ -50,13 +50,13 @@ class ToolContext:
     # Setado por consultar_mp_dou quando acha MP(s) numa data: {"date_iso", "count"}.
     # O handler de chat/voz usa pra oferecer a nota técnica com botões Sim/Não.
     dou_mp_found: Any = None
-    # Setado por consultar_congresso com o texto HTML já formatado (idêntico ao
-    # /congresso_agora). O handler de chat/voz envia esse texto verbatim com
-    # parse_mode=HTML, ignorando a resposta do LLM (evita paráfrase).
-    congress_text: str | None = None
+    # Texto HTML já formatado que o handler de chat/voz envia verbatim
+    # (parse_mode=HTML), ignorando a resposta do LLM — evita paráfrase. Usado
+    # por consultar_congresso e consultar_transito (saída idêntica aos /comandos).
+    direct_html: str | None = None
     # Quando uma tool seta isto True, o loop de tool use encerra logo após
     # executar a tool, sem mais uma chamada ao LLM (a resposta já está pronta
-    # via ctx.congress_text/etc). Evita uma geração extra desperdiçada.
+    # via ctx.direct_html/etc). Evita uma geração extra desperdiçada.
     short_circuit: bool = False
     # Setado por zerar_lista_compras: o handler anexa botões Sim/Cancelar em
     # vez de apagar na hora (evita o LLM zerar a lista sem confirmação).
