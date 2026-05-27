@@ -47,7 +47,7 @@ HELP_TEXT = (
     "• <code>/agendar_comando &lt;tipo&gt; [args] &lt;quando&gt;</code> — agenda uma ação (transito/congresso/clima/chat) pra rodar no horário\n\n"
     "<b>LLM</b>:\n"
     "• <code>/ping</code> — testa o LLM atual (mostra provider e modelo)\n"
-    "• <code>/provider anthropic|openai|gemini</code> — troca de LLM\n"
+    "• <code>/provider anthropic|openai|gemini</code> — troca de LLM. No Gemini dá pra escolher o modelo: <code>/provider gemini pro</code> | <code>/provider gemini flash</code>\n"
     "• <code>/provider_visao anthropic|openai|gemini|auto</code> — provider só pra fotos (auto = segue /provider; não precisa chave nova)\n"
     "• <code>/reset</code> — limpa o contexto da conversa livre\n\n"
     "<b>Academia</b>:\n"

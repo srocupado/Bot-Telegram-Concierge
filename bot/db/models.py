@@ -22,6 +22,9 @@ class User(Base):
     first_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     is_authorized: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
     provider: Mapped[str] = mapped_column(String(32), default="anthropic", nullable=False)
+    # Modelo Gemini escolhido pelo usuário (/provider gemini pro|flash). NULL =
+    # usa GEMINI_MODEL do .env. Só vale quando provider == "gemini".
+    gemini_model: Mapped[str | None] = mapped_column(String(48), nullable=True)
     # Override opcional só pra entrada de imagens (foto). Quando NULL, segue
     # VISION_PROVIDER do .env (também opcional) e depois cai em `provider`.
     vision_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)

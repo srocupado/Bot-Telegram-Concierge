@@ -60,7 +60,7 @@ async def cmd_pdf(message: Message, user: User, session: AsyncSession) -> None:
         user.vision_provider or settings.vision_provider or user.provider
     )
     try:
-        provider = get_provider(vision_provider_name)
+        provider = get_provider(vision_provider_name, gemini_model=user.gemini_model)
         ctx = ToolContext(user=user, session=session, tz=user.timezone)
         reply = await provider.chat_with_tools(
             history, tools=TOOLS, ctx=ctx,

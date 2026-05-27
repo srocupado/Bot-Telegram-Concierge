@@ -26,15 +26,19 @@ logger = logging.getLogger(__name__)
 _MIN_OUTPUT_TOKENS = 8192
 
 
-def _thinking_config():
-    """ThinkingConfig conforme settings.gemini_thinking_budget. None mantém
-    o automático (sem alteração). -1 também é automático; 0 desliga; N fixa."""
+def _thinking_config(model: str):
+    """ThinkingConfig conforme settings.gemini_thinking_budget. None = automático
+    (sem alteração); -1 idem; 0 desliga; N fixa. O pro não permite desligar
+    (mín ~128), então clampa pra 128 quando o budget global for 0 — evita 400."""
     from bot.config import settings as _s
     budget = getattr(_s, "gemini_thinking_budget", -1)
     if budget is None or budget == -1:
         return None
+    budget = int(budget)
+    if "pro" in (model or "") and 0 <= budget < 128:
+        budget = 128
     try:
-        return types.ThinkingConfig(thinking_budget=int(budget))
+        return types.ThinkingConfig(thinking_budget=budget)
     except Exception:
         return None
 
@@ -89,7 +93,7 @@ class GeminiProvider(LLMProvider):
             config = types.GenerateContentConfig(
                 system_instruction=system,
                 max_output_tokens=max(max_tokens, _MIN_OUTPUT_TOKENS),
-                thinking_config=_thinking_config(),
+                thinking_config=_thinking_config(self.model_name),
             )
             resp = self.client.models.generate_content(
                 model=self.model_name, contents=contents, config=config,
@@ -134,7 +138,7 @@ class GeminiProvider(LLMProvider):
                     system_instruction=system,
                     tools=genai_tools,
                     max_output_tokens=max(max_tokens, _MIN_OUTPUT_TOKENS),
-                    thinking_config=_thinking_config(),
+                    thinking_config=_thinking_config(self.model_name),
                 )
                 return self.client.models.generate_content(
                     model=self.model_name, contents=contents, config=config,

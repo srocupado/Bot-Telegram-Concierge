@@ -80,6 +80,9 @@ async def _ensure_columns(conn) -> None:
             "ALTER TABLE users ADD COLUMN proactive_enabled BOOLEAN NOT NULL DEFAULT 0"
         )
         logger.info("migrated: added users.proactive_enabled")
+    if "gemini_model" not in cols:
+        await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN gemini_model VARCHAR(48)")
+        logger.info("migrated: added users.gemini_model")
 
     rem_cols = await conn.exec_driver_sql("PRAGMA table_info(reminders)")
     cols = {row[1] for row in rem_cols.fetchall()}

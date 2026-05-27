@@ -231,7 +231,7 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
     history.append({"role": "user", "content": user_text})
 
     try:
-        provider = get_provider(user.provider)
+        provider = get_provider(user.provider, gemini_model=user.gemini_model)
         ctx = ToolContext(user=user, session=session, tz=user.timezone)
         reply = await provider.chat_with_tools(
             history, tools=TOOLS, ctx=ctx,

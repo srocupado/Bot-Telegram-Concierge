@@ -5,28 +5,63 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.config import settings
 from bot.db.models import User
 from bot.services.llm.factory import SUPPORTED_PROVIDERS
 
 router = Router(name=__name__)
+
+# Variantes de modelo do Gemini via /provider gemini <variante>.
+_GEMINI_VARIANTS = {
+    "pro": "gemini-2.5-pro",
+    "flash": "gemini-2.5-flash",
+    "flash-lite": "gemini-2.5-flash-lite",
+    "lite": "gemini-2.5-flash-lite",
+}
 
 
 @router.message(Command("provider"))
 async def cmd_provider(
     message: Message, command: CommandObject, user: User, session: AsyncSession
 ) -> None:
-    arg = (command.args or "").strip().lower()
-    if not arg:
+    tokens = (command.args or "").strip().lower().split()
+    if not tokens:
         opts = " | ".join(SUPPORTED_PROVIDERS)
-        await message.answer(f"Provider atual: *{user.provider}*\n\nUse: /provider {opts}", parse_mode="Markdown")
+        atual = user.provider
+        if atual == "gemini":
+            atual += f" ({user.gemini_model or settings.gemini_model})"
+        await message.answer(
+            f"Provider atual: *{atual}*\n\nUse: /provider {opts}\n"
+            "No Gemini dá pra escolher o modelo: `/provider gemini pro` | `/provider gemini flash`",
+            parse_mode="Markdown",
+        )
         return
-    if arg not in SUPPORTED_PROVIDERS:
+
+    prov = tokens[0]
+    variant = tokens[1] if len(tokens) > 1 else None
+    if prov not in SUPPORTED_PROVIDERS:
         opts = ", ".join(SUPPORTED_PROVIDERS)
         await message.answer(f"Provider inválido. Opções: {opts}")
         return
-    user.provider = arg
+
+    if prov == "gemini":
+        if variant is None:
+            user.gemini_model = None  # volta ao GEMINI_MODEL do .env
+        elif variant in _GEMINI_VARIANTS:
+            user.gemini_model = _GEMINI_VARIANTS[variant]
+        else:
+            await message.answer(
+                "Variante inválida. Use: /provider gemini pro | flash | flash-lite",
+                parse_mode=None,
+            )
+            return
+    user.provider = prov
     await session.commit()
-    await message.answer(f"✅ Provider definido como *{arg}*.", parse_mode="Markdown")
+
+    label = prov
+    if prov == "gemini":
+        label = f"gemini ({user.gemini_model or settings.gemini_model})"
+    await message.answer(f"✅ Provider definido como *{label}*.", parse_mode="Markdown")
 
 
 @router.message(Command("provider_visao"))

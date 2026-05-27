@@ -126,7 +126,7 @@ async def _run_chat(
     history = memory.get(chat_id)
     history.append({"role": "user", "content": prompt})
     try:
-        provider = get_provider(user.provider)
+        provider = get_provider(user.provider, gemini_model=user.gemini_model)
         ctx = ToolContext(user=user, session=session, tz=user.timezone)
         reply = await provider.chat_with_tools(
             history, tools=TOOLS, ctx=ctx,
