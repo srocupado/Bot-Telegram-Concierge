@@ -70,9 +70,10 @@ agir). Exemplos do que NÃO virar comando:
   "qual a previsão do tempo hoje"      → transcrição literal
 """
 
-# Modelo de fallback quando o principal (gemini-2.5-flash) está sobrecarregado
-# (503 UNAVAILABLE). O lite costuma ter mais capacidade disponível.
-_STT_FALLBACK_MODEL = "gemini-2.5-flash-lite"
+# Cadeia de fallback quando o modelo principal está sobrecarregado (503).
+# flash-lite tem mais capacidade; gemini-2.0-flash é de outra geração (GA,
+# pool de capacidade separado) e não sofre dos picos de demanda do 2.5.
+_STT_FALLBACK_MODELS = ["gemini-2.5-flash-lite", "gemini-2.0-flash"]
 
 
 def _is_transient(exc: Exception) -> bool:
@@ -125,12 +126,13 @@ async def transcribe(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
         return (resp.text or "").strip()
 
     models = [settings.voice_stt_model]
-    if _STT_FALLBACK_MODEL not in models:
-        models.append(_STT_FALLBACK_MODEL)
+    for m in _STT_FALLBACK_MODELS:
+        if m not in models:
+            models.append(m)
 
     last_exc: Exception | None = None
     for model in models:
-        for attempt in range(3):
+        for attempt in range(2):
             try:
                 return await asyncio.to_thread(_call, model)
             except Exception as e:
