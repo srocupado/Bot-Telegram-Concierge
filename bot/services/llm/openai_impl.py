@@ -141,4 +141,7 @@ class OpenAIProvider(LLMProvider):
                     "content": result,
                 })
 
+            if ctx.short_circuit:
+                return ""
+
         return "(limite de iterações de tool use atingido)"

@@ -54,6 +54,10 @@ class ToolContext:
     # /congresso_agora). O handler de chat/voz envia esse texto verbatim com
     # parse_mode=HTML, ignorando a resposta do LLM (evita paráfrase).
     congress_text: str | None = None
+    # Quando uma tool seta isto True, o loop de tool use encerra logo após
+    # executar a tool, sem mais uma chamada ao LLM (a resposta já está pronta
+    # via ctx.congress_text/etc). Evita uma geração extra desperdiçada.
+    short_circuit: bool = False
 
 
 ToolHandler = Callable[[dict, ToolContext], Awaitable[str]]

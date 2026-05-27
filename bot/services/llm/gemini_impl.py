@@ -195,4 +195,7 @@ class GeminiProvider(LLMProvider):
                 )
             contents.append(types.Content(role="user", parts=response_parts))
 
+            if ctx.short_circuit:
+                return ""
+
         return "(limite de iterações de tool use atingido)"

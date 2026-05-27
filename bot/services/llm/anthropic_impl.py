@@ -178,4 +178,7 @@ class AnthropicProvider(LLMProvider):
                 })
             anth_messages.append({"role": "user", "content": tool_results})
 
+            if ctx.short_circuit:
+                return ""
+
         return "(limite de iterações de tool use atingido)"
