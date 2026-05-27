@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     voice_enabled: bool = Field(True, alias="VOICE_ENABLED")
     voice_max_seconds: int = Field(120, alias="VOICE_MAX_SECONDS")
     voice_stt_model: str = Field("gemini-2.5-flash", alias="VOICE_STT_MODEL")
+    # Provider de transcrição: "gemini" (multimodal, faz conversão p/ comando)
+    # ou "openai" (Whisper/gpt-4o-transcribe, transcrição literal).
+    voice_stt_provider: str = Field("gemini", alias="VOICE_STT_PROVIDER")
+    voice_stt_openai_model: str = Field(
+        "gpt-4o-mini-transcribe", alias="VOICE_STT_OPENAI_MODEL"
+    )
 
     # Notificação ao reiniciar (mensagem '🟢 online' pra usuários autorizados).
     restart_notification_enabled: bool = Field(True, alias="RESTART_NOTIFICATION_ENABLED")

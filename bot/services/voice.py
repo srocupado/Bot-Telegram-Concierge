@@ -95,17 +95,47 @@ def _thinking_config(model: str):
         return None
 
 
+async def _transcribe_openai(audio_bytes: bytes, mime_type: str) -> str:
+    """Transcrição via OpenAI (Whisper / gpt-4o-transcribe). Literal — não faz
+    a conversão pra comando que o Gemini multimodal faz."""
+    import io
+
+    from openai import OpenAI
+
+    if not settings.openai_api_key:
+        raise VoiceTranscribeError("OPENAI_API_KEY ausente — STT openai requer chave")
+
+    ext = "ogg"
+    if mime_type and "/" in mime_type:
+        ext = mime_type.split("/")[-1].split(";")[0] or "ogg"
+
+    def _call() -> str:
+        try:
+            client = OpenAI(api_key=settings.openai_api_key)
+            f = io.BytesIO(audio_bytes)
+            f.name = f"audio.{ext}"
+            resp = client.audio.transcriptions.create(
+                model=settings.voice_stt_openai_model,
+                file=f,
+                language="pt",
+            )
+            return (getattr(resp, "text", "") or "").strip()
+        except Exception as e:
+            raise VoiceTranscribeError(f"openai transcribe failed: {e}") from e
+
+    return await asyncio.to_thread(_call)
+
+
 async def transcribe(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
-    """Transcreve áudio usando Gemini multimodal via SDK google-genai (HTTP).
+    """Transcreve áudio. Provider escolhido por VOICE_STT_PROVIDER:
+    "gemini" (multimodal, faz conversão p/ comando) ou "openai" (literal).
 
-    Usa o mesmo SDK do chat (`google-genai`) em vez do antigo
-    `google-generativeai`, que fala gRPC e pendura em alguns ambientes
-    (ARM/docker). Lança VoiceTranscribeError em falhas de API.
-    Retorna string vazia se o áudio não tem fala detectável.
-
-    Em 503/sobrecarga do modelo, tenta de novo com backoff e cai num modelo
-    de fallback (flash-lite) se o principal seguir congestionado.
+    No Gemini, em 503/sobrecarga tenta de novo com backoff e cai num modelo
+    de fallback (flash-lite → 2.0-flash) se o principal seguir congestionado.
     """
+    if settings.voice_stt_provider == "openai":
+        return await _transcribe_openai(audio_bytes, mime_type)
+
     if not settings.gemini_api_key:
         raise VoiceTranscribeError("GEMINI_API_KEY ausente — STT requer Gemini")
 
