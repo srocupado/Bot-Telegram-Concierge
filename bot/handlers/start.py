@@ -49,6 +49,7 @@ HELP_TEXT = (
     "• <code>/ping</code> — testa o LLM atual (mostra provider e modelo)\n"
     "• <code>/provider anthropic|openai|gemini</code> — troca de LLM. No Gemini dá pra escolher o modelo: <code>/provider gemini pro</code> | <code>/provider gemini flash</code>\n"
     "• <code>/provider_visao anthropic|openai|gemini|auto</code> — provider só pra fotos (auto = segue /provider; não precisa chave nova)\n"
+    "• <code>/voice gemini|openai</code> — provider da transcrição de voz. Gemini converte voz→/comando; OpenAI (Whisper) é literal mas mais estável\n"
     "• <code>/reset</code> — limpa o contexto da conversa livre\n\n"
     "<b>Academia</b>:\n"
     "• Mande voz/texto descrevendo o treino: <i>\"hoje malhei peito e fiz 10min de cardio\"</i>, "

@@ -28,6 +28,9 @@ class User(Base):
     # Override opcional só pra entrada de imagens (foto). Quando NULL, segue
     # VISION_PROVIDER do .env (também opcional) e depois cai em `provider`.
     vision_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Provider de transcrição de voz (/voice gemini|openai). NULL = segue
+    # VOICE_STT_PROVIDER do .env.
+    voice_stt_provider: Mapped[str | None] = mapped_column(String(16), nullable=True)
     timezone: Mapped[str] = mapped_column(String(64), default="America/Sao_Paulo", nullable=False)
 
     # Trânsito (replicado do Telegram-Travels)

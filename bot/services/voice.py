@@ -126,14 +126,18 @@ async def _transcribe_openai(audio_bytes: bytes, mime_type: str) -> str:
     return await asyncio.to_thread(_call)
 
 
-async def transcribe(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
-    """Transcreve áudio. Provider escolhido por VOICE_STT_PROVIDER:
-    "gemini" (multimodal, faz conversão p/ comando) ou "openai" (literal).
+async def transcribe(
+    audio_bytes: bytes, mime_type: str = "audio/ogg", *, provider: str | None = None,
+) -> str:
+    """Transcreve áudio. `provider` ("gemini"|"openai") sobrepõe o default
+    VOICE_STT_PROVIDER. gemini = multimodal (faz conversão p/ comando);
+    openai = Whisper/gpt-4o-transcribe (transcrição literal).
 
     No Gemini, em 503/sobrecarga tenta de novo com backoff e cai num modelo
     de fallback (flash-lite → 2.0-flash) se o principal seguir congestionado.
     """
-    if settings.voice_stt_provider == "openai":
+    prov = (provider or settings.voice_stt_provider or "gemini").lower()
+    if prov == "openai":
         return await _transcribe_openai(audio_bytes, mime_type)
 
     if not settings.gemini_api_key:

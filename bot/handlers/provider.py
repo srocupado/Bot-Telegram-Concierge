@@ -64,6 +64,44 @@ async def cmd_provider(
     await message.answer(f"✅ Provider definido como *{label}*.", parse_mode="Markdown")
 
 
+_VOICE_STT_PROVIDERS = {"gemini", "openai"}
+
+
+@router.message(Command("voice"))
+async def cmd_voice_provider(
+    message: Message, command: CommandObject, user: User, session: AsyncSession
+) -> None:
+    """Troca o provider de transcrição de voz (STT) por usuário.
+    /voice gemini | openai. Sem arg = mostra o atual."""
+    arg = (command.args or "").strip().lower()
+    if not arg:
+        atual = user.voice_stt_provider or settings.voice_stt_provider
+        await message.answer(
+            f"Transcrição de voz (STT): <b>{atual}</b>\n\n"
+            "Use: /voice gemini | openai\n"
+            "• <b>gemini</b>: multimodal, converte voz→/comando (atalhos), mas "
+            "pode falhar quando o Gemini está sobrecarregado (503).\n"
+            "• <b>openai</b>: Whisper/gpt-4o-transcribe, transcrição literal e "
+            "estável (não dispara atalhos de slash por voz).",
+            parse_mode="HTML",
+        )
+        return
+    if arg in ("padrao", "padrão", "auto", "limpar", "none"):
+        user.voice_stt_provider = None
+        await session.commit()
+        await message.answer(
+            f"✅ STT volta ao default (<b>{settings.voice_stt_provider}</b>).",
+            parse_mode="HTML",
+        )
+        return
+    if arg not in _VOICE_STT_PROVIDERS:
+        await message.answer("Opção inválida. Use: /voice gemini | openai", parse_mode=None)
+        return
+    user.voice_stt_provider = arg
+    await session.commit()
+    await message.answer(f"✅ Transcrição de voz definida como <b>{arg}</b>.", parse_mode="HTML")
+
+
 @router.message(Command("provider_visao"))
 async def cmd_provider_visao(
     message: Message, command: CommandObject, user: User, session: AsyncSession
