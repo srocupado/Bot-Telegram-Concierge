@@ -13,6 +13,14 @@ router = Router(name=__name__)
 
 # Variantes de modelo do Gemini via /provider gemini <variante>.
 _GEMINI_VARIANTS = {
+    # Geração nova (3.x) — capacidade separada, sem os 503 de "high demand" do 2.5.
+    "3.5": "gemini-3.5-flash",
+    "3.5-flash": "gemini-3.5-flash",
+    "flash-novo": "gemini-3.5-flash",
+    "3.1-pro": "gemini-3.1-pro",
+    "pro-novo": "gemini-3.1-pro",
+    "3.1-lite": "gemini-3.1-flash-lite",
+    # Geração 2.5.
     "pro": "gemini-2.5-pro",
     "flash": "gemini-2.5-flash",
     "flash-lite": "gemini-2.5-flash-lite",
@@ -32,7 +40,9 @@ async def cmd_provider(
             atual += f" ({user.gemini_model or settings.gemini_model})"
         await message.answer(
             f"Provider atual: *{atual}*\n\nUse: /provider {opts}\n"
-            "No Gemini dá pra escolher o modelo: `/provider gemini pro` | `/provider gemini flash`",
+            "No Gemini dá pra escolher o modelo:\n"
+            "• geração nova (estável): `/provider gemini 3.5` | `/provider gemini 3.1-pro` | `/provider gemini 3.1-lite`\n"
+            "• geração 2.5: `/provider gemini pro` | `/provider gemini flash`",
             parse_mode="Markdown",
         )
         return

@@ -71,9 +71,9 @@ agir). Exemplos do que NÃO virar comando:
 """
 
 # Cadeia de fallback quando o modelo principal está sobrecarregado (503).
-# flash-lite tem mais capacidade; gemini-2.0-flash é de outra geração (GA,
-# pool de capacidade separado) e não sofre dos picos de demanda do 2.5.
-_STT_FALLBACK_MODELS = ["gemini-2.5-flash-lite", "gemini-2.0-flash"]
+# Geração nova (3.x) tem capacidade separada e não pega os picos de demanda
+# do 2.5; 2.0-flash fica como último recurso (GA, estável).
+_STT_FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-2.0-flash"]
 
 
 def _is_transient(exc: Exception) -> bool:
@@ -177,5 +177,8 @@ async def transcribe(
                     )
                     await asyncio.sleep(1.5 * (attempt + 1))
                     continue
-                raise VoiceTranscribeError(f"gemini transcribe failed: {e}") from e
+                # Erro não-transitório (ex.: ID inválido): não insiste nesse
+                # modelo; pula pro próximo da cadeia.
+                logger.warning("STT %s falhou (pulando p/ próximo): %s", model, e)
+                break
     raise VoiceTranscribeError(f"gemini transcribe failed: {last_exc}") from last_exc

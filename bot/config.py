@@ -84,7 +84,7 @@ class Settings(BaseSettings):
     # Voz (STT via Gemini multimodal; reutiliza GEMINI_API_KEY)
     voice_enabled: bool = Field(True, alias="VOICE_ENABLED")
     voice_max_seconds: int = Field(120, alias="VOICE_MAX_SECONDS")
-    voice_stt_model: str = Field("gemini-2.5-flash", alias="VOICE_STT_MODEL")
+    voice_stt_model: str = Field("gemini-3.5-flash", alias="VOICE_STT_MODEL")
     # Provider de transcrição: "gemini" (multimodal, faz conversão p/ comando)
     # ou "openai" (Whisper/gpt-4o-transcribe, transcrição literal).
     voice_stt_provider: str = Field("gemini", alias="VOICE_STT_PROVIDER")
