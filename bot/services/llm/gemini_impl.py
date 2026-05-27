@@ -4,8 +4,8 @@ Diferente do `google-generativeai` (0.x), o `google-genai` (1.x) suporta
 combinar `function_declarations` (tool use customizado) com `google_search`
 (busca web nativa) na mesma chamada — o que destrava web search no Gemini.
 
-Voice STT continua usando `google-generativeai` 0.x (ver bot/services/voice.py)
-porque a interface multimodal pra áudio ainda é mais simples lá.
+Voice STT também usa este SDK (ver bot/services/voice.py): o antigo
+`google-generativeai` 0.x fala gRPC e pendura em alguns ambientes (ARM/docker).
 """
 from __future__ import annotations
 

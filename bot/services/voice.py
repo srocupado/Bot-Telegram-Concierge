@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from bot.config import settings
 
@@ -69,29 +70,43 @@ agir). Exemplos do que NÃO virar comando:
   "qual a previsão do tempo hoje"      → transcrição literal
 """
 
-async def transcribe(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
-    """Transcreve áudio usando Gemini multimodal.
+def _thinking_config(model: str):
+    """Desliga o thinking pra STT (transcrição não precisa raciocinar; ganha
+    velocidade e custo). O pro não permite 0 (mín ~128), então clampa."""
+    budget = 0
+    if "pro" in (model or ""):
+        budget = 128
+    try:
+        return types.ThinkingConfig(thinking_budget=budget)
+    except Exception:
+        return None
 
-    Lança VoiceTranscribeError em falhas de API.
+
+async def transcribe(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
+    """Transcreve áudio usando Gemini multimodal via SDK google-genai (HTTP).
+
+    Usa o mesmo SDK do chat (`google-genai`) em vez do antigo
+    `google-generativeai`, que fala gRPC e pendura em alguns ambientes
+    (ARM/docker). Lança VoiceTranscribeError em falhas de API.
     Retorna string vazia se o áudio não tem fala detectável.
     """
     if not settings.gemini_api_key:
         raise VoiceTranscribeError("GEMINI_API_KEY ausente — STT requer Gemini")
 
-    genai.configure(api_key=settings.gemini_api_key)
-
     def _call() -> str:
         try:
-            model = genai.GenerativeModel(settings.voice_stt_model)
-            resp = model.generate_content(
-                [
-                    {"mime_type": mime_type, "data": audio_bytes},
-                    _TRANSCRIBE_PROMPT,
+            client = genai.Client(api_key=settings.gemini_api_key)
+            resp = client.models.generate_content(
+                model=settings.voice_stt_model,
+                contents=[
+                    types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+                    types.Part.from_text(text=_TRANSCRIBE_PROMPT),
                 ],
-                # Modelos 2.5 "pensam" e o thinking consome max_output_tokens; com
-                # teto baixo (ex.: 1024) sobra zero pro texto e a transcrição vem
-                # vazia / resp.text lança. Teto alto garante espaço pro resultado.
-                generation_config={"max_output_tokens": 8192, "temperature": 0.0},
+                config=types.GenerateContentConfig(
+                    max_output_tokens=8192,
+                    temperature=0.0,
+                    thinking_config=_thinking_config(settings.voice_stt_model),
+                ),
             )
             return (resp.text or "").strip()
         except Exception as e:
