@@ -1565,12 +1565,14 @@ TOOLS: list[Tool] = [
     Tool(
         name="consultar_congresso",
         description=(
-            "Consulta a PAUTA/agenda de votação do Congresso Nacional da "
-            "semana (Medidas Provisórias e CMMPV em tramitação). Use quando o "
-            "usuário perguntar 'como está a pauta do congresso?', 'tem MP na "
-            "pauta essa semana?', 'o que o congresso vai votar?'. Sempre cobre "
-            "a SEMANA inteira (não só o dia). NÃO confunda com consultar_mp_dou "
-            "(que é publicação no Diário Oficial). Sem argumentos."
+            "Consulta a PAUTA do Congresso Nacional: a agenda de reuniões/"
+            "sessões da semana sobre Medidas Provisórias (incl. CMMPV em "
+            "tramitação) — o que está marcado pra discutir/votar. Use quando o "
+            "usuário perguntar 'como está a pauta do congresso?', 'tem reunião "
+            "de MP essa semana?', 'o que o congresso vai discutir/votar?'. "
+            "Cobre a SEMANA inteira (não só o dia). DIFERENTE de "
+            "consultar_mp_dou — esta é a TRAMITAÇÃO no Legislativo; a outra é a "
+            "PUBLICAÇÃO da MP no Diário Oficial (Executivo). Sem argumentos."
         ),
         parameters={"type": "object", "properties": {}},
         handler=_h_consultar_congresso,
