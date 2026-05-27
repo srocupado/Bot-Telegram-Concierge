@@ -175,6 +175,16 @@ _DISPATCH: dict[str, callable] = {
 
 @router.message(F.voice | F.audio)
 async def cmd_voice(message: Message, user: User, session: AsyncSession) -> None:
+    logger.info(
+        "voice received",
+        extra={
+            "user_id": getattr(user, "id", None),
+            "authorized": getattr(user, "is_authorized", None),
+            "voice_enabled": settings.voice_enabled,
+            "has_voice": message.voice is not None,
+            "has_audio": message.audio is not None,
+        },
+    )
     if not user.is_authorized:
         return
     if not settings.voice_enabled:
