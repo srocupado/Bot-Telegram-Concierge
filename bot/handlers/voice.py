@@ -6,6 +6,7 @@ Fluxo: baixa o blob, transcreve via Gemini multimodal, e:
 """
 from __future__ import annotations
 
+import asyncio
 import html
 import io
 import logging
@@ -204,15 +205,30 @@ async def cmd_voice(message: Message, user: User, session: AsyncSession) -> None
 
     try:
         buf = io.BytesIO()
-        await message.bot.download(file_id, destination=buf)
+        await asyncio.wait_for(
+            message.bot.download(file_id, destination=buf), timeout=30,
+        )
         audio_bytes = buf.getvalue()
+        logger.info("voice downloaded", extra={"bytes": len(audio_bytes)})
+    except asyncio.TimeoutError:
+        logger.warning("voice download timed out")
+        await message.answer(_STT_ERROR)
+        return
     except Exception:
         logger.exception("voice download failed")
         await message.answer(_STT_ERROR)
         return
 
     try:
-        transcribed = await transcribe(audio_bytes, mime_type=mime_type)
+        logger.info("voice transcribing", extra={"model": settings.voice_stt_model})
+        transcribed = await asyncio.wait_for(
+            transcribe(audio_bytes, mime_type=mime_type), timeout=90,
+        )
+        logger.info("voice transcribe done", extra={"len": len(transcribed)})
+    except asyncio.TimeoutError:
+        logger.warning("voice transcribe timed out (model=%s)", settings.voice_stt_model)
+        await message.answer(_STT_ERROR)
+        return
     except VoiceTranscribeError:
         logger.exception("voice transcribe failed")
         await message.answer(_STT_ERROR)
