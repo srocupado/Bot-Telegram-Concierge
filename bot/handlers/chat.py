@@ -5,6 +5,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +17,18 @@ from bot.services.tools import TOOLS
 
 router = Router(name=__name__)
 logger = logging.getLogger(__name__)
+
+
+async def answer_llm(message: Message, text: str, reply_markup=None) -> None:
+    """Envia resposta do LLM com fallback. O bot usa parse_mode=Markdown por
+    padrão, mas texto livre do LLM pode ter markdown quebrado (ex.: '*' ou '`'
+    sem fechar) → Telegram rejeita a mensagem inteira (BadRequest). Nesse caso
+    reenvia em texto puro pra mensagem não sumir."""
+    text = text or "(sem resposta)"
+    try:
+        await message.answer(text, reply_markup=reply_markup)
+    except TelegramBadRequest:
+        await message.answer(text, parse_mode=None, reply_markup=reply_markup)
 
 
 _SYSTEM_PROMPT_TEMPLATE = (
@@ -275,4 +288,4 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
     elif ctx.confirm_clear_shopping:
         from bot.handlers.shopping import clear_keyboard
         kb = clear_keyboard()
-    await message.answer(reply or "(sem resposta)", reply_markup=kb)
+    await answer_llm(message, reply, reply_markup=kb)

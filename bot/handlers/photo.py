@@ -15,7 +15,7 @@ from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.models import User
-from bot.handlers.chat import _build_system_prompt
+from bot.handlers.chat import _build_system_prompt, answer_llm
 from bot.config import settings
 from bot.services.chat_memory import memory
 from bot.services.llm.base import ToolContext, make_image_message
@@ -121,4 +121,4 @@ async def cmd_photo(message: Message, user: User, session: AsyncSession) -> None
     memory.append(chat_id, "user", f"[imagem]{(' ' + caption) if caption else ''}")
     memory.append(chat_id, "assistant", reply)
 
-    await message.answer(reply or "(sem resposta)")
+    await answer_llm(message, reply)
