@@ -304,4 +304,7 @@ async def _dispatch_chat(
     if ctx.dou_mp_found:
         from bot.handlers.dou_mp import nota_keyboard
         kb = nota_keyboard(ctx.dou_mp_found["date_iso"])
+    elif ctx.confirm_clear_shopping:
+        from bot.handlers.shopping import clear_keyboard
+        kb = clear_keyboard()
     await message.answer(reply or "(sem resposta)", reply_markup=kb)

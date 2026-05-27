@@ -705,8 +705,15 @@ async def _h_limpar_comprados(_args: dict, ctx: ToolContext) -> str:
 
 
 async def _h_zerar_lista_compras(_args: dict, ctx: ToolContext) -> str:
-    n = await clear_all(ctx.session, ctx.user.id)
-    return f"ok: lista zerada ({n} item(ns) removido(s))"
+    items = await list_items(ctx.session, ctx.user.id, only_pending=False)
+    if not items:
+        return "ok (repasse): 🛒 A lista já está vazia."
+    ctx.confirm_clear_shopping = True
+    return (
+        f"ok: NÃO zere ainda. Há {len(items)} item(ns). Peça confirmação ao "
+        "usuário (os botões já foram anexados). Responda só: "
+        "'🗑️ Quer mesmo limpar a lista toda?'"
+    )
 
 
 async def _h_desfazer_ultima_acao(_args: dict, ctx: ToolContext) -> str:

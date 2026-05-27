@@ -31,6 +31,7 @@ from bot.handlers import document as document_handler
 from bot.handlers import financeiro as financeiro_handler
 from bot.handlers import photo as photo_handler
 from bot.handlers import reminder_callbacks as reminder_callbacks_handler
+from bot.handlers import shopping as shopping_handler
 from bot.handlers import voice as voice_handler
 from bot.logging_setup import setup_logging
 from bot.middlewares.auth import AuthMiddleware
@@ -67,6 +68,7 @@ def _build_dispatcher() -> Dispatcher:
     dp.include_router(financeiro_handler.router)  # /financeiro_setup + captura JSON (antes do PDF handler)
     dp.include_router(document_handler.router)  # PDF: multimodal → chat agente
     dp.include_router(reminder_callbacks_handler.router)  # botões snooze/done
+    dp.include_router(shopping_handler.router)  # botões confirmar limpeza da lista
     dp.include_router(chat_handler.router)  # catch-all texto livre
     return dp
 

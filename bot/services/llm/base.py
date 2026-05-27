@@ -58,6 +58,9 @@ class ToolContext:
     # executar a tool, sem mais uma chamada ao LLM (a resposta já está pronta
     # via ctx.congress_text/etc). Evita uma geração extra desperdiçada.
     short_circuit: bool = False
+    # Setado por zerar_lista_compras: o handler anexa botões Sim/Cancelar em
+    # vez de apagar na hora (evita o LLM zerar a lista sem confirmação).
+    confirm_clear_shopping: bool = False
 
 
 ToolHandler = Callable[[dict, ToolContext], Awaitable[str]]
