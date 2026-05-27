@@ -6,6 +6,7 @@ caption e a resposta do LLM ficam em chat_memory pra economizar RAM).
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 
@@ -33,6 +34,15 @@ MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB
 
 @router.message(F.photo)
 async def cmd_photo(message: Message, user: User, session: AsyncSession) -> None:
+    logger.info(
+        "photo received",
+        extra={
+            "user_id": getattr(user, "id", None),
+            "authorized": getattr(user, "is_authorized", None),
+            "n_sizes": len(message.photo or []),
+            "has_caption": bool((message.caption or "").strip()),
+        },
+    )
     if not user.is_authorized:
         return
     if not message.photo:
@@ -51,8 +61,15 @@ async def cmd_photo(message: Message, user: User, session: AsyncSession) -> None
 
     try:
         buf = io.BytesIO()
-        await message.bot.download(chosen.file_id, destination=buf)
+        await asyncio.wait_for(
+            message.bot.download(chosen.file_id, destination=buf), timeout=30,
+        )
         image_bytes = buf.getvalue()
+        logger.info("photo downloaded", extra={"bytes": len(image_bytes)})
+    except asyncio.TimeoutError:
+        logger.warning("photo download timed out")
+        await message.answer("⚠️ Não consegui baixar a imagem.")
+        return
     except Exception:
         logger.exception("photo download failed")
         await message.answer("⚠️ Não consegui baixar a imagem.")
@@ -72,11 +89,26 @@ async def cmd_photo(message: Message, user: User, session: AsyncSession) -> None
     try:
         provider = get_provider(vision_provider_name, gemini_model=user.gemini_model)
         ctx = ToolContext(user=user, session=session, tz=user.timezone)
-        reply = await provider.chat_with_tools(
-            history, tools=TOOLS, ctx=ctx,
-            system=_build_system_prompt(user.timezone),
-            max_tokens=4000,
+        logger.info(
+            "photo analyzing",
+            extra={"provider": vision_provider_name, "gemini_model": user.gemini_model},
         )
+        reply = await asyncio.wait_for(
+            provider.chat_with_tools(
+                history, tools=TOOLS, ctx=ctx,
+                system=_build_system_prompt(user.timezone),
+                max_tokens=4000,
+            ),
+            timeout=120,
+        )
+        logger.info("photo analyzed", extra={"reply_len": len(reply or "")})
+    except asyncio.TimeoutError:
+        logger.warning("photo chat timed out (provider=%s)", vision_provider_name)
+        await message.answer(
+            f"⚠️ A análise da imagem demorou demais ({vision_provider_name}). Tenta de novo.",
+            parse_mode=None,
+        )
+        return
     except Exception as e:
         logger.exception("photo chat failed")
         await message.answer(
