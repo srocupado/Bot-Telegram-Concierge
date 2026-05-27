@@ -771,6 +771,27 @@ async def _h_consultar_mp_dou(args: dict, ctx: ToolContext) -> str:
     )
 
 
+async def _h_consultar_congresso(_args: dict, ctx: ToolContext) -> str:
+    import httpx
+    from bot.services.congress import (
+        USER_AGENT as _CG_UA,
+        CongressScrapeError,
+        fetch_week_mps,
+        format_week_message,
+    )
+    today = datetime.now(ZoneInfo(ctx.tz)).date()
+    try:
+        async with httpx.AsyncClient(
+            timeout=30.0, follow_redirects=True, headers={"User-Agent": _CG_UA},
+        ) as client:
+            items = await fetch_week_mps(client, today)
+    except CongressScrapeError:
+        return "erro: não consegui acessar a agenda do Congresso agora"
+    except Exception:
+        return "erro: falha ao consultar a pauta do Congresso"
+    return "ok (repasse verbatim, com emojis):\n" + format_week_message(items, today)
+
+
 async def _h_consultar_transito(args: dict, ctx: ToolContext) -> str:
     origem = (args.get("origem") or "").strip()
     destino = (args.get("destino") or "").strip()
@@ -1540,6 +1561,19 @@ TOOLS: list[Tool] = [
             },
         },
         handler=_h_consultar_mp_dou,
+    ),
+    Tool(
+        name="consultar_congresso",
+        description=(
+            "Consulta a PAUTA/agenda de votação do Congresso Nacional da "
+            "semana (Medidas Provisórias e CMMPV em tramitação). Use quando o "
+            "usuário perguntar 'como está a pauta do congresso?', 'tem MP na "
+            "pauta essa semana?', 'o que o congresso vai votar?'. Sempre cobre "
+            "a SEMANA inteira (não só o dia). NÃO confunda com consultar_mp_dou "
+            "(que é publicação no Diário Oficial). Sem argumentos."
+        ),
+        parameters={"type": "object", "properties": {}},
+        handler=_h_consultar_congresso,
     ),
 ]
 

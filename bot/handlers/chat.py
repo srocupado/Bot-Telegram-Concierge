@@ -32,7 +32,7 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "- lancar_movimento_banco, lancar_despesa_cartao, registrar_aporte_tesouro, consultar_lancamentos, apagar_lancamento\n"
     "- adicionar_lista_compras, listar_compras, marcar_comprado, desmarcar_compra, remover_lista_compras, limpar_comprados, zerar_lista_compras\n"
     "- analisar_gastos, desfazer_ultima_acao\n"
-    "- consultar_mp_dou\n\n"
+    "- consultar_mp_dou, consultar_congresso\n\n"
     "Quando rodando no Anthropic, você tem busca web nativa (web_search). "
     "Use SEMPRE que o usuário pedir notícias, eventos atuais, cotações, "
     "resultados ou informação que dependa de dados recentes. Cite fontes "
@@ -203,8 +203,12 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "- 'saiu MP nova hoje?', 'tem medida provisória no diário?', 'foi "
     "publicada alguma MP?' → consultar_mp_dou (retorna número + ementa). "
     "Se o usuário quiser a nota técnica completa ou o documento, oriente "
-    "a usar /mp_dou_agora. NÃO confunda com a pauta de votação do "
-    "Congresso (que é outra coisa, via /congresso_agora).\n\n"
+    "a usar /mp_dou_agora.\n"
+    "Para a PAUTA/agenda de votação do Congresso (MPs em tramitação na "
+    "semana): 'como está a pauta do congresso?', 'o que vão votar essa "
+    "semana?', 'tem MP na pauta?' → consultar_congresso (cobre a semana "
+    "inteira). NÃO confunda: consultar_mp_dou = publicação no Diário Oficial; "
+    "consultar_congresso = pauta de votação. Repasse a saída verbatim.\n\n"
     "Se a intenção do usuário for ambígua, pergunte antes de agir."
 )
 
