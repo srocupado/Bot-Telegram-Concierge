@@ -804,9 +804,9 @@ async def _h_consultar_transito(args: dict, ctx: ToolContext) -> str:
     origem_resolved = aliases.get(origem.lower(), origem)
     destino_resolved = aliases.get(destino.lower(), destino)
     if origem_resolved is None:
-        return f"erro: 'casa'/'trabalho' usado em origem mas HOME_COORDS/WORK_COORDS não configurado"
+        return "erro: 'casa'/'trabalho' usado em origem mas HOME_COORDS/WORK_COORDS não configurado"
     if destino_resolved is None:
-        return f"erro: 'casa'/'trabalho' usado em destino mas HOME_COORDS/WORK_COORDS não configurado"
+        return "erro: 'casa'/'trabalho' usado em destino mas HOME_COORDS/WORK_COORDS não configurado"
     if not settings.google_maps_api_key:
         return "erro: GOOGLE_MAPS_API_KEY não configurada"
     key = settings.google_maps_api_key.get_secret_value()
@@ -1580,7 +1580,3 @@ TOOLS: list[Tool] = [
         handler=_h_consultar_congresso,
     ),
 ]
-
-
-def get_tool(name: str) -> Tool | None:
-    return next((t for t in TOOLS if t.name == name), None)

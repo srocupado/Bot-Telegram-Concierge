@@ -51,9 +51,7 @@ class Settings(BaseSettings):
 
     # Monitor de MPs no Diário Oficial (Inlabs/DOU). Independente do Monitor-de-MP
     # externo — credencial própria do cadastro gratuito em inlabs.in.gov.br.
-    dou_mp_enabled: bool = Field(True, alias="DOU_MP_ENABLED")
     dou_mp_hour: int = Field(18, alias="DOU_MP_HOUR")
-    dou_mp_minute: int = Field(0, alias="DOU_MP_MINUTE")
     # Pesquisa de contexto via web search (Passo 2 das diretrizes).
     # Desligue se a conta não tiver acesso ou se estiver lenta.
     dou_mp_web_research: bool = Field(True, alias="DOU_MP_WEB_RESEARCH")
@@ -78,9 +76,6 @@ class Settings(BaseSettings):
     proactive_shopping_idle_days: int = Field(5, alias="PROACTIVE_SHOPPING_IDLE_DAYS")
     proactive_nudge_cooldown_days: int = Field(3, alias="PROACTIVE_NUDGE_COOLDOWN_DAYS")
     proactive_use_llm: bool = Field(False, alias="PROACTIVE_USE_LLM")
-    # Sweep noturno de MP (sem enviar; alimenta o briefing da manhã).
-    proactive_mp_sweep_hour: int = Field(23, alias="PROACTIVE_MP_SWEEP_HOUR")
-    proactive_mp_sweep_minute: int = Field(59, alias="PROACTIVE_MP_SWEEP_MINUTE")
 
     # Scheduler
     scheduler_tick_seconds: int = Field(60, alias="SCHEDULER_TICK_SECONDS")

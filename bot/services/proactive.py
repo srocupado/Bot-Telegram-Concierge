@@ -17,16 +17,15 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
-from bot.db.models import ProactiveNotice, Reminder, ShoppingItem, User, WorkoutLog
+from bot.db.models import ProactiveNotice, Reminder, User, WorkoutLog
 from bot.services import shopping
 from bot.services.reminders import format_reminder_line
 
@@ -48,7 +47,6 @@ class ProactiveFact:
     kind: str           # = ProactiveNotice.kind
     key: str            # = ProactiveNotice.key
     text: str           # linha já formatada (determinística)
-    extra: dict = field(default_factory=dict)
 
 
 # ──────────────────────── dedup ────────────────────────
@@ -164,7 +162,6 @@ async def collect_mp(
             facts.append(ProactiveFact(
                 "mp", "mp", key,
                 f"📜 MP {mp['numero']}/{mp['ano']}: {ementa}",
-                extra={"date_iso": mp.get("data_publicacao") or d.isoformat()},
             ))
     return facts
 

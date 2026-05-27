@@ -9,7 +9,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.config import Settings, settings
+from bot.config import settings
 from bot.db.models import User
 from bot.services.traffic import (
     USER_AGENT,

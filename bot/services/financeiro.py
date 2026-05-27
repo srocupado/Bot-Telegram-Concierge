@@ -21,7 +21,6 @@ import unicodedata
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.models import KVSetting
@@ -779,18 +778,6 @@ def _open_invoice_range(state: dict, today: date) -> tuple[date, date, str]:
         f"fatura em aberto ({start.strftime('%d/%m')} → "
         f"{end.strftime('%d/%m')}, fechamento dia {closing})"
     )
-
-
-def _filter_by_range(arr: list[dict], start: date, end: date) -> list[dict]:
-    out = []
-    for it in arr:
-        try:
-            d = datetime.fromisoformat(it.get("date", "")).date()
-        except ValueError:
-            continue
-        if start <= d <= end:
-            out.append(it)
-    return out
 
 
 def _filter_by_days(arr: list[dict], dias: int, today_iso: str) -> list[dict]:

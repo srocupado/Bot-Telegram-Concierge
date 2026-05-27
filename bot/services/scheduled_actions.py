@@ -37,12 +37,8 @@ from bot.services.weather import WeatherError, fetch_today_weather, format_weath
 logger = logging.getLogger(__name__)
 
 
-# Valores aceitos. Use `is_valid_kind` antes de gravar no DB.
+# Valores aceitos para o tipo de ação agendada.
 VALID_KINDS = {"transito_casa", "transito_trabalho", "congresso", "clima", "chat"}
-
-
-def is_valid_kind(kind: str) -> bool:
-    return kind in VALID_KINDS
 
 
 async def _send_html_with_fallback(bot: Bot, chat_id: int, text: str) -> None:
