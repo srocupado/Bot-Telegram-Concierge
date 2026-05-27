@@ -70,6 +70,18 @@ agir). Exemplos do que NÃO virar comando:
   "qual a previsão do tempo hoje"      → transcrição literal
 """
 
+# Modelo de fallback quando o principal (gemini-2.5-flash) está sobrecarregado
+# (503 UNAVAILABLE). O lite costuma ter mais capacidade disponível.
+_STT_FALLBACK_MODEL = "gemini-2.5-flash-lite"
+
+
+def _is_transient(exc: Exception) -> bool:
+    """True para erros temporários do lado do Google (sobrecarga/instabilidade)
+    que valem retry: 503 UNAVAILABLE, 429 (rate limit), 'overloaded'."""
+    s = str(exc).lower()
+    return any(t in s for t in ("503", "unavailable", "overloaded", "429", "high demand"))
+
+
 def _thinking_config(model: str):
     """Desliga o thinking pra STT (transcrição não precisa raciocinar; ganha
     velocidade e custo). O pro não permite 0 (mín ~128), então clampa."""
@@ -89,27 +101,45 @@ async def transcribe(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
     `google-generativeai`, que fala gRPC e pendura em alguns ambientes
     (ARM/docker). Lança VoiceTranscribeError em falhas de API.
     Retorna string vazia se o áudio não tem fala detectável.
+
+    Em 503/sobrecarga do modelo, tenta de novo com backoff e cai num modelo
+    de fallback (flash-lite) se o principal seguir congestionado.
     """
     if not settings.gemini_api_key:
         raise VoiceTranscribeError("GEMINI_API_KEY ausente — STT requer Gemini")
 
-    def _call() -> str:
-        try:
-            client = genai.Client(api_key=settings.gemini_api_key)
-            resp = client.models.generate_content(
-                model=settings.voice_stt_model,
-                contents=[
-                    types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
-                    types.Part.from_text(text=_TRANSCRIBE_PROMPT),
-                ],
-                config=types.GenerateContentConfig(
-                    max_output_tokens=8192,
-                    temperature=0.0,
-                    thinking_config=_thinking_config(settings.voice_stt_model),
-                ),
-            )
-            return (resp.text or "").strip()
-        except Exception as e:
-            raise VoiceTranscribeError(f"gemini transcribe failed: {e}") from e
+    def _call(model: str) -> str:
+        client = genai.Client(api_key=settings.gemini_api_key)
+        resp = client.models.generate_content(
+            model=model,
+            contents=[
+                types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+                types.Part.from_text(text=_TRANSCRIBE_PROMPT),
+            ],
+            config=types.GenerateContentConfig(
+                max_output_tokens=8192,
+                temperature=0.0,
+                thinking_config=_thinking_config(model),
+            ),
+        )
+        return (resp.text or "").strip()
 
-    return await asyncio.to_thread(_call)
+    models = [settings.voice_stt_model]
+    if _STT_FALLBACK_MODEL not in models:
+        models.append(_STT_FALLBACK_MODEL)
+
+    last_exc: Exception | None = None
+    for model in models:
+        for attempt in range(3):
+            try:
+                return await asyncio.to_thread(_call, model)
+            except Exception as e:
+                last_exc = e
+                if _is_transient(e):
+                    logger.warning(
+                        "STT %s transitório (tentativa %d): %s", model, attempt + 1, e
+                    )
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                    continue
+                raise VoiceTranscribeError(f"gemini transcribe failed: {e}") from e
+    raise VoiceTranscribeError(f"gemini transcribe failed: {last_exc}") from last_exc
