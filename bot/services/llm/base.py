@@ -50,6 +50,10 @@ class ToolContext:
     # Setado por consultar_mp_dou quando acha MP(s) numa data: {"date_iso", "count"}.
     # O handler de chat/voz usa pra oferecer a nota técnica com botões Sim/Não.
     dou_mp_found: Any = None
+    # Setado por consultar_congresso com o texto HTML já formatado (idêntico ao
+    # /congresso_agora). O handler de chat/voz envia esse texto verbatim com
+    # parse_mode=HTML, ignorando a resposta do LLM (evita paráfrase).
+    congress_text: str | None = None
 
 
 ToolHandler = Callable[[dict, ToolContext], Awaitable[str]]

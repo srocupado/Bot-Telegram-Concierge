@@ -252,6 +252,19 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
     from bot.services.finance_guard import guard_financial_reply
     reply = guard_financial_reply(user_text, ctx.financial_logged_ok, reply)
 
+    if ctx.congress_text:
+        memory.append(chat_id, "user", user_text)
+        memory.append(chat_id, "assistant", ctx.congress_text)
+        try:
+            await message.answer(
+                ctx.congress_text, parse_mode="HTML", disable_web_page_preview=True,
+            )
+        except Exception:
+            await message.answer(
+                ctx.congress_text, parse_mode=None, disable_web_page_preview=True,
+            )
+        return
+
     memory.append(chat_id, "user", user_text)
     memory.append(chat_id, "assistant", reply)
 

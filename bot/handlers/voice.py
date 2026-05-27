@@ -285,6 +285,19 @@ async def _dispatch_chat(
     from bot.services.finance_guard import guard_financial_reply
     reply = guard_financial_reply(text, ctx.financial_logged_ok, reply)
 
+    if ctx.congress_text:
+        memory.append(chat_id, "user", text)
+        memory.append(chat_id, "assistant", ctx.congress_text)
+        try:
+            await message.answer(
+                ctx.congress_text, parse_mode="HTML", disable_web_page_preview=True,
+            )
+        except Exception:
+            await message.answer(
+                ctx.congress_text, parse_mode=None, disable_web_page_preview=True,
+            )
+        return
+
     memory.append(chat_id, "user", text)
     memory.append(chat_id, "assistant", reply)
     kb = None

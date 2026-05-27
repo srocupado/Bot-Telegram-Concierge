@@ -789,7 +789,8 @@ async def _h_consultar_congresso(_args: dict, ctx: ToolContext) -> str:
         return "erro: não consegui acessar a agenda do Congresso agora"
     except Exception:
         return "erro: falha ao consultar a pauta do Congresso"
-    return "ok (repasse verbatim, com emojis):\n" + format_week_message(items, today)
+    ctx.congress_text = format_week_message(items, today)
+    return "ok: pauta entregue ao usuário (não escreva nada, a mensagem já foi enviada)"
 
 
 async def _h_consultar_transito(args: dict, ctx: ToolContext) -> str:
