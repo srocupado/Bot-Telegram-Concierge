@@ -113,10 +113,11 @@ async def collect_vencimentos(
             Reminder.due_at <= horizon,
         ).order_by(Reminder.due_at)
     )).all()
+    # Vencimentos NÃO são deduplicados: o aviso deve repetir em TODA janela até
+    # o pagamento (sent=True) ou o vencimento passar. A trava run_key evita
+    # repetir dentro da mesma janela.
     for r in rems:
         key = f"{r.id}:{r.due_at.astimezone(tz).date().isoformat()}"
-        if not force and await already_notified(session, user.id, "venc_rem", key):
-            continue
         facts.append(ProactiveFact("venc", "venc_rem", key,
                                     "⏳ " + format_reminder_line(r, user.timezone)))
 
@@ -128,12 +129,10 @@ async def collect_vencimentos(
     except Exception:
         res = None
     if res:
-        key = res["month_key"]
-        if force or not await already_notified(session, user.id, "card_due", key):
-            facts.append(ProactiveFact(
-                "venc", "card_due", key,
-                f"💳 Fatura do cartão vence em <b>{res['due_date'].strftime('%d/%m')}</b>.",
-            ))
+        facts.append(ProactiveFact(
+            "venc", "card_due", res["month_key"],
+            f"💳 Fatura do cartão vence em <b>{res['due_date'].strftime('%d/%m')}</b>.",
+        ))
     return facts
 
 
@@ -363,8 +362,10 @@ async def run_for_user(
     logger.info("proactive: user %d window=%s %d fatos enviado=%s", user.id, window, len(facts), sent)
     if sent and not force:
         for f in facts:
-            if f.category == "transito":
-                continue  # trânsito não tem dedup (leitura fresca a cada manhã)
+            # trânsito e vencimentos não têm dedup: repetem a cada janela
+            # (trânsito = leitura fresca; vencimento = lembrar até pagar).
+            if f.category in ("transito", "venc"):
+                continue
             await mark_notified(session, user.id, f.kind, f.key)
     return sent
 

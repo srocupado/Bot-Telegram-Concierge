@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     proactive_enabled: bool = Field(True, alias="PROACTIVE_ENABLED")
     proactive_hours: str = Field("7,13,19", alias="PROACTIVE_HOURS")
     proactive_briefing_hour: int = Field(7, alias="PROACTIVE_BRIEFING_HOUR")
-    proactive_lookahead_hours: int = Field(24, alias="PROACTIVE_LOOKAHEAD_HOURS")
+    proactive_lookahead_hours: int = Field(48, alias="PROACTIVE_LOOKAHEAD_HOURS")
     proactive_workout_idle_days: int = Field(4, alias="PROACTIVE_WORKOUT_IDLE_DAYS")
     proactive_finance_idle_days: int = Field(7, alias="PROACTIVE_FINANCE_IDLE_DAYS")
     proactive_shopping_idle_days: int = Field(5, alias="PROACTIVE_SHOPPING_IDLE_DAYS")
