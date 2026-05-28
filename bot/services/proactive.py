@@ -330,11 +330,15 @@ async def run_for_user(
     today = now_brt.date()
     mp_dates = [today - timedelta(days=1), today] if briefing else [today]
 
-    # O briefing inclui trânsito, que não tem dedup (leitura fresca). Sem uma
-    # trava de nível-janela ele re-dispararia a cada tick dentro da janela
-    # (minute<=1). Garante 1 briefing por dia.
-    if briefing and not force and await already_notified(session, user.id, "briefing", today.isoformat()):
-        return False
+    # Trava de nível-janela: roda 1x por (janela, dia, hora). Sem isso, como o
+    # tick é de ~20s e a janela é minute<=1, rodaria ~5x — refazendo fetch de
+    # DOU/coletas à toa. Marca já na entrada (mesmo que dê "sem fatos") pra os
+    # ticks seguintes pularem. force (/proativo_agora) ignora a trava.
+    if not force:
+        run_key = f"{window}:{today.isoformat()}:{now_brt.hour}"
+        if await already_notified(session, user.id, "proactive_run", run_key):
+            return False
+        await mark_notified(session, user.id, "proactive_run", run_key)
 
     facts: list[ProactiveFact] = []
     if briefing:
@@ -358,8 +362,6 @@ async def run_for_user(
     sent = await _send(bot, user.id, text, reply_markup=reply_markup)
     logger.info("proactive: user %d window=%s %d fatos enviado=%s", user.id, window, len(facts), sent)
     if sent and not force:
-        if briefing:
-            await mark_notified(session, user.id, "briefing", today.isoformat())
         for f in facts:
             if f.category == "transito":
                 continue  # trânsito não tem dedup (leitura fresca a cada manhã)
