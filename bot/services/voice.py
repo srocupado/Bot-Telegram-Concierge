@@ -71,9 +71,11 @@ agir). Exemplos do que NÃO virar comando:
 """
 
 # Cadeia de fallback quando o modelo principal está sobrecarregado (503).
-# Geração nova (3.x) tem capacidade separada e não pega os picos de demanda
-# do 2.5; 2.0-flash fica como último recurso (GA, estável).
-_STT_FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-2.0-flash"]
+# Só Gemini 3.x: 2.0-flash foi retirado (404 "no longer available to new
+# users") e 2.5-flash divide capacidade com o 3.5 (mesmos picos de 503).
+# Quando TODA a cadeia Gemini falha, transcribe() ainda tenta OpenAI como
+# último recurso (se OPENAI_API_KEY estiver configurada).
+_STT_FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-3.1-pro"]
 
 
 def _is_transient(exc: Exception) -> bool:
@@ -134,14 +136,20 @@ async def transcribe(
     openai = Whisper/gpt-4o-transcribe (transcrição literal).
 
     No Gemini, em 503/sobrecarga tenta de novo com backoff e cai num modelo
-    de fallback (flash-lite → 2.0-flash) se o principal seguir congestionado.
+    de fallback. Se TODA a cadeia Gemini falhar e OPENAI_API_KEY estiver
+    configurada, cai automaticamente no Whisper como último recurso —
+    garante que o áudio sempre vire texto, mesmo quando o Google está fora.
     """
     prov = (provider or settings.voice_stt_provider or "gemini").lower()
     if prov == "openai":
         return await _transcribe_openai(audio_bytes, mime_type)
 
     if not settings.gemini_api_key:
-        raise VoiceTranscribeError("GEMINI_API_KEY ausente — STT requer Gemini")
+        # Sem Gemini: tenta OpenAI direto se houver chave; senão erra.
+        if settings.openai_api_key:
+            logger.info("STT: GEMINI_API_KEY ausente; usando OpenAI Whisper")
+            return await _transcribe_openai(audio_bytes, mime_type)
+        raise VoiceTranscribeError("GEMINI_API_KEY ausente — STT requer Gemini ou OpenAI")
 
     def _call(model: str) -> str:
         client = genai.Client(api_key=settings.gemini_api_key)
@@ -181,4 +189,18 @@ async def transcribe(
                 # modelo; pula pro próximo da cadeia.
                 logger.warning("STT %s falhou (pulando p/ próximo): %s", model, e)
                 break
+    # Cadeia Gemini exauriu. Fallback final pra OpenAI se houver chave —
+    # assim um pico de 503/500 no Google não derruba a transcrição.
+    if settings.openai_api_key:
+        logger.warning(
+            "STT: toda a cadeia Gemini falhou (último: %s); caindo p/ OpenAI Whisper",
+            last_exc,
+        )
+        try:
+            return await _transcribe_openai(audio_bytes, mime_type)
+        except Exception as e:
+            logger.warning("STT fallback OpenAI também falhou: %s", e)
+            raise VoiceTranscribeError(
+                f"gemini transcribe failed: {last_exc}; openai fallback failed: {e}"
+            ) from e
     raise VoiceTranscribeError(f"gemini transcribe failed: {last_exc}") from last_exc
