@@ -1213,7 +1213,7 @@ async def consultar_lancamentos(
             lines.append(f"Total da fatura: {_fmt_brl(total)} ({len(card_items)} itens)")
             parts.append("\n".join(lines))
 
-    if mod in ("tesouro", "tudo"):
+    if mod in ("tesouro", "tudo", "investimentos", "investimento", "ativos"):
         holdings = state.get("treasuryHoldings") or []
         if not holdings:
             parts.append("🏛️ Tesouro: nenhum título cadastrado")
