@@ -444,6 +444,231 @@ def _set_treasury_contribution(
     return _txn(db.transaction())
 
 
+# ---- Investimentos (state.investments.assets) ----
+# Schema do app React (gerenciador-financeiro/src/investimentos.jsx):
+#   state.investments.assets = [
+#     { id, ticker, name, class, currentPrice, lastPriceUpdate,
+#       operations: [{id,date,type:"buy"|"sell",qty,price}],
+#       dividends:  [{id,date,amount}] }
+#   ]
+# class ∈ {"acoes","fiis","etfs","rf","fundos","cripto"}.
+
+ASSET_CLASSES_VALID = {"acoes", "fiis", "etfs", "rf", "fundos", "cripto"}
+ASSET_CLASSES_LABEL = {
+    "acoes": "Ações",
+    "fiis": "Fundos Imobiliários",
+    "etfs": "ETFs",
+    "rf": "Renda Fixa",
+    "fundos": "Fundos",
+    "cripto": "Cripto",
+}
+ASSET_CLASS_ALIAS = {
+    # PT-BR / variantes que o LLM pode passar
+    "ação": "acoes", "acao": "acoes", "ações": "acoes", "acoes": "acoes",
+    "stock": "acoes", "stocks": "acoes",
+    "fii": "fiis", "fiis": "fiis", "fii11": "fiis", "fundo imobiliário": "fiis",
+    "fundo imobiliario": "fiis", "fundos imobiliários": "fiis",
+    "etf": "etfs", "etfs": "etfs",
+    "rf": "rf", "renda fixa": "rf", "renda-fixa": "rf",
+    "cdb": "rf", "lci": "rf", "lca": "rf", "debenture": "rf", "debênture": "rf",
+    "fundo": "fundos", "fundos": "fundos", "fundo di": "fundos", "fia": "fundos",
+    "cripto": "cripto", "crypto": "cripto", "criptomoeda": "cripto", "bitcoin": "cripto",
+}
+
+
+def _normalize_asset_class(raw: str) -> str:
+    """Normaliza classe vinda do LLM pra um dos ids canônicos do React."""
+    if not raw:
+        raise FinanceiroError("classe do ativo é obrigatória (acoes/fiis/etfs/rf/fundos/cripto)")
+    k = raw.strip().lower()
+    if k in ASSET_CLASSES_VALID:
+        return k
+    if k in ASSET_CLASS_ALIAS:
+        return ASSET_CLASS_ALIAS[k]
+    raise FinanceiroError(
+        f"classe '{raw}' inválida. Use uma de: {sorted(ASSET_CLASSES_VALID)}"
+    )
+
+
+def _set_investment_operation(
+    db, uid: str, *, ticker: str, name: str | None, klass: str,
+    op_type: str, qty: float, price: float, data_iso: str,
+) -> dict:
+    """Anexa uma operação (buy/sell) ao asset que casa por ticker+class.
+    Se não existe, cria novo asset com currentPrice = price (igual ao
+    comportamento do form React quando mode='new'). Retorna
+    {'asset_name','asset_class','operation','was_new'}.
+    """
+    from firebase_admin import firestore as _fs
+
+    ref = db.collection("users").document(uid)
+    ticker_u = (ticker or "").strip().upper()
+    if not ticker_u:
+        raise FinanceiroError("ticker é obrigatório")
+    if op_type not in ("buy", "sell"):
+        raise FinanceiroError(f"op_type '{op_type}' inválido (use 'buy' ou 'sell')")
+    if qty <= 0 or price < 0:
+        raise FinanceiroError("qty deve ser > 0 e price >= 0")
+
+    @_fs.transactional
+    def _txn(transaction):
+        snap = ref.get(transaction=transaction)
+        data = snap.to_dict() if snap.exists else {}
+        state = dict(data.get("state") or {})
+        invest = dict(state.get("investments") or {})
+        assets = list(invest.get("assets") or [])
+
+        idx = next(
+            (i for i, a in enumerate(assets)
+             if (a.get("ticker") or "").strip().upper() == ticker_u
+             and (a.get("class") or "") == klass),
+            None,
+        )
+
+        op = {
+            "id": _gen_id(),
+            "date": data_iso,
+            "type": op_type,
+            "qty": float(qty),
+            "price": float(price),
+            "source": "bot",
+        }
+        was_new = idx is None
+        if was_new:
+            asset = {
+                "id": _gen_id(),
+                "ticker": ticker_u,
+                "name": (name or ticker_u).strip(),
+                "class": klass,
+                "currentPrice": float(price),
+                "lastPriceUpdate": data_iso,
+                "operations": [op],
+                "dividends": [],
+                "source": "bot",
+            }
+            assets.append(asset)
+            asset_out = asset
+        else:
+            asset = dict(assets[idx])
+            ops = list(asset.get("operations") or [])
+            ops.append(op)
+            asset["operations"] = ops
+            assets[idx] = asset
+            asset_out = asset
+
+        invest["assets"] = assets
+        state["investments"] = invest
+        transaction.set(
+            ref,
+            {"state": state, "updatedAt": _fs.SERVER_TIMESTAMP},
+            merge=True,
+        )
+        return {
+            "asset_name": asset_out.get("name", ticker_u),
+            "asset_class": klass,
+            "asset_id": asset_out.get("id"),
+            "operation": op,
+            "was_new": was_new,
+        }
+
+    return _txn(db.transaction())
+
+
+def _delete_investment_operation(db, uid: str, op_id: str) -> dict | None:
+    """Remove uma operação por id (procura em todos os assets). Só apaga se
+    source=='bot'. Retorna {'asset_name','asset_class','operation'} ou None."""
+    from firebase_admin import firestore as _fs
+
+    ref = db.collection("users").document(uid)
+
+    @_fs.transactional
+    def _txn(transaction):
+        snap = ref.get(transaction=transaction)
+        data = snap.to_dict() if snap.exists else {}
+        state = dict(data.get("state") or {})
+        invest = dict(state.get("investments") or {})
+        assets = list(invest.get("assets") or [])
+        for i, a in enumerate(assets):
+            ops = list(a.get("operations") or [])
+            target_idx = next(
+                (j for j, o in enumerate(ops) if o.get("id") == op_id),
+                None,
+            )
+            if target_idx is None:
+                continue
+            target = ops[target_idx]
+            if target.get("source") != "bot":
+                raise NotOwnedError(
+                    f"operação {op_id} não foi criada pelo bot — apague pelo app web."
+                )
+            new_ops = ops[:target_idx] + ops[target_idx + 1:]
+            asset = dict(a)
+            asset["operations"] = new_ops
+            assets[i] = asset
+            invest["assets"] = assets
+            state["investments"] = invest
+            transaction.set(
+                ref,
+                {"state": state, "updatedAt": _fs.SERVER_TIMESTAMP},
+                merge=True,
+            )
+            return {
+                "asset_name": a.get("name", "?"),
+                "asset_class": a.get("class", "?"),
+                "operation": target,
+            }
+        return None
+
+    return _txn(db.transaction())
+
+
+def _compute_asset_metrics(asset: dict) -> dict:
+    """Replica computeAssetMetrics() do React: PM via FIFO simplificado,
+    posição = qty * currentPrice, P&L = posição - investido."""
+    ops = sorted(
+        (asset.get("operations") or []),
+        key=lambda o: str(o.get("date") or ""),
+    )
+    qty = 0.0
+    total_cost = 0.0
+    for op in ops:
+        try:
+            q = float(op.get("qty") or 0)
+            p = float(op.get("price") or 0)
+        except (TypeError, ValueError):
+            continue
+        t = op.get("type")
+        if t == "buy":
+            qty += q
+            total_cost += q * p
+        elif t == "sell":
+            pm = (total_cost / qty) if qty > 0 else 0
+            qty -= q
+            total_cost -= q * pm
+            if qty < 1e-7:
+                qty = 0.0
+                total_cost = 0.0
+    pm = (total_cost / qty) if qty > 0 else 0.0
+    try:
+        current_price = float(asset.get("currentPrice") or 0) or pm
+    except (TypeError, ValueError):
+        current_price = pm
+    position = qty * current_price
+    invested = qty * pm
+    pnl = position - invested
+    div_total = sum(
+        float(d.get("amount") or 0) for d in (asset.get("dividends") or [])
+    )
+    return {
+        "qty": qty, "pm": pm, "currentPrice": current_price,
+        "position": position, "invested": invested, "pnl": pnl,
+        "divTotal": div_total,
+    }
+
+
+# ---- Fim Investimentos ----
+
+
 # -------- API pública (chamada pelas tools) --------
 
 TIPO_CREDITO = {"credito", "crédito", "credit", "receita", "recebimento"}
@@ -546,6 +771,40 @@ async def registrar_aporte_tesouro(
     return {"titulo": matched_name, "contribution": contrib}
 
 
+async def registrar_operacao_ativo(
+    session: AsyncSession,
+    user,
+    ticker: str,
+    classe: str,
+    op_type: str,
+    qty: float,
+    price: float,
+    data_iso: str,
+    nome: str | None = None,
+) -> dict:
+    """Registra compra/venda em state.investments.assets respeitando o
+    schema do gerenciador-financeiro/src/investimentos.jsx. Casa por
+    (ticker, classe); se não existir, cria asset novo com
+    currentPrice = price (mesmo comportamento do form React)."""
+    uid = _require_uid(user)
+    db = await _get_db(session)
+    klass = _normalize_asset_class(classe)
+    t = (op_type or "").strip().lower()
+    if t in ("compra", "buy", "c"):
+        t = "buy"
+    elif t in ("venda", "sell", "v"):
+        t = "sell"
+    else:
+        raise FinanceiroError(
+            f"op_type '{op_type}' inválido (use compra/venda ou buy/sell)"
+        )
+    return await _run_blocking(
+        _set_investment_operation, db, uid,
+        ticker=ticker, name=nome, klass=klass,
+        op_type=t, qty=float(qty), price=float(price), data_iso=data_iso,
+    )
+
+
 async def apagar_lancamento(
     session: AsyncSession,
     user,
@@ -553,7 +812,7 @@ async def apagar_lancamento(
     entry_id: str,
 ) -> dict:
     """Apaga lançamento por id no módulo dado. Retorna o item removido.
-    `modulo` ∈ {'banco', 'cartao', 'tesouro'}."""
+    `modulo` ∈ {'banco', 'cartao', 'tesouro', 'investimento'}."""
     uid = _require_uid(user)
     db = await _get_db(session)
     mod = (modulo or "").strip().lower()
@@ -576,8 +835,14 @@ async def apagar_lancamento(
         if res is None:
             raise FinanceiroError(f"aporte {entry_id} não encontrado no tesouro.")
         return {"modulo": "tesouro", **res}
+    if mod in ("investimento", "investimentos", "ativo", "asset"):
+        res = await _run_blocking(_delete_investment_operation, db, uid, entry_id)
+        if res is None:
+            raise FinanceiroError(f"operação {entry_id} não encontrada nos investimentos.")
+        return {"modulo": "investimento", **res}
     raise FinanceiroError(
-        f"módulo '{modulo}' inválido (use 'banco', 'cartao' ou 'tesouro')."
+        f"módulo '{modulo}' inválido "
+        f"(use 'banco', 'cartao', 'tesouro' ou 'investimento')."
     )
 
 
@@ -832,6 +1097,23 @@ def confirm_tesouro(titulo: str, valor: float, data_iso: str, taxa=None) -> str:
     return f"✅ Aporte: {_fmt_brl(valor)} — {titulo} · {_fmt_date_br(data_iso)}{taxa_s}"
 
 
+def confirm_operacao_ativo(res: dict, op_type: str) -> str:
+    """Mensagem de confirmação pra compra/venda de ativo (FII/ação/etc)."""
+    op = res.get("operation") or {}
+    klass_label = ASSET_CLASSES_LABEL.get(res.get("asset_class", ""), res.get("asset_class", "?"))
+    verbo = "Compra" if op_type == "buy" else "Venda"
+    qty = float(op.get("qty") or 0)
+    price = float(op.get("price") or 0)
+    total = qty * price
+    novo = " (novo ativo)" if res.get("was_new") else ""
+    qty_s = f"{qty:.4f}".rstrip("0").rstrip(".") if qty != int(qty) else str(int(qty))
+    return (
+        f"✅ {verbo}: {qty_s} × {res.get('asset_name', '?')} "
+        f"@ {_fmt_brl(price)} = {_fmt_brl(total)} · "
+        f"{klass_label} · {_fmt_date_br(op.get('date', ''))}{novo}"
+    )
+
+
 async def consultar_lancamentos(
     session: AsyncSession,
     user,
@@ -846,7 +1128,11 @@ async def consultar_lancamentos(
 
     parts: list[str] = []
     internal: list[str] = []  # ids dos lançamentos do bot (uso interno do LLM)
-    mods = {"banco", "cartao", "cartão", "tesouro", "tudo"}
+    mods = {
+        "banco", "cartao", "cartão", "tesouro",
+        "investimentos", "investimento", "ativos",
+        "tudo",
+    }
     mod = (modulo or "tudo").strip().lower()
     if mod not in mods:
         raise FinanceiroError(f"módulo '{modulo}' inválido (use {sorted(mods)}).")
@@ -951,6 +1237,74 @@ async def consultar_lancamentos(
                         if c.get("source") == "bot":
                             internal.append(f"tesouro · {name} ({_fmt_date_br(c.get('date', ''))}) → #{c.get('id', '?')}")
             parts.append("\n".join(lines))
+
+    if mod in ("investimentos", "investimento", "ativos", "tudo"):
+        invest = state.get("investments") or {}
+        assets = invest.get("assets") or []
+        if not assets:
+            if mod != "tudo":
+                parts.append("📊 Investimentos: nenhum ativo cadastrado")
+        else:
+            # Agrupa por classe (igual painel "Visão geral" do React).
+            by_class: dict[str, list[dict]] = {}
+            for a in assets:
+                klass = a.get("class") or "outros"
+                by_class.setdefault(klass, []).append(a)
+
+            lines = ["📊 Investimentos:"]
+            grand_position = 0.0
+            grand_pnl = 0.0
+            grand_div = 0.0
+            for klass in ("acoes", "fiis", "etfs", "rf", "fundos", "cripto"):
+                lst = by_class.get(klass) or []
+                if not lst:
+                    continue
+                klass_label = ASSET_CLASSES_LABEL.get(klass, klass)
+                metrics = [(a, _compute_asset_metrics(a)) for a in lst]
+                # Só ativos com posição > 0 entram com detalhe.
+                active = [(a, m) for (a, m) in metrics if m["qty"] > 0]
+                if not active:
+                    continue
+                total = sum(m["position"] for _, m in active)
+                invested = sum(m["invested"] for _, m in active)
+                pnl = total - invested
+                div_class = sum(m["divTotal"] for _, m in active)
+                grand_position += total
+                grand_pnl += pnl
+                grand_div += div_class
+
+                pnl_sign = "+" if pnl >= 0 else "−"
+                lines.append(
+                    f"\n🔹 {klass_label} — {_fmt_brl(total)} "
+                    f"(P&L {pnl_sign}{_fmt_brl(abs(pnl))}):"
+                )
+                for a, m in sorted(active, key=lambda x: x[1]["position"], reverse=True):
+                    qty_s = (
+                        f"{m['qty']:.4f}".rstrip("0").rstrip(".")
+                        if m["qty"] != int(m["qty"]) else str(int(m["qty"]))
+                    )
+                    lines.append(
+                        f"  • {a.get('ticker', '?')} — {qty_s} × "
+                        f"{_fmt_brl(m['currentPrice'])} = {_fmt_brl(m['position'])} "
+                        f"(PM {_fmt_brl(m['pm'])})"
+                    )
+                    # ids internos das operações criadas pelo bot
+                    for op in (a.get("operations") or []):
+                        if op.get("source") == "bot":
+                            internal.append(
+                                f"investimento · {a.get('ticker', '?')} "
+                                f"{op.get('type', '?')} {op.get('qty', 0)} "
+                                f"({_fmt_date_br(op.get('date', ''))}) → #{op.get('id', '?')}"
+                            )
+            if grand_position > 0:
+                pnl_sign = "+" if grand_pnl >= 0 else "−"
+                lines.append(
+                    f"\nTotal: {_fmt_brl(grand_position)} · "
+                    f"P&L {pnl_sign}{_fmt_brl(abs(grand_pnl))} · "
+                    f"Proventos {_fmt_brl(grand_div)}"
+                )
+            if len(lines) > 1:
+                parts.append("\n".join(lines))
 
     if internal:
         parts.append(

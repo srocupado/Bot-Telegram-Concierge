@@ -525,6 +525,59 @@ async def _h_registrar_aporte_tesouro(args: dict, ctx: ToolContext) -> str:
     )
 
 
+async def _h_registrar_operacao_ativo(args: dict, ctx: ToolContext) -> str:
+    """Compra/venda de ação, FII, ETF, RF, fundo ou cripto.
+    Schema (state.investments.assets[].operations) replicado do app React."""
+    from bot.services.financeiro import (
+        confirm_operacao_ativo, registrar_operacao_ativo,
+    )
+
+    ticker = (args.get("ticker") or "").strip()
+    classe = (args.get("classe") or args.get("class") or "").strip()
+    op_type = (args.get("op_type") or args.get("tipo") or "buy").strip().lower()
+    qty = args.get("qty") or args.get("quantidade")
+    price = args.get("price") or args.get("preco") or args.get("preço")
+    nome = (args.get("nome") or args.get("name") or "").strip() or None
+
+    if not ticker or not classe or qty is None or price is None:
+        return "erro: 'ticker', 'classe', 'qty' e 'price' são obrigatórios"
+    try:
+        qty_f = float(qty)
+        price_f = float(price)
+    except (TypeError, ValueError):
+        return "erro: 'qty' e 'price' devem ser números"
+    if qty_f <= 0:
+        return "erro: 'qty' deve ser > 0"
+
+    data_iso = _resolve_data_iso(args, ctx.tz)
+    if not data_iso:
+        return f"erro: 'data_iso' inválido ({args.get('data_iso')!r}). Use 'YYYY-MM-DD'."
+
+    try:
+        res = await registrar_operacao_ativo(
+            ctx.session, ctx.user,
+            ticker=ticker, classe=classe, op_type=op_type,
+            qty=qty_f, price=price_f, data_iso=data_iso, nome=nome,
+        )
+    except NotConfiguredError as e:
+        return f"erro: {e}"
+    except FinanceiroError as e:
+        return f"erro: {e}"
+
+    op_id = (res.get("operation") or {}).get("id")
+    if op_id:
+        verbo = "compra" if (res.get("operation") or {}).get("type") == "buy" else "venda"
+        await record_action(
+            ctx.session, ctx.user.id, "financeiro",
+            f"{verbo} de {qty_f} {ticker.upper()} a R$ {price_f:.2f}",
+            {"modulo": "investimento", "entry_id": op_id},
+        )
+    ctx.financial_logged_ok = True
+    return "ok (repasse esta confirmação, não mostre id nem 'ok:'):\n" + confirm_operacao_ativo(
+        res, (res.get("operation") or {}).get("type", "buy"),
+    )
+
+
 async def _h_apagar_lancamento(args: dict, ctx: ToolContext) -> str:
     modulo = (args.get("modulo") or "").strip().lower()
     entry_id = (args.get("id") or "").strip()
@@ -1353,6 +1406,63 @@ TOOLS: list[Tool] = [
         handler=_h_registrar_aporte_tesouro,
     ),
     Tool(
+        name="registrar_operacao_ativo",
+        description=(
+            "Registra COMPRA ou VENDA de ativo no módulo Investimentos do "
+            "gerenciador-financeiro (state.investments.assets). Use pra "
+            "ações, FIIs, ETFs, Renda Fixa, fundos e cripto — NÃO use pra "
+            "Tesouro Direto (esse tem tool própria 'registrar_aporte_tesouro').\n"
+            "Casa por (ticker, classe): se o ativo já existe na classe, "
+            "anexa a operação no histórico; se não existe, CRIA o ativo "
+            "novo automaticamente (currentPrice = price da operação).\n"
+            "Exemplos de fala:\n"
+            "  'comprei 10 HGLG11 a 168,50 hoje' → ticker=HGLG11, "
+            "classe=fiis, op_type=buy, qty=10, price=168.50\n"
+            "  'vendi 50 ITUB4 a 32,10'           → ticker=ITUB4, "
+            "classe=acoes, op_type=sell, qty=50, price=32.10\n"
+            "  'aportei 1000 reais no CDB do Inter' → use uma tool de RF: "
+            "ticker='CDB-INTER', classe=rf, qty=1, price=1000\n"
+            "Classes válidas: acoes, fiis, etfs, rf, fundos, cripto."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "ticker": {
+                    "type": "string",
+                    "description": "Código/ticker do ativo (ex: HGLG11, ITUB4, BTC, CDB-XPTO). Será uppercased.",
+                },
+                "classe": {
+                    "type": "string",
+                    "enum": ["acoes", "fiis", "etfs", "rf", "fundos", "cripto"],
+                    "description": "Classe do ativo.",
+                },
+                "op_type": {
+                    "type": "string",
+                    "enum": ["buy", "sell"],
+                    "description": "Tipo de operação: buy (compra) ou sell (venda). Default buy.",
+                },
+                "qty": {
+                    "type": "number",
+                    "description": "Quantidade. Aceita fracionário pra cripto e fundos.",
+                },
+                "price": {
+                    "type": "number",
+                    "description": "Preço unitário em R$.",
+                },
+                "data_iso": {
+                    "type": "string",
+                    "description": "Data ISO 'YYYY-MM-DD' (default: hoje).",
+                },
+                "nome": {
+                    "type": "string",
+                    "description": "Nome opcional do ativo (ex: 'CSHG Logística'); só usado quando o ativo é criado novo.",
+                },
+            },
+            "required": ["ticker", "classe", "qty", "price"],
+        },
+        handler=_h_registrar_operacao_ativo,
+    ),
+    Tool(
         name="consultar_lancamentos",
         description=(
             "Consulta lançamentos do gerenciador-financeiro. Use quando o "
@@ -1360,7 +1470,8 @@ TOOLS: list[Tool] = [
             "semana', 'quanto recebi esse mês', 'meus aportes no "
             "tesouro'.\n"
             "Módulos: 'banco' (conta), 'cartao' (crédito), 'tesouro' "
-            "(títulos) ou 'tudo'.\n"
+            "(títulos), 'investimentos' (ações/FIIs/ETFs/RF/fundos/cripto) "
+            "ou 'tudo'.\n"
             "Janela padrão para 'banco' e 'tesouro' = últimos 'dias' "
             "dias (default 30).\n"
             "Para 'cartao' o escopo padrão é a FATURA EM ABERTO (não "
@@ -1376,9 +1487,12 @@ TOOLS: list[Tool] = [
             "properties": {
                 "modulo": {
                     "type": "string",
-                    "enum": ["banco", "cartao", "tesouro", "tudo"],
+                    "enum": [
+                        "banco", "cartao", "tesouro",
+                        "investimentos", "tudo",
+                    ],
                 },
-                "dias": {"type": "integer", "description": "Janela em dias (default 30; aplicável a banco/tesouro e a cartão apenas quando escopo_cartao='ultimos_dias')"},
+                "dias": {"type": "integer", "description": "Janela em dias (default 30; aplicável a banco/tesouro e a cartão apenas quando escopo_cartao='ultimos_dias'). Investimentos ignoram 'dias' (mostram posição atual completa)."},
                 "escopo_cartao": {
                     "type": "string",
                     "enum": ["fatura_aberta", "ultimos_dias"],
@@ -1409,14 +1523,15 @@ TOOLS: list[Tool] = [
             "ambiguidade.\n"
             "  3) Chame apagar_lancamento(modulo=..., id=...).\n"
             "Módulos: 'banco' (bankTransactions), 'cartao' (cardEntries), "
-            "'tesouro' (contribuição de Tesouro Direto)."
+            "'tesouro' (contribuição de Tesouro Direto), 'investimento' "
+            "(operação de compra/venda de ação, FII, ETF, RF, fundo, cripto)."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "modulo": {
                     "type": "string",
-                    "enum": ["banco", "cartao", "tesouro"],
+                    "enum": ["banco", "cartao", "tesouro", "investimento"],
                 },
                 "id": {
                     "type": "string",
