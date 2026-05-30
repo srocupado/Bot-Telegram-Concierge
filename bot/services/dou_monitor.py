@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import logging
 import os
 import re
@@ -485,6 +486,32 @@ def _is_quota_error(exc: Exception) -> bool:
     return any(t in s for t in ("429", "resource_exhausted", "quota", "rate limit"))
 
 
+def _is_transient_or_recoverable(exc: Exception) -> bool:
+    """Erros que valem retry no próximo modelo: cota (429), sobrecarga (503),
+    timeout, OU JSON truncado (resposta cortada pelo max_output_tokens —
+    o thinking automático do 3.5-flash come o orçamento e a saída fica
+    incompleta). Em todos esses casos vale a pena tentar o fallback."""
+    if _is_quota_error(exc):
+        return True
+    s = str(exc).lower()
+    if any(t in s for t in ("503", "unavailable", "overloaded", "high demand", "deadline", "timeout")):
+        return True
+    if isinstance(exc, (json.JSONDecodeError,)) or "jsondecodeerror" in s or "unterminated string" in s:
+        return True
+    return False
+
+
+def _gemini_no_thinking_config():
+    """ThinkingConfig com budget=0 — STT/nota técnica não precisam de
+    raciocínio interno, e o thinking come max_output_tokens, causando
+    JSON truncado. (Igual ao tratamento em voice.py.)"""
+    try:
+        from google.genai import types
+        return types.ThinkingConfig(thinking_budget=0)
+    except Exception:
+        return None
+
+
 async def _pesquisar_contexto_gemini(client, mp: dict) -> str:
     if not settings.dou_mp_web_research:
         return ""
@@ -505,12 +532,16 @@ async def _pesquisar_contexto_gemini(client, mp: dict) -> str:
         resp = client.models.generate_content(model=model, contents=prompt, config=config)
         return (resp.text or "").strip()
 
-    for model in _gemini_models():
+    models_p = _gemini_models()
+    for model in models_p:
         try:
             return await asyncio.wait_for(asyncio.to_thread(_call, model), timeout=120.0)
         except Exception as exc:
-            if _is_quota_error(exc) and model != _gemini_models()[-1]:
-                logger.warning("dou: pesquisa gemini %s estourou cota; tentando fallback", model)
+            if _is_transient_or_recoverable(exc) and model != models_p[-1]:
+                logger.warning(
+                    "dou: pesquisa gemini %s falhou (%s); tentando fallback",
+                    model, type(exc).__name__,
+                )
                 continue
             logger.warning("dou: pesquisa web (gemini) indisponível p/ MP %s (%s)", mp["numero"], exc)
             return ""
@@ -526,7 +557,6 @@ async def _gen_nota_gemini(mp: dict) -> dict | None:
         from google.genai import types
     except ImportError:
         return None
-    import json
     client = genai.Client(api_key=settings.gemini_api_key)
     dossie = await _pesquisar_contexto_gemini(client, mp)
     user_content = _nota_user_content(mp, dossie)
@@ -541,16 +571,22 @@ async def _gen_nota_gemini(mp: dict) -> dict | None:
     )
 
     def _call(model: str) -> str:
+        # max_output_tokens alto + thinking_budget=0: o thinking automático
+        # do 3.5-flash/3.1 consome o orçamento de saída e o JSON estruturado
+        # vem TRUNCADO (JSONDecodeError "Unterminated string"). Desligar o
+        # thinking devolve todos os tokens pra resposta.
         config = types.GenerateContentConfig(
             system_instruction=_NOTA_SYSTEM,
             response_mime_type="application/json",
             response_schema=schema,
-            max_output_tokens=6144,
+            max_output_tokens=16384,
+            thinking_config=_gemini_no_thinking_config(),
         )
         resp = client.models.generate_content(model=model, contents=user_content, config=config)
         return (resp.text or "").strip()
 
     models = _gemini_models()
+    last_exc: Exception | None = None
     for model in models:
         try:
             raw = await asyncio.wait_for(asyncio.to_thread(_call, model), timeout=120.0)
@@ -560,12 +596,17 @@ async def _gen_nota_gemini(mp: dict) -> dict | None:
             logger.info("dou: nota gerada MP %s/%s via %s", mp["numero"], mp["ano"], model)
             return data
         except Exception as exc:
-            if _is_quota_error(exc) and model != models[-1]:
-                logger.warning("dou: nota gemini %s estourou cota MP %s; tentando fallback",
-                               model, mp["numero"])
+            last_exc = exc
+            if _is_transient_or_recoverable(exc) and model != models[-1]:
+                logger.warning(
+                    "dou: nota gemini %s falhou (%s) MP %s; tentando fallback",
+                    model, type(exc).__name__, mp["numero"],
+                )
                 continue
             logger.exception("dou: falha (gemini/%s) na nota MP %s/%s", model, mp["numero"], mp["ano"])
             return None
+    if last_exc is not None:
+        logger.warning("dou: cadeia gemini esgotada na nota MP %s: %s", mp["numero"], last_exc)
     return None
 
 
