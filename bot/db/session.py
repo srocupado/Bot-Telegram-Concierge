@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from bot.config import settings
@@ -33,6 +34,27 @@ def _ensure_sqlite_dir(url: str) -> None:
 _ensure_sqlite_dir(settings.database_url)
 
 engine: AsyncEngine = create_async_engine(settings.database_url, echo=False, future=True)
+
+
+@event.listens_for(engine.sync_engine, "connect")
+def _set_sqlite_pragmas(dbapi_conn, _conn_record) -> None:
+    """PRAGMAs aplicados em toda nova conexão do pool.
+
+    journal_mode=WAL  → leitores e escritores deixam de bloquear uns aos
+                        outros (per-database, persiste no arquivo).
+    busy_timeout=5000 → aguarda até 5s antes de devolver 'database is locked'
+                        (per-connection, reaplicado a cada conexão).
+    synchronous=NORMAL → par seguro do WAL (docs.sqlite.org/draft/wal.html).
+                         Mesma durabilidade transacional, fsync por checkpoint
+                         em vez de por commit — ganho real em SD/SSD do Pi.
+    """
+    cur = dbapi_conn.cursor()
+    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute("PRAGMA busy_timeout=5000")
+    cur.execute("PRAGMA synchronous=NORMAL")
+    cur.close()
+
+
 SessionLocal: async_sessionmaker[AsyncSession] = async_sessionmaker(
     engine, class_=AsyncSession, expire_on_commit=False
 )
