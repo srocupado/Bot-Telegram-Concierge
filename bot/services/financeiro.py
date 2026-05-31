@@ -780,7 +780,6 @@ async def consultar_saldo(
     tesouro = _get_treasury_current_value(state, today)
     assets = _get_assets_position(state)
     investimentos = tesouro + assets
-    patrimonio = saldo + investimentos
 
     sign_mes = "+" if mes["saldo"] >= 0 else "−"
     parts = [
@@ -797,7 +796,6 @@ async def consultar_saldo(
         if tesouro > 0 and assets > 0:
             parts.append(f"   🏛️ Tesouro: {_fmt_brl(tesouro)}")
             parts.append(f"   📈 Carteira: {_fmt_brl(assets)}")
-        parts.append(f"🏦 Patrimônio total: {_fmt_brl(patrimonio)}")
     return "\n".join(parts)
 
 
