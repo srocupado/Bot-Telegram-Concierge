@@ -33,9 +33,13 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   completa vem sob demanda (`/mp_dou_agora` ou botão "gerar nota").
 - **Gerenciador financeiro** (Firestore, integra com o app externo
   *gerenciador-financeiro*): lança compras no cartão, movimentos no banco,
-  aportes em títulos; consulta lançamentos; análise de gastos por categoria/
-  período. Por voz/texto: *"lança 250 no cartão, mercado, hoje"*, *"como tá
-  meu cartão esse mês?"*, *"quanto gastei com alimentação em maio?"*.
+  aportes em Tesouro Direto e **operações de compra/venda em ações, FIIs,
+  ETFs, Renda Fixa, fundos e cripto** (`state.investments.assets`); consulta
+  lançamentos; **saldo bancário + entradas/saídas do mês + total em
+  investimentos** num só lugar; análise de gastos por categoria/período.
+  Por voz/texto: *"qual meu saldo?"*, *"lança 250 no cartão, mercado, hoje"*,
+  *"comprei 10 HGLG11 a 168,50"*, *"como tá meu cartão esse mês?"*,
+  *"lista meus investimentos"*.
 - **Academia**: registra treino por voz/texto (*"hoje malhei peito e fiz
   cardio"*), resumo semanal (dom→sáb), correção/apagamento do dia. Categorias
   peito/costas/pernas/cardio normalizadas.
@@ -55,7 +59,10 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   citando fontes. (OpenAI não tem busca nativa nessa versão.)
 - **Voz (STT)**: áudio transcrito via **Gemini multimodal** (default
   `gemini-3.5-flash`) ou **OpenAI Whisper/gpt-4o-transcribe** — selecionável por
-  usuário com `/voice gemini|openai`. Aceita OGG/Opus nativo sem ffmpeg.
+  usuário com `/voice gemini|openai`. Aceita OGG/Opus nativo sem ffmpeg. Quando
+  a cadeia Gemini inteira falha (503/timeout/etc), o bot **cai automaticamente
+  no Whisper** se `OPENAI_API_KEY` estiver configurada — o áudio sempre vira
+  texto.
 - **Imagens (visão)**: mande uma foto (com/sem caption) — o bot analisa via LLM
   agente (OCR de recibo/boleto, leitura de placa, resumo de screenshot…), e
   pode acionar tools. Provider de visão configurável (`/provider_visao`).
@@ -63,7 +70,9 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   Troca em runtime via `/provider`; preferência persistida por usuário.
   Prompt caching no Anthropic pra reduzir custo.
 - **Acesso restrito por senha** (`ACCESS_PASSWORD`); isolamento por
-  `telegram_user_id`.
+  `telegram_user_id`. **Multi-usuário** simultâneo (família, casal): SQLite
+  configurado em modo WAL + `busy_timeout`, cada user tem seu próprio
+  provider/modelo/STT/`firebase_uid`/lembretes/lista/financeiro.
 
 ## Comandos
 
@@ -105,8 +114,14 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
 |---|---|
 | `/financeiro_setup` | Configura a service account (envie o JSON) e o UID do Firebase |
 
-> O resto é por voz/texto: *"paguei conta de luz 180"*, *"recebi 5 mil de
-> salário"*, *"aportei 1000 no Tesouro IPCA+ 2035"*, *"como tá meu cartão?"*,
+> O resto é por voz/texto. Saldo: *"qual meu saldo?"*, *"quanto sobrou esse
+> mês?"* → devolve o cabeçalho **Visão Geral** do app (saldo bancário atual,
+> entradas/saídas do mês, total em investimentos). Lançamentos: *"paguei conta
+> de luz 180"*, *"recebi 5 mil de salário"*, *"aportei 1000 no Tesouro IPCA+
+> 2035"*. **Investimentos** (ações/FIIs/ETFs/RF/fundos/cripto): *"comprei 10
+> HGLG11 a 168,50"*, *"vendi 50 ITUB4 a 32,10"*, *"lista meus investimentos"*
+> (mostra Tesouro + carteira agrupados por classe, com posição, PM, P&L,
+> proventos — réplica do painel Visão geral). Análise: *"como tá meu cartão?"*,
 > *"quanto gastei com alimentação em maio?"*, *"compara maio e junho"*.
 
 ### Rota com sua localização
@@ -155,7 +170,9 @@ Mande um áudio. O bot transcreve e roteia:
 
 - `gemini` (default, `gemini-3.5-flash`): multimodal; além de transcrever, faz
   a **conversão voz→/comando** (atalhos abaixo). Em 503/sobrecarga, tenta
-  fallback de modelo automaticamente (`3.1-flash-lite` → `2.0-flash`).
+  fallback de modelo automaticamente (`3.1-flash-lite` → `3.1-pro`). Se TODA a
+  cadeia falhar e `OPENAI_API_KEY` estiver configurada, **cai automaticamente
+  no Whisper** como último recurso.
 - `openai` (Whisper / `gpt-4o-transcribe`): transcrição **literal** e estável;
   **não** dispara os atalhos de slash por voz (cai sempre no chat livre).
 
@@ -177,7 +194,8 @@ O bot ecoa a transcrição antes da resposta. Áudios acima de `VOICE_MAX_SECOND
 ## Stack
 
 - Python 3.12, aiogram 3 (long polling)
-- SQLAlchemy 2 async + aiosqlite (SQLite em volume)
+- SQLAlchemy 2 async + aiosqlite (SQLite em volume; **modo WAL** +
+  `busy_timeout=5000` + `synchronous=NORMAL` aplicados em `connect`)
 - httpx async, BeautifulSoup4
 - pydantic-settings, python-json-logger
 - SDKs: `anthropic`, `openai`, `google-genai` (1.x — chat com tools, visão,
@@ -204,7 +222,7 @@ A previsão do tempo (Open-Meteo) usa `HOME_COORDS`, sem chave própria.
 PROACTIVE_ENABLED=true          # gate global (o usuário ainda precisa de /proativo_on)
 PROACTIVE_HOURS=7,13,19         # janelas BRT (CSV)
 PROACTIVE_BRIEFING_HOUR=7       # hora do briefing matinal
-PROACTIVE_LOOKAHEAD_HOURS=24    # antecedência de vencimentos
+PROACTIVE_LOOKAHEAD_HOURS=48    # antecedência de vencimentos (em toda janela até vencer)
 PROACTIVE_USE_LLM=false         # false = texto determinístico (barato, sem alucinar)
 ```
 
@@ -226,21 +244,27 @@ INLABS_EMAIL=...
 INLABS_PASSWORD=...
 DOU_MP_HOUR=18                  # horário BRT mencionado nas mensagens
 DOU_MP_PROVIDER=gemini          # gemini (mais barato) | anthropic
-DOU_MP_GEMINI_MODEL=gemini-2.5-pro
-DOU_MP_GEMINI_MODEL_FALLBACK=gemini-2.5-flash
+DOU_MP_GEMINI_MODEL=gemini-3.5-flash         # geração nova, estável
+DOU_MP_GEMINI_MODEL_FALLBACK=gemini-3.1-flash-lite  # rede pra 503/JSON truncado
 DOU_MP_WEB_RESEARCH=true        # pesquisa de contexto via busca web
 ```
 
 Reusa `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` conforme o provider. A detecção
 de MP nova roda dentro do **agente proativo** (assine com `/mp_dou_on`); a nota
-técnica completa vem por `/mp_dou_agora` ou pelo botão do aviso.
+técnica completa vem por `/mp_dou_agora` ou pelo botão do aviso. A geração é
+feita com `thinking_budget=0` (o thinking automático consumia o orçamento de
+tokens e truncava o JSON estruturado) e o fallback dispara também em
+`JSONDecodeError`/timeout, não só em quota.
 
 ### Gerenciador financeiro (Firestore)
 
 Configure em runtime com `/financeiro_setup` (envie o JSON da service account
 do Firebase e informe o UID). As credenciais ficam no SQLite (`kv_settings`),
-não no `.env`. Integra com o app externo *gerenciador-financeiro* — não altere
-o schema do Firestore dele.
+não no `.env`. Integra com o app externo *gerenciador-financeiro* — usa as
+mesmas chaves do `state` no Firestore (`bankTransactions`, `cardEntries`,
+`treasuryHoldings`, `investments.assets`) e nunca altera o schema. Cálculos de
+saldo, projeção do Tesouro pra hoje e métricas dos ativos (PM/posição/P&L)
+replicam as fórmulas do `src/store.jsx`/`src/investimentos.jsx` do app.
 
 ### Google Maps
 
@@ -304,13 +328,23 @@ Idempotente: persiste em `/etc/fstab`, ajusta `vm.swappiness=10`.
 
 ### Backup do SQLite
 
-`./scripts/backup.sh` gera `concierge-YYYY-MM-DD-HHMM.tgz` em
-`/var/backups/concierge` e mantém 14 dias. Agendar via cron:
+`./scripts/backup.sh` gera `concierge-YYYY-MM-DD-HHMM.tgz` no diretório
+informado (default `/mnt/kodak/Bot-Concierge`; passe outro como `$1` se
+preferir) e mantém 14 dias. Como o engine roda em modo WAL, o script usa a
+**Online Backup API** do SQLite (`sqlite3.backup()` via `docker compose exec`)
+em vez de copiar o arquivo `.db` direto — assim a cópia é transacionalmente
+consistente sem precisar parar o container, e não fica refém de
+`-wal`/`-shm` desatualizados.
+
+Agendar via cron:
 
 ```bash
 sudo crontab -e
 0 3 * * * /home/USER/apps/Bot-Telegram-Concierge/scripts/backup.sh
 ```
+
+Para restaurar: descompactar o `.tgz`, renomear o `.concierge-backup-tmp.db`
+para `concierge.db` e colocar dentro de `./data/`.
 
 ## Modelo de dados
 
