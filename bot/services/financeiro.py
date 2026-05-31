@@ -669,6 +669,141 @@ def _compute_asset_metrics(asset: dict) -> dict:
 # ---- Fim Investimentos ----
 
 
+# ---- Saldo / Patrimônio (replica Visão Geral do app React) ----
+
+def _get_bank_balance(state: dict) -> float:
+    """Saldo bancário ATUAL = soma de TODAS bankTransactions[].amount
+    (sem filtro de data). Replica getBankBalance() do store.jsx."""
+    return sum(
+        float(t.get("amount") or 0)
+        for t in (state.get("bankTransactions") or [])
+    )
+
+
+def _get_month_bank_summary(state: dict, today: date) -> dict:
+    """Entradas/saídas do mês corrente (somente bankTransactions).
+    Retorna {entradas, saidas, saldo}. 'saidas' é positivo (mag),
+    'saldo' = entradas - saidas."""
+    entradas = 0.0
+    saidas = 0.0
+    for t in (state.get("bankTransactions") or []):
+        try:
+            d = datetime.fromisoformat((t.get("date") or "")[:10]).date()
+        except ValueError:
+            continue
+        if d.year != today.year or d.month != today.month:
+            continue
+        amt = float(t.get("amount") or 0)
+        if amt >= 0:
+            entradas += amt
+        else:
+            saidas += -amt
+    return {
+        "entradas": entradas,
+        "saidas": saidas,
+        "saldo": entradas - saidas,
+    }
+
+
+def _project_contribution_to_today(
+    contrib: dict, holding_rate: float, ipca: float, today: date,
+) -> float:
+    """Projeta o valor de um aporte do Tesouro pra hoje com juros compostos
+    anuais (1+ipca)*(1+r)-1. Replica projectContributionToToday() do
+    store.jsx. Per-contribution override em contrib.rate."""
+    try:
+        amount = float(contrib.get("amount") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    try:
+        start = datetime.fromisoformat((contrib.get("date") or "")[:10]).date()
+    except ValueError:
+        return amount  # sem data: sem projeção
+    # contributionRate: override do aporte se houver, senão a do título
+    r_override = contrib.get("rate")
+    try:
+        r = float(r_override) if r_override is not None else float(holding_rate or 0)
+    except (TypeError, ValueError):
+        r = float(holding_rate or 0)
+    try:
+        i = float(ipca or 0)
+    except (TypeError, ValueError):
+        i = 0.0
+    years = max(0.0, (today - start).days / 365.25)
+    annual = (1.0 + i) * (1.0 + r) - 1.0
+    return amount * ((1.0 + annual) ** years)
+
+
+def _get_treasury_current_value(state: dict, today: date) -> float:
+    """Soma do valor projetado pra hoje de TODOS os aportes em
+    treasuryHoldings. Replica holdingCurrentValue() do store.jsx."""
+    total = 0.0
+    for h in (state.get("treasuryHoldings") or []):
+        rate = h.get("rate")
+        ipca = h.get("ipcaAssumption")
+        for c in (h.get("contributions") or []):
+            total += _project_contribution_to_today(c, rate, ipca, today)
+    return total
+
+
+def _get_assets_position(state: dict) -> float:
+    """Soma de qty*currentPrice de TODOS os ativos em
+    investments.assets (ações/FIIs/ETFs/RF/fundos/cripto)."""
+    invest = state.get("investments") or {}
+    total = 0.0
+    for a in (invest.get("assets") or []):
+        m = _compute_asset_metrics(a)
+        total += m["position"]
+    return total
+
+
+def _month_label(d: date) -> str:
+    meses = [
+        "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+        "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
+    ]
+    return f"{meses[d.month - 1]}/{d.year}"
+
+
+async def consultar_saldo(
+    session: AsyncSession, user, today: date,
+) -> str:
+    """Retorna a 'Visão Geral' do gerenciador-financeiro: saldo bancário
+    atual, entradas/saídas do mês, investimentos e patrimônio total.
+    Replica os mesmos cálculos do app React em src/store.jsx."""
+    uid = _require_uid(user)
+    db = await _get_db(session)
+    state = await _read_state(db, uid)
+
+    saldo = _get_bank_balance(state)
+    mes = _get_month_bank_summary(state, today)
+    tesouro = _get_treasury_current_value(state, today)
+    assets = _get_assets_position(state)
+    investimentos = tesouro + assets
+    patrimonio = saldo + investimentos
+
+    sign_mes = "+" if mes["saldo"] >= 0 else "−"
+    parts = [
+        f"💰 Saldo bancário atual: {_fmt_brl(saldo)}",
+        "",
+        f"📅 {_month_label(today)}:",
+        f"   ➕ Entradas: {_fmt_brl(mes['entradas'])}",
+        f"   ➖ Saídas:  {_fmt_brl(mes['saidas'])}",
+        f"   = Saldo:   {sign_mes}{_fmt_brl(abs(mes['saldo']))}",
+    ]
+    if investimentos > 0:
+        parts.append("")
+        parts.append(f"📊 Investimentos: {_fmt_brl(investimentos)}")
+        if tesouro > 0 and assets > 0:
+            parts.append(f"   🏛️ Tesouro: {_fmt_brl(tesouro)}")
+            parts.append(f"   📈 Carteira: {_fmt_brl(assets)}")
+        parts.append(f"🏦 Patrimônio total: {_fmt_brl(patrimonio)}")
+    return "\n".join(parts)
+
+
+# ---- Fim Saldo / Patrimônio ----
+
+
 # -------- API pública (chamada pelas tools) --------
 
 TIPO_CREDITO = {"credito", "crédito", "credit", "receita", "recebimento"}

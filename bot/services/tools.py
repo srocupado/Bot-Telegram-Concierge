@@ -44,6 +44,7 @@ from bot.services.financeiro import (
     confirm_cartao,
     confirm_tesouro,
     consultar_lancamentos,
+    consultar_saldo,
     lancar_despesa_cartao,
     lancar_movimento_banco,
     registrar_aporte_tesouro,
@@ -612,6 +613,17 @@ async def _h_consultar_lancamentos(args: dict, ctx: ToolContext) -> str:
             ctx.session, ctx.user, modulo, dias, today_iso,
             escopo_cartao=escopo_cartao,
         )
+    except NotConfiguredError as e:
+        return f"erro: {e}"
+    except FinanceiroError as e:
+        return f"erro: {e}"
+    return "ok (repasse estas linhas EXATAMENTE como estão, sem reformatar nem trocar emojis/valores):\n" + out
+
+
+async def _h_consultar_saldo(args: dict, ctx: ToolContext) -> str:
+    today = datetime.now(ZoneInfo(ctx.tz)).date()
+    try:
+        out = await consultar_saldo(ctx.session, ctx.user, today)
     except NotConfiguredError as e:
         return f"erro: {e}"
     except FinanceiroError as e:
@@ -1461,6 +1473,26 @@ TOOLS: list[Tool] = [
             "required": ["ticker", "classe", "qty", "price"],
         },
         handler=_h_registrar_operacao_ativo,
+    ),
+    Tool(
+        name="consultar_saldo",
+        description=(
+            "Retorna o SALDO BANCÁRIO ATUAL (soma de TODAS as movimentações "
+            "do banco desde sempre), as entradas/saídas do MÊS corrente, "
+            "o total em investimentos (Tesouro projetado + carteira de "
+            "ações/FIIs/etc) e o patrimônio total. Replica o cabeçalho "
+            "'Visão Geral' do app gerenciador-financeiro.\n"
+            "Use SEMPRE que o usuário perguntar 'qual meu saldo', 'quanto "
+            "tenho na conta', 'quanto sobrou esse mês', 'qual meu "
+            "patrimônio', 'como tô no banco'. NÃO use consultar_lancamentos "
+            "pra essas perguntas — aquela tool lista despesas/transações, "
+            "não devolve o saldo agregado. consultar_lancamentos é só "
+            "quando o usuário pedir o detalhamento ('lista meus gastos', "
+            "'meus lançamentos do mês', etc).\n"
+            "Sem parâmetros."
+        ),
+        parameters={"type": "object", "properties": {}},
+        handler=_h_consultar_saldo,
     ),
     Tool(
         name="consultar_lancamentos",
