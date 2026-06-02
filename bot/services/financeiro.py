@@ -749,10 +749,10 @@ async def atualizar_cotacoes_carteira(
 
 
 def format_carteira_review(assets: list[dict], prices: dict[str, float]) -> str | None:
-    """Monta a revisão da carteira: por ativo cotável com posição, mostra
-    quanto foi investido (qty×PM) vs valor de mercado atual (qty×preço) e o
-    P&L. Só inclui ativos que receberam cotação fresca em `prices`.
-    Retorna None se nada a mostrar."""
+    """Monta a revisão da carteira como TABELA alinhada (bloco monoespaçado
+    <pre> do Telegram): por ativo cotável com posição, mostra investido,
+    valor de mercado atual e P&L (% + emoji). Só inclui ativos que receberam
+    cotação fresca em `prices`. Retorna None se nada a mostrar."""
     rows: list[tuple[dict, dict]] = []
     for a in assets:
         if (a.get("class") or "") not in QUOTABLE_CLASSES:
@@ -772,26 +772,39 @@ def format_carteira_review(assets: list[dict], prices: dict[str, float]) -> str 
     total_mkt = sum(m["position"] for _, m in rows)
     total_pnl = total_mkt - total_inv
 
-    lines: list[str] = []
-    for a, m in rows:
-        qty = m["qty"]
-        qty_s = f"{qty:.4f}".rstrip("0").rstrip(".") if qty != int(qty) else str(int(qty))
-        pnl = m["pnl"]
-        emoji = "🟢" if pnl > 0 else ("🔴" if pnl < 0 else "⚪")
-        pct = (pnl / m["invested"] * 100) if m["invested"] > 0 else 0.0
+    def _brl_plain(v: float) -> str:
+        # "3.200,00" sem o prefixo R$ (a coluna já é monetária).
+        return f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    def _pct(pnl: float, base: float) -> str:
+        p = (pnl / base * 100) if base > 0 else 0.0
         sign = "+" if pnl >= 0 else "−"
-        lines.append(
-            f"• <b>{a.get('ticker', '?')}</b> ({qty_s}) — "
-            f"investido {_fmt_brl(m['invested'])} → mercado {_fmt_brl(m['position'])} "
-            f"{emoji} {sign}{_fmt_brl(abs(pnl))} ({sign}{abs(pct):.1f}%)"
+        emoji = "🟢" if pnl > 0 else ("🔴" if pnl < 0 else "⚪")
+        return f"{sign}{abs(p):.1f}%".replace(".", ",") + f" {emoji}"
+
+    # Larguras das colunas numéricas (alinhadas à direita).
+    tickers = [a.get("ticker", "?") for a, _ in rows] + ["Total"]
+    inv_strs = [_brl_plain(m["invested"]) for _, m in rows] + [_brl_plain(total_inv)]
+    mkt_strs = [_brl_plain(m["position"]) for _, m in rows] + [_brl_plain(total_mkt)]
+    w_tick = max(len("Ativo"), *(len(t) for t in tickers))
+    w_inv = max(len("Investido"), *(len(s) for s in inv_strs))
+    w_mkt = max(len("Mercado"), *(len(s) for s in mkt_strs))
+
+    out: list[str] = ["<pre>"]
+    out.append(f" {'Ativo':<{w_tick}}  {'Investido':>{w_inv}}  {'Mercado':>{w_mkt}}   P&L")
+    for (a, m), inv_s, mkt_s in zip(rows, inv_strs[:-1], mkt_strs[:-1]):
+        out.append(
+            f" {a.get('ticker', '?'):<{w_tick}}  {inv_s:>{w_inv}}  {mkt_s:>{w_mkt}}   "
+            f"{_pct(m['pnl'], m['invested'])}"
         )
-    tsign = "+" if total_pnl >= 0 else "−"
-    tpct = (total_pnl / total_inv * 100) if total_inv > 0 else 0.0
-    lines.append(
-        f"<b>Total</b>: investido {_fmt_brl(total_inv)} → mercado "
-        f"{_fmt_brl(total_mkt)} ({tsign}{_fmt_brl(abs(total_pnl))} · {tsign}{abs(tpct):.1f}%)"
+    sep_len = w_tick + w_inv + w_mkt + 13
+    out.append(" " + "─" * sep_len)
+    out.append(
+        f" {'Total':<{w_tick}}  {inv_strs[-1]:>{w_inv}}  {mkt_strs[-1]:>{w_mkt}}   "
+        f"{_pct(total_pnl, total_inv)}"
     )
-    return "\n".join(lines)
+    out.append("</pre>")
+    return "\n".join(out)
 
 
 # ---- Fim Investimentos ----
