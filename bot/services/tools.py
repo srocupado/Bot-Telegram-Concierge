@@ -1332,17 +1332,23 @@ TOOLS: list[Tool] = [
         name="consultar_transito",
         description=(
             "Calcula tempo atual de viagem entre origem e destino.\n"
-            "REGRA DE ORIGEM (importante):\n"
-            "• Se o usuário disser explicitamente 'de casa', 'saindo de casa', "
-            "'do trabalho' → passe origem='casa' ou origem='trabalho'.\n"
-            "• Se o usuário NÃO especificar a origem ('rota pro Congresso', "
-            "'como chegar na Av. Paulista', 'trânsito até o aeroporto'), "
-            "passe origem='minha_localizacao' (ou omita o parâmetro) — "
-            "o servidor vai PEDIR a localização atual via GPS ao usuário "
-            "(mesma UX do /rota). NÃO chute 'casa' nesses casos.\n"
-            "• Apenas o caso especial casa↔trabalho usa as coordenadas do "
-            "servidor (HOME/WORK_COORDS) e devolve a comparação verbatim "
-            "do /transito_agora.\n"
+            "REGRA DE ORIGEM (importante e ESTRITA):\n"
+            "• Só passe origem='casa' / 'trabalho' quando o usuário disser "
+            "EXPLICITAMENTE de onde está saindo ('saindo de casa', "
+            "'do escritório', 'do trabalho pra casa', 'de casa pra X'). "
+            "NUNCA infira 'trabalho' só porque o destino é 'casa' (ou "
+            "vice-versa) — isso costuma estar errado.\n"
+            "• Se o usuário NÃO disser de onde está saindo ('rota pro "
+            "Congresso', 'como chegar na Av. Paulista', 'rota para casa', "
+            "'trânsito até o aeroporto', 'como tá o caminho pra casa'), "
+            "passe origem='minha_localizacao' — o servidor vai PEDIR a "
+            "localização atual via GPS ao usuário (mesma UX do /rota).\n"
+            "• O par casa↔trabalho só usa as coords do servidor "
+            "(HOME/WORK_COORDS) e devolve a comparação verbatim do "
+            "/transito_agora quando AMBOS os lados aparecem na fala "
+            "('como tá o trânsito casa pro trabalho?', 'quanto tempo do "
+            "trabalho pra casa?'). Apenas um lado mencionado → vale a "
+            "regra acima (minha_localizacao).\n"
             "Destino: 'casa', 'trabalho', 'lat,lng' ou endereço/POI livre."
         ),
         parameters={
@@ -1352,8 +1358,9 @@ TOOLS: list[Tool] = [
                     "type": "string",
                     "description": (
                         "'casa' | 'trabalho' | 'minha_localizacao' | 'lat,lng' "
-                        "| endereço. Default 'minha_localizacao' quando o "
-                        "usuário não diz de onde está saindo."
+                        "| endereço. SEMPRE use 'minha_localizacao' quando o "
+                        "usuário não disser EXPLICITAMENTE de onde está saindo. "
+                        "NÃO chute 'casa' ou 'trabalho' baseado no destino."
                     ),
                 },
                 "destino": {
