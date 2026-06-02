@@ -264,6 +264,45 @@ async def collect_transito(user: User, now_brt: datetime) -> list[ProactiveFact]
     return [ProactiveFact("transito", "transito_trabalho", "", txt)]
 
 
+async def collect_carteira(
+    session: AsyncSession, user: User, now_brt: datetime, *, force: bool = False,
+) -> list[ProactiveFact]:
+    """Revisão da carteira (ações/FIIs/ETFs) na ÚLTIMA janela do dia: busca a
+    cotação de mercado atual (brapi), atualiza o currentPrice no Firestore e
+    monta valor investido vs valor de mercado por ativo. Tesouro fica fora
+    (não tem cotação de bolsa). 1×/dia (deduplicado por data)."""
+    last_hour = max(parse_proactive_hours(settings.proactive_hours))
+    if not force and now_brt.hour != last_hour:
+        return []
+    try:
+        from bot.services.financeiro import (
+            atualizar_cotacoes_carteira,
+            format_carteira_review,
+            get_carteira_tickers,
+        )
+        from bot.services.quotes import QuotesError, fetch_quotes
+
+        tickers = await get_carteira_tickers(session, user)
+        if not tickers:
+            return []
+        try:
+            prices = await fetch_quotes(tickers)
+        except QuotesError as e:
+            logger.warning("proactive: cotação indisponível (%s)", e)
+            return []
+        if not prices:
+            return []
+        assets = await atualizar_cotacoes_carteira(session, user, prices)
+        text = format_carteira_review(assets, prices)
+        if not text:
+            return []
+    except Exception:
+        logger.exception("proactive: revisão de carteira falhou p/ user %s", user.id)
+        return []
+    key = now_brt.date().isoformat()
+    return [ProactiveFact("carteira", "carteira_review", key, text)]
+
+
 # ──────────────────────── orquestrador ────────────────────────
 
 _CAT_HEADER = {
@@ -271,6 +310,7 @@ _CAT_HEADER = {
     "venc": "⏳ <b>Chegando</b>",
     "mp": "📜 <b>Diário Oficial</b>",
     "nudge": "💡 <b>Hábitos</b>",
+    "carteira": "📈 <b>Carteira hoje</b>",
 }
 
 
@@ -278,7 +318,7 @@ def _compose(facts: list[ProactiveFact], *, briefing: bool) -> str:
     blocks: list[str] = []
     if briefing:
         blocks.append("☀️ <b>Bom dia! Resumo de hoje</b>")
-    for cat in ("transito", "venc", "mp", "nudge"):
+    for cat in ("transito", "venc", "mp", "nudge", "carteira"):
         lines = [f.text for f in facts if f.category == cat]
         if not lines:
             continue
@@ -345,6 +385,8 @@ async def run_for_user(
     facts += await collect_vencimentos(session, user, now_brt, force=force)
     facts += await collect_mp(session, user, mp_dates, force=force)
     facts += await collect_nudges(session, user, now_brt, force=force)
+    if not briefing:
+        facts += await collect_carteira(session, user, now_brt, force=force)
 
     if not facts:
         logger.info("proactive: user %d window=%s sem fatos", user.id, window)

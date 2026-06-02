@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     inlabs_email: str | None = Field(None, alias="INLABS_EMAIL")
     inlabs_password: SecretStr | None = Field(None, alias="INLABS_PASSWORD")
 
+    # Cotação de ativos da B3 (brapi.dev). Token do cadastro gratuito em
+    # brapi.dev. Sem token, a revisão de carteira do agente proativo é pulada.
+    brapi_token: SecretStr | None = Field(None, alias="BRAPI_TOKEN")
+
     # Agente proativo (opt-in por usuário via /proativo_on). Gate global +
     # janelas de checagem (BRT, CSV) + limiares dos nudges e antecedência.
     proactive_enabled: bool = Field(True, alias="PROACTIVE_ENABLED")

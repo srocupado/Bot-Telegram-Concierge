@@ -13,8 +13,10 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
 - **Agente proativo (opt-in)**: roda em janelas do dia (default 7/13/19h BRT)
   e avisa por conta própria — vencimentos chegando (lembretes não recorrentes
   + fatura do cartão), **briefing matinal** (consolida lembretes do dia,
-  trânsito casa→trabalho e MPs do dia anterior) e **nudges** por inatividade
-  (treino/finanças/lista parados). Gatilhos 100% determinísticos; baixo ruído
+  trânsito casa→trabalho e MPs do dia anterior), **nudges** por inatividade
+  (treino/finanças/lista parados) e **revisão da carteira** na última janela do
+  dia (cotação de mercado dos ativos B3 via brapi.dev: investido vs mercado +
+  P&L, atualizando o `currentPrice` no Firestore). Gatilhos 100% determinísticos; baixo ruído
   (1 mensagem por janela, dedup, cooldown, silêncio quando não há nada).
   Liga com `/proativo_on`.
 - **Trânsito diário** (seg–sex): rota casa↔trabalho com tempo real (Google
@@ -255,6 +257,19 @@ técnica completa vem por `/mp_dou_agora` ou pelo botão do aviso. A geração �
 feita com `thinking_budget=0` (o thinking automático consumia o orçamento de
 tokens e truncava o JSON estruturado) e o fallback dispara também em
 `JSONDecodeError`/timeout, não só em quota.
+
+### Cotação de carteira (B3)
+
+```bash
+BRAPI_TOKEN=...     # cadastro gratuito em https://brapi.dev
+```
+
+Usado na **revisão de carteira** do agente proativo (última janela do dia,
+ex.: 19h): busca o preço de mercado de ações/FIIs/ETFs via brapi.dev, grava o
+`currentPrice` no Firestore (o app web passa a mostrar P&L real também) e
+manda uma mensagem com **investido vs valor de mercado + P&L** por ativo.
+Tesouro Direto fica de fora (valor projetado, sem ticker de bolsa); cripto não
+é coberto. Sem `BRAPI_TOKEN`, a revisão é pulada sem afetar o resto.
 
 ### Gerenciador financeiro (Firestore)
 

@@ -666,6 +666,134 @@ def _compute_asset_metrics(asset: dict) -> dict:
     }
 
 
+# ---- Cotação de carteira (B3) ----
+
+# Classes com ticker de bolsa cotável via brapi (sem Tesouro/RF/fundos/cripto).
+QUOTABLE_CLASSES = {"acoes", "fiis", "etfs"}
+
+
+async def get_carteira_tickers(session: AsyncSession, user) -> list[str] | None:
+    """Tickers únicos da carteira (classes cotáveis, com posição > 0).
+    None se sem uid/SA. [] se não há ativos cotáveis."""
+    try:
+        if not getattr(user, "firebase_uid", None):
+            return None
+        db = await _get_db(session)
+        state = await _read_state(db, user.firebase_uid)
+    except NotConfiguredError:
+        return None
+    except Exception:
+        logger.exception("get_carteira_tickers: failed for user %s", getattr(user, "id", "?"))
+        return None
+    invest = state.get("investments") or {}
+    tickers: set[str] = set()
+    for a in (invest.get("assets") or []):
+        if (a.get("class") or "") not in QUOTABLE_CLASSES:
+            continue
+        if _compute_asset_metrics(a)["qty"] <= 0:
+            continue
+        t = (a.get("ticker") or "").strip().upper()
+        if t:
+            tickers.add(t)
+    return sorted(tickers)
+
+
+def _update_prices_in_transaction(db, uid: str, prices: dict[str, float]) -> list[dict]:
+    """Transaction: atualiza currentPrice+lastPriceUpdate dos assets cujo
+    ticker está em `prices`. Retorna a lista de assets (cotáveis, qty>0)
+    pós-atualização pra montar a revisão. Bloqueante; via _run_blocking."""
+    from datetime import date as _date
+
+    from firebase_admin import firestore as _fs
+
+    ref = db.collection("users").document(uid)
+    today_iso = _date.today().isoformat()
+
+    @_fs.transactional
+    def _txn(transaction):
+        snap = ref.get(transaction=transaction)
+        data = snap.to_dict() if snap.exists else {}
+        state = dict(data.get("state") or {})
+        invest = dict(state.get("investments") or {})
+        assets = list(invest.get("assets") or [])
+        changed = False
+        for i, a in enumerate(assets):
+            t = (a.get("ticker") or "").strip().upper()
+            if t in prices:
+                asset = dict(a)
+                asset["currentPrice"] = float(prices[t])
+                asset["lastPriceUpdate"] = today_iso
+                assets[i] = asset
+                changed = True
+        if changed:
+            invest["assets"] = assets
+            state["investments"] = invest
+            transaction.set(
+                ref,
+                {"state": state, "updatedAt": _fs.SERVER_TIMESTAMP},
+                merge=True,
+            )
+        return assets
+
+    return _txn(db.transaction())
+
+
+async def atualizar_cotacoes_carteira(
+    session: AsyncSession, user, prices: dict[str, float],
+) -> list[dict]:
+    """Persiste as cotações no Firestore (currentPrice) e devolve os assets
+    pós-atualização. Levanta NotConfiguredError se sem uid/SA."""
+    uid = _require_uid(user)
+    db = await _get_db(session)
+    return await _run_blocking(_update_prices_in_transaction, db, uid, prices)
+
+
+def format_carteira_review(assets: list[dict], prices: dict[str, float]) -> str | None:
+    """Monta a revisão da carteira: por ativo cotável com posição, mostra
+    quanto foi investido (qty×PM) vs valor de mercado atual (qty×preço) e o
+    P&L. Só inclui ativos que receberam cotação fresca em `prices`.
+    Retorna None se nada a mostrar."""
+    rows: list[tuple[dict, dict]] = []
+    for a in assets:
+        if (a.get("class") or "") not in QUOTABLE_CLASSES:
+            continue
+        t = (a.get("ticker") or "").strip().upper()
+        if t not in prices:
+            continue
+        m = _compute_asset_metrics(a)
+        if m["qty"] <= 0:
+            continue
+        rows.append((a, m))
+    if not rows:
+        return None
+
+    rows.sort(key=lambda x: x[1]["position"], reverse=True)
+    total_inv = sum(m["invested"] for _, m in rows)
+    total_mkt = sum(m["position"] for _, m in rows)
+    total_pnl = total_mkt - total_inv
+
+    lines: list[str] = []
+    for a, m in rows:
+        qty = m["qty"]
+        qty_s = f"{qty:.4f}".rstrip("0").rstrip(".") if qty != int(qty) else str(int(qty))
+        pnl = m["pnl"]
+        emoji = "🟢" if pnl > 0 else ("🔴" if pnl < 0 else "⚪")
+        pct = (pnl / m["invested"] * 100) if m["invested"] > 0 else 0.0
+        sign = "+" if pnl >= 0 else "−"
+        lines.append(
+            f"• <b>{a.get('ticker', '?')}</b> ({qty_s}) — "
+            f"investido {_fmt_brl(m['invested'])} → mercado {_fmt_brl(m['position'])} "
+            f"{emoji} {sign}{_fmt_brl(abs(pnl))} ({sign}{abs(pct):.1f}%)"
+        )
+    tsign = "+" if total_pnl >= 0 else "−"
+    tpct = (total_pnl / total_inv * 100) if total_inv > 0 else 0.0
+    lines.append(
+        f"<b>Total</b>: investido {_fmt_brl(total_inv)} → mercado "
+        f"{_fmt_brl(total_mkt)} ({tsign}{_fmt_brl(abs(total_pnl))} · {tsign}{abs(tpct):.1f}%)"
+    )
+    return "\n".join(lines)
+
+
 # ---- Fim Investimentos ----
 
 
