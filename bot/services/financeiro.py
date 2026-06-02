@@ -749,11 +749,10 @@ async def atualizar_cotacoes_carteira(
 
 
 def format_carteira_review(assets: list[dict], prices: dict[str, float]) -> str | None:
-    """Monta a revisão da carteira como cartões por ativo (texto normal,
-    sem bloco monoespaçado): emoji + ticker + qty na 1ª linha, e três linhas
-    rotuladas (Investido / Mercado / Resultado) com PM e preço atual em
-    parênteses pra contexto. Total destacado por separador.
-    Retorna None se nada a mostrar."""
+    """Monta a revisão da carteira como TABELA alinhada (bloco monoespaçado
+    <pre> do Telegram): por ativo cotável com posição, mostra investido,
+    valor de mercado atual e P&L (% + emoji). Só inclui ativos que receberam
+    cotação fresca em `prices`. Retorna None se nada a mostrar."""
     rows: list[tuple[dict, dict]] = []
     for a in assets:
         if (a.get("class") or "") not in QUOTABLE_CLASSES:
@@ -773,42 +772,39 @@ def format_carteira_review(assets: list[dict], prices: dict[str, float]) -> str 
     total_mkt = sum(m["position"] for _, m in rows)
     total_pnl = total_mkt - total_inv
 
-    def _qty_s(q: float) -> str:
-        return (f"{q:.4f}".rstrip("0").rstrip(".")
-                if q != int(q) else str(int(q)))
-
-    def _num(v: float) -> str:
-        # "32,00" (sem prefixo R$ — pra parênteses de PM/preço unit.).
+    def _brl_plain(v: float) -> str:
+        # "3.200,00" sem o prefixo R$ (a coluna já é monetária).
         return f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-    def _pct_br(p: float, sign: str) -> str:
-        return f"{sign}{abs(p):.1f}%".replace(".", ",")
-
-    blocks: list[str] = []
-    for a, m in rows:
-        pnl = m["pnl"]
-        emoji = "🟢" if pnl > 0 else ("🔴" if pnl < 0 else "⚪")
+    def _pct(pnl: float, base: float) -> str:
+        p = (pnl / base * 100) if base > 0 else 0.0
         sign = "+" if pnl >= 0 else "−"
-        pct = (pnl / m["invested"] * 100) if m["invested"] > 0 else 0.0
-        ticker = a.get("ticker", "?")
-        qty = m["qty"]
-        block = (
-            f"{emoji} <b>{ticker}</b> · {_qty_s(qty)} cotas\n"
-            f"   Investido  {_fmt_brl(m['invested'])}  (PM {_num(m['pm'])})\n"
-            f"   Mercado    {_fmt_brl(m['position'])}  ({_num(m['currentPrice'])})\n"
-            f"   Resultado  {sign}{_fmt_brl(abs(pnl))}  ({_pct_br(pct, sign)})"
-        )
-        blocks.append(block)
+        emoji = "🟢" if pnl > 0 else ("🔴" if pnl < 0 else "⚪")
+        return f"{sign}{abs(p):.1f}%".replace(".", ",") + f" {emoji}"
 
-    tsign = "+" if total_pnl >= 0 else "−"
-    tpct = (total_pnl / total_inv * 100) if total_inv > 0 else 0.0
-    total_block = (
-        "━━━━━━━━━━━━━━━\n"
-        f"<b>Total</b>  {_fmt_brl(total_inv)} → {_fmt_brl(total_mkt)}\n"
-        f"{tsign}{_fmt_brl(abs(total_pnl))}  ({_pct_br(tpct, tsign)})"
+    # Larguras das colunas numéricas (alinhadas à direita).
+    tickers = [a.get("ticker", "?") for a, _ in rows] + ["Total"]
+    inv_strs = [_brl_plain(m["invested"]) for _, m in rows] + [_brl_plain(total_inv)]
+    mkt_strs = [_brl_plain(m["position"]) for _, m in rows] + [_brl_plain(total_mkt)]
+    w_tick = max(len("Ativo"), *(len(t) for t in tickers))
+    w_inv = max(len("Investido"), *(len(s) for s in inv_strs))
+    w_mkt = max(len("Mercado"), *(len(s) for s in mkt_strs))
+
+    out: list[str] = ["<pre>"]
+    out.append(f" {'Ativo':<{w_tick}}  {'Investido':>{w_inv}}  {'Mercado':>{w_mkt}}   P&L")
+    for (a, m), inv_s, mkt_s in zip(rows, inv_strs[:-1], mkt_strs[:-1]):
+        out.append(
+            f" {a.get('ticker', '?'):<{w_tick}}  {inv_s:>{w_inv}}  {mkt_s:>{w_mkt}}   "
+            f"{_pct(m['pnl'], m['invested'])}"
+        )
+    sep_len = w_tick + w_inv + w_mkt + 13
+    out.append(" " + "─" * sep_len)
+    out.append(
+        f" {'Total':<{w_tick}}  {inv_strs[-1]:>{w_inv}}  {mkt_strs[-1]:>{w_mkt}}   "
+        f"{_pct(total_pnl, total_inv)}"
     )
-    blocks.append(total_block)
-    return "\n\n".join(blocks)
+    out.append("</pre>")
+    return "\n".join(out)
 
 
 # ---- Fim Investimentos ----
