@@ -12,6 +12,7 @@ memória; rotação dispara reinit no próximo uso.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import re
@@ -270,10 +271,20 @@ def _require_uid(user) -> str:
     return user.firebase_uid
 
 
+# Executor DEDICADO pro firebase-admin (síncrono, com chamadas gRPC ao Google
+# que podem demorar). Isolar do executor default impede que o Firestore
+# monopolize as threads que o aiohttp usa pra resolver DNS dos envios ao
+# Telegram (senão os sends estouram timeout parecendo erro de rede).
+_FB_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="firebase"
+)
+
+
 def _run_blocking(fn, *args, **kwargs):
-    """firebase_admin é síncrono; rodar no executor pra não travar o loop."""
+    """firebase_admin é síncrono; rodar num executor dedicado pra não travar o
+    loop nem disputar threads com DNS/LLM no executor default."""
     loop = asyncio.get_running_loop()
-    return loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+    return loop.run_in_executor(_FB_EXECUTOR, lambda: fn(*args, **kwargs))
 
 
 def _append_in_transaction(db, uid: str, array_name: str, entry: dict) -> None:

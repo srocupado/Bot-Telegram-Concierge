@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import logging
 from datetime import datetime
@@ -93,6 +94,20 @@ async def _notify_restart(bot: Bot) -> None:
 async def main() -> None:
     setup_logging(settings.log_level)
     logger.info("starting concierge bot")
+
+    # O executor default é compartilhado por: resolução de DNS do aiohttp
+    # (getaddrinfo, usado em TODO send pro Telegram), chamadas de LLM
+    # (asyncio.to_thread) e — antes do executor dedicado — Firestore. No
+    # Orange Pi o pool default tem só ~8 threads (núcleos+4); com 2 usuários +
+    # chamadas LLM/Firestore lentas em paralelo, ele saturava e o getaddrinfo
+    # dos envios ficava na fila → "TelegramNetworkError: Request timeout"
+    # (parecia rede, era falta de thread). Folga generosa resolve.
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(
+        concurrent.futures.ThreadPoolExecutor(
+            max_workers=32, thread_name_prefix="default"
+        )
+    )
 
     await init_db()
 
