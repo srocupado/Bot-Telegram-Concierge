@@ -61,6 +61,12 @@ class ToolContext:
     # Setado por zerar_lista_compras: o handler anexa botões Sim/Cancelar em
     # vez de apagar na hora (evita o LLM zerar a lista sem confirmação).
     confirm_clear_shopping: bool = False
+    # Setado por consultar_transito quando a origem não é casa/trabalho explícito:
+    # em vez de assumir HOME_COORDS silenciosamente, o handler anexa o teclado
+    # "📍 Enviar localização" (mesma UX do /rota) e registra o pending route.
+    # A tool já preencheu pending_routes; aqui o handler só precisa montar o
+    # teclado e atrelar à mensagem.
+    request_location: bool = False
 
 
 ToolHandler = Callable[[dict, ToolContext], Awaitable[str]]

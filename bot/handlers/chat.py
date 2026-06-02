@@ -268,13 +268,19 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
     if ctx.direct_html:
         memory.append(chat_id, "user", user_text)
         memory.append(chat_id, "assistant", ctx.direct_html)
+        loc_kb = None
+        if ctx.request_location:
+            from bot.handlers.route import _build_keyboard
+            loc_kb = _build_keyboard()
         try:
             await message.answer(
                 ctx.direct_html, parse_mode="HTML", disable_web_page_preview=True,
+                reply_markup=loc_kb,
             )
         except Exception:
             await message.answer(
                 ctx.direct_html, parse_mode=None, disable_web_page_preview=True,
+                reply_markup=loc_kb,
             )
         return
 

@@ -889,8 +889,12 @@ async def _h_consultar_congresso(_args: dict, ctx: ToolContext) -> str:
 async def _h_consultar_transito(args: dict, ctx: ToolContext) -> str:
     origem = (args.get("origem") or "").strip()
     destino = (args.get("destino") or "").strip()
-    if not origem or not destino:
-        return "erro: parâmetros 'origem' e 'destino' são obrigatórios"
+    if not destino:
+        return "erro: parâmetro 'destino' é obrigatório"
+    if not origem:
+        # Sem origem explícita = assume "localização atual do usuário" — vai
+        # pedir GPS via teclado (mesmo fluxo do /rota), em vez de chutar HOME.
+        origem = "minha_localizacao"
 
     # Caso casa↔trabalho: devolve a MESMA mensagem do /transito_agora (2 rotas,
     # formato HTML) verbatim, em vez de deixar o LLM parafrasear.
@@ -925,6 +929,43 @@ async def _h_consultar_transito(args: dict, ctx: ToolContext) -> str:
         ctx.direct_html = format_traffic_message_dual(pref, alt, label)
         ctx.short_circuit = True
         return "ok: trânsito entregue ao usuário (não escreva nada, a mensagem já foi enviada)"
+
+    # Origem implícita / "minha localização" / "daqui" / "atual" → pede GPS
+    # ao usuário (mesmo fluxo do /rota), em vez de assumir HOME silenciosamente.
+    LOC_NOW = {"minha_localizacao", "minha localizacao", "minha localização",
+               "atual", "agora", "daqui", "aqui", "onde estou", "current"}
+    if origem.lower() in LOC_NOW:
+        import html as _html
+        from bot.services.route_pending import pending_routes
+
+        # Resolve destino pra label/coords (casa/trabalho = atalho conhecido;
+        # qualquer outra coisa vira raw_query a geocodar quando a localização chegar).
+        dest_label = destino
+        dest_coords: str | None = None
+        if d_low == "casa":
+            if not settings.home_coords:
+                return "erro: HOME_COORDS não configurado pra atalho 'casa'"
+            dest_label, dest_coords = "casa", settings.home_coords
+        elif d_low == "trabalho":
+            if not settings.work_coords:
+                return "erro: WORK_COORDS não configurado pra atalho 'trabalho'"
+            dest_label, dest_coords = "trabalho", settings.work_coords
+        if not settings.google_maps_api_key:
+            return "erro: GOOGLE_MAPS_API_KEY não configurada"
+
+        pending_routes.put(
+            user_id=ctx.user.id,
+            label=dest_label,
+            raw_query=destino,
+            resolved_coords=dest_coords,
+        )
+        ctx.direct_html = (
+            f"📍 Toque para enviar sua localização e ver a rota até "
+            f"<b>{_html.escape(dest_label)}</b>."
+        )
+        ctx.short_circuit = True
+        ctx.request_location = True
+        return "ok: pedi localização ao usuário (não escreva nada, a mensagem já foi enviada)"
 
     # Atalhos: 'casa' e 'trabalho' viram HOME_COORDS / WORK_COORDS.
     aliases = {"casa": settings.home_coords, "trabalho": settings.work_coords}
@@ -1290,23 +1331,37 @@ TOOLS: list[Tool] = [
     Tool(
         name="consultar_transito",
         description=(
-            "Calcula tempo atual de viagem entre origem e destino. "
-            "Origem/destino podem ser 'lat,lng', endereço, ou os atalhos "
-            "'casa'/'trabalho' (mapeiam pra HOME_COORDS/WORK_COORDS do servidor)."
+            "Calcula tempo atual de viagem entre origem e destino.\n"
+            "REGRA DE ORIGEM (importante):\n"
+            "• Se o usuário disser explicitamente 'de casa', 'saindo de casa', "
+            "'do trabalho' → passe origem='casa' ou origem='trabalho'.\n"
+            "• Se o usuário NÃO especificar a origem ('rota pro Congresso', "
+            "'como chegar na Av. Paulista', 'trânsito até o aeroporto'), "
+            "passe origem='minha_localizacao' (ou omita o parâmetro) — "
+            "o servidor vai PEDIR a localização atual via GPS ao usuário "
+            "(mesma UX do /rota). NÃO chute 'casa' nesses casos.\n"
+            "• Apenas o caso especial casa↔trabalho usa as coordenadas do "
+            "servidor (HOME/WORK_COORDS) e devolve a comparação verbatim "
+            "do /transito_agora.\n"
+            "Destino: 'casa', 'trabalho', 'lat,lng' ou endereço/POI livre."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "origem": {
                     "type": "string",
-                    "description": "Origem: 'casa', 'trabalho', 'lat,lng' ou endereço",
+                    "description": (
+                        "'casa' | 'trabalho' | 'minha_localizacao' | 'lat,lng' "
+                        "| endereço. Default 'minha_localizacao' quando o "
+                        "usuário não diz de onde está saindo."
+                    ),
                 },
                 "destino": {
                     "type": "string",
-                    "description": "Destino: 'casa', 'trabalho', 'lat,lng' ou endereço",
+                    "description": "'casa' | 'trabalho' | 'lat,lng' | endereço / POI",
                 },
             },
-            "required": ["origem", "destino"],
+            "required": ["destino"],
         },
         handler=_h_consultar_transito,
     ),
