@@ -178,6 +178,7 @@ def format_summary(summary: dict) -> str:
             f"(dia {summary['dias_passados']}/7 da semana — "
             f"{summary['dias_restantes']} dia(s) ainda por vir)"
         )
+    lines.append("")  # linha em branco antes da lista de dias
     for d, groups, cardio in summary["por_dia"]:
         if hoje is not None and d > hoje:
             marker = "futuro"
