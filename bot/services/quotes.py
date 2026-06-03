@@ -48,7 +48,10 @@ async def fetch_quotes(tickers: list[str]) -> dict[str, float]:
             resp.raise_for_status()
             data = resp.json()
     except httpx.HTTPStatusError as e:
-        raise QuotesError(f"brapi HTTP {e.response.status_code}") from e
+        body = (e.response.text or "").strip()[:300]
+        raise QuotesError(
+            f"brapi HTTP {e.response.status_code}: {body or '(sem corpo)'}"
+        ) from e
     except Exception as e:
         raise QuotesError(f"brapi indisponível: {e}") from e
 
