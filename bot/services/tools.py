@@ -376,7 +376,12 @@ async def _h_registrar_treino(args: dict, ctx: ToolContext) -> str:
 
 async def _h_consultar_treinos(_args: dict, ctx: ToolContext) -> str:
     summary = await summary_current_week(ctx.session, ctx.user.id, ctx.tz)
-    return "ok: " + format_summary(summary)
+    # Saída idêntica entre providers: o handler envia format_summary verbatim
+    # (mesmo padrão usado em consultar_congresso e consultar_transito casa↔trabalho).
+    # Sem isso, modelos como gemini-2.5-flash reescrevem o resumo em prosa.
+    ctx.direct_html = format_summary(summary)
+    ctx.short_circuit = True
+    return "ok: resumo de treinos entregue ao usuário (não escreva nada, a mensagem já foi enviada)"
 
 
 async def _h_apagar_treino_dia(args: dict, ctx: ToolContext) -> str:
