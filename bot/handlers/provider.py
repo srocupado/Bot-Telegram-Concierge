@@ -104,16 +104,24 @@ async def cmd_voice_provider(
             label = prov_atual
         await message.answer(
             f"Transcrição de voz (STT): <b>{label}</b>\n\n"
-            "Use:\n"
-            "• <code>/voice gemini</code> · multimodal (faz voz→/comando)\n"
-            "• <code>/voice gemini &lt;variante&gt;</code> · ex.: <code>3.5</code>, "
-            "<code>3.1-lite</code>, <code>3.1-pro</code>, <code>flash</code>, "
-            "<code>lite</code> (2.5-flash-lite), <code>pro</code>\n"
-            "• <code>/voice openai</code> · Whisper/gpt-4o-transcribe, "
-            "transcrição literal (não dispara atalhos de slash)\n"
-            "• <code>/voice padrao</code> · volta ao default do .env\n\n"
-            "Se a cadeia Gemini falhar (503/timeout), o bot cai automaticamente "
-            "no Whisper como último recurso (não precisa trocar à mão).",
+            "<b>Comandos:</b>\n"
+            "<code>/voice</code> · mostra o atual\n"
+            "<code>/voice gemini</code> · provider gemini, submodelo do .env\n"
+            "<code>/voice gemini &lt;alias&gt;</code> · escolhe submodelo Gemini\n"
+            "<code>/voice openai</code> · Whisper / gpt-4o-transcribe\n"
+            "<code>/voice padrao</code> · reseta tudo (volta ao .env)\n\n"
+            "<b>Aliases do Gemini:</b>\n"
+            "<code>3.5</code> · <code>3.5-flash</code> → gemini-3.5-flash\n"
+            "<code>3.1-pro</code> → gemini-3.1-pro\n"
+            "<code>3.1-lite</code> → gemini-3.1-flash-lite\n"
+            "<code>pro</code> → gemini-2.5-pro\n"
+            "<code>flash</code> → gemini-2.5-flash\n"
+            "<code>lite</code> · <code>flash-lite</code> → gemini-2.5-flash-lite\n\n"
+            "<b>Diferenças entre providers:</b>\n"
+            "• <b>gemini</b>: multimodal, faz conversão voz→/comando.\n"
+            "• <b>openai</b>: transcrição literal (sem atalhos de slash).\n"
+            "• Se a cadeia Gemini falhar (503/timeout), o bot cai "
+            "automaticamente no Whisper como último recurso.",
             parse_mode="HTML",
         )
         return
