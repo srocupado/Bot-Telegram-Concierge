@@ -31,6 +31,10 @@ class User(Base):
     # Provider de transcrição de voz (/voice gemini|openai). NULL = segue
     # VOICE_STT_PROVIDER do .env.
     voice_stt_provider: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Submodelo Gemini de STT (/voice gemini <variante>). NULL = segue
+    # VOICE_STT_MODEL do .env. Só vale quando voice_stt_provider="gemini" ou
+    # quando o provider efetivo for gemini (default).
+    voice_stt_model: Mapped[str | None] = mapped_column(String(48), nullable=True)
     timezone: Mapped[str] = mapped_column(String(64), default="America/Sao_Paulo", nullable=False)
 
     # Trânsito (replicado do Telegram-Travels)

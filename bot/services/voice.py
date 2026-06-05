@@ -129,10 +129,15 @@ async def _transcribe_openai(audio_bytes: bytes, mime_type: str) -> str:
 
 
 async def transcribe(
-    audio_bytes: bytes, mime_type: str = "audio/ogg", *, provider: str | None = None,
+    audio_bytes: bytes,
+    mime_type: str = "audio/ogg",
+    *,
+    provider: str | None = None,
+    model: str | None = None,
 ) -> str:
     """Transcreve áudio. `provider` ("gemini"|"openai") sobrepõe o default
-    VOICE_STT_PROVIDER. gemini = multimodal (faz conversão p/ comando);
+    VOICE_STT_PROVIDER; `model` sobrepõe VOICE_STT_MODEL (vale só pro
+    provider gemini). gemini = multimodal (faz conversão p/ comando);
     openai = Whisper/gpt-4o-transcribe (transcrição literal).
 
     No Gemini, em 503/sobrecarga tenta de novo com backoff e cai num modelo
@@ -167,7 +172,8 @@ async def transcribe(
         )
         return (resp.text or "").strip()
 
-    models = [settings.voice_stt_model]
+    primary = (model or settings.voice_stt_model or "").strip() or settings.voice_stt_model
+    models = [primary]
     for m in _STT_FALLBACK_MODELS:
         if m not in models:
             models.append(m)

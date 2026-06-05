@@ -220,18 +220,22 @@ async def cmd_voice(message: Message, user: User, session: AsyncSession) -> None
         return
 
     stt_provider = user.voice_stt_provider or settings.voice_stt_provider
+    stt_model = user.voice_stt_model or settings.voice_stt_model
     try:
         logger.info(
             "voice transcribing",
-            extra={"provider": stt_provider, "model": settings.voice_stt_model},
+            extra={"provider": stt_provider, "model": stt_model},
         )
         transcribed = await asyncio.wait_for(
-            transcribe(audio_bytes, mime_type=mime_type, provider=stt_provider),
+            transcribe(
+                audio_bytes, mime_type=mime_type,
+                provider=stt_provider, model=stt_model,
+            ),
             timeout=90,
         )
         logger.info("voice transcribe done", extra={"len": len(transcribed)})
     except asyncio.TimeoutError:
-        logger.warning("voice transcribe timed out (model=%s)", settings.voice_stt_model)
+        logger.warning("voice transcribe timed out (model=%s)", stt_model)
         await message.answer(_STT_ERROR)
         return
     except VoiceTranscribeError:

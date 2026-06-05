@@ -76,40 +76,100 @@ async def cmd_provider(
 
 _VOICE_STT_PROVIDERS = {"gemini", "openai"}
 
+# Variantes de submodelo Gemini pra STT (mesmos aliases do /provider).
+_VOICE_GEMINI_VARIANTS = _GEMINI_VARIANTS
+
 
 @router.message(Command("voice"))
 async def cmd_voice_provider(
     message: Message, command: CommandObject, user: User, session: AsyncSession
 ) -> None:
-    """Troca o provider de transcrição de voz (STT) por usuário.
-    /voice gemini | openai. Sem arg = mostra o atual."""
-    arg = (command.args or "").strip().lower()
-    if not arg:
-        atual = user.voice_stt_provider or settings.voice_stt_provider
+    """Troca o provider e/ou submodelo de transcrição de voz (STT) por usuário.
+
+    /voice                        → mostra atual
+    /voice gemini                 → provider gemini, submodelo = default do .env
+    /voice gemini <variante>      → provider gemini + submodelo específico
+                                    (ex.: '/voice gemini lite' = 2.5-flash-lite,
+                                          '/voice gemini 3.5'  = 3.5-flash)
+    /voice openai                 → Whisper (não tem submodelo aqui)
+    /voice padrao                 → limpa ambos, volta ao .env
+    """
+    tokens = (command.args or "").strip().lower().split()
+    if not tokens:
+        prov_atual = user.voice_stt_provider or settings.voice_stt_provider
+        model_atual = user.voice_stt_model or settings.voice_stt_model
+        if prov_atual == "gemini":
+            label = f"gemini ({model_atual})"
+        else:
+            label = prov_atual
         await message.answer(
-            f"Transcrição de voz (STT): <b>{atual}</b>\n\n"
-            "Use: /voice gemini | openai\n"
-            "• <b>gemini</b>: multimodal, converte voz→/comando (atalhos), mas "
-            "pode falhar quando o Gemini está sobrecarregado (503).\n"
-            "• <b>openai</b>: Whisper/gpt-4o-transcribe, transcrição literal e "
-            "estável (não dispara atalhos de slash por voz).",
+            f"Transcrição de voz (STT): <b>{label}</b>\n\n"
+            "Use:\n"
+            "• <code>/voice gemini</code> · multimodal (faz voz→/comando)\n"
+            "• <code>/voice gemini &lt;variante&gt;</code> · ex.: <code>3.5</code>, "
+            "<code>3.1-lite</code>, <code>3.1-pro</code>, <code>flash</code>, "
+            "<code>lite</code> (2.5-flash-lite), <code>pro</code>\n"
+            "• <code>/voice openai</code> · Whisper/gpt-4o-transcribe, "
+            "transcrição literal (não dispara atalhos de slash)\n"
+            "• <code>/voice padrao</code> · volta ao default do .env\n\n"
+            "Se a cadeia Gemini falhar (503/timeout), o bot cai automaticamente "
+            "no Whisper como último recurso (não precisa trocar à mão).",
             parse_mode="HTML",
         )
         return
+
+    arg = tokens[0]
+    variant = tokens[1] if len(tokens) > 1 else None
+
     if arg in ("padrao", "padrão", "auto", "limpar", "none"):
         user.voice_stt_provider = None
+        user.voice_stt_model = None
         await session.commit()
         await message.answer(
-            f"✅ STT volta ao default (<b>{settings.voice_stt_provider}</b>).",
+            f"✅ STT volta ao default "
+            f"(<b>{settings.voice_stt_provider}</b> · {settings.voice_stt_model}).",
             parse_mode="HTML",
         )
         return
+
     if arg not in _VOICE_STT_PROVIDERS:
-        await message.answer("Opção inválida. Use: /voice gemini | openai", parse_mode=None)
+        await message.answer(
+            "Opção inválida. Use: /voice gemini [variante] | openai | padrao",
+            parse_mode=None,
+        )
         return
+
+    if arg == "gemini":
+        if variant is None:
+            user.voice_stt_model = None  # volta ao VOICE_STT_MODEL do .env
+        elif variant in _VOICE_GEMINI_VARIANTS:
+            user.voice_stt_model = _VOICE_GEMINI_VARIANTS[variant]
+        else:
+            opts = ", ".join(sorted(set(_VOICE_GEMINI_VARIANTS.keys())))
+            await message.answer(
+                f"Variante inválida. Opções: {opts}", parse_mode=None,
+            )
+            return
+    else:
+        # openai não tem submodelo configurável aqui (VOICE_STT_OPENAI_MODEL global).
+        if variant is not None:
+            await message.answer(
+                "OpenAI não aceita submodelo via /voice (use VOICE_STT_OPENAI_MODEL no .env).",
+                parse_mode=None,
+            )
+            return
+        # Trocando pra openai: limpa o submodelo Gemini pra não confundir o /voice atual.
+        user.voice_stt_model = None
+
     user.voice_stt_provider = arg
     await session.commit()
-    await message.answer(f"✅ Transcrição de voz definida como <b>{arg}</b>.", parse_mode="HTML")
+    if arg == "gemini":
+        label = f"gemini ({user.voice_stt_model or settings.voice_stt_model})"
+    else:
+        label = arg
+    await message.answer(
+        f"✅ Transcrição de voz definida como <b>{label}</b>.", parse_mode="HTML",
+    )
 
 
 @router.message(Command("provider_visao"))
