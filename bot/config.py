@@ -81,6 +81,10 @@ class Settings(BaseSettings):
     proactive_nudge_cooldown_days: int = Field(3, alias="PROACTIVE_NUDGE_COOLDOWN_DAYS")
     proactive_use_llm: bool = Field(False, alias="PROACTIVE_USE_LLM")
 
+    # Travels (busca de voos/hotéis via SerpAPI — porte do Telegram-Travels)
+    serpapi_key: SecretStr | None = Field(None, alias="SERPAPI_KEY")
+    travels_alert_hour: int = Field(8, alias="TRAVELS_ALERT_HOUR")
+
     # Scheduler
     scheduler_tick_seconds: int = Field(60, alias="SCHEDULER_TICK_SECONDS")
     timezone: str = Field("America/Sao_Paulo", alias="TIMEZONE")

@@ -39,6 +39,7 @@ from bot.services.weather import (
     fetch_today_weather,
     format_weather_line,
 )
+from bot.services.travels.watches import run_travel_alerts
 
 logger = logging.getLogger(__name__)
 
@@ -536,6 +537,11 @@ async def tick(
         await run_proactive(sessionmaker, bot)
     except Exception:
         logger.exception("proactive crashed")
+
+    try:
+        await run_travel_alerts(sessionmaker, bot)
+    except Exception:
+        logger.exception("travel alerts crashed")
 
 
 async def scheduler_loop(
