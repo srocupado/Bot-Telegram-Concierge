@@ -39,6 +39,7 @@ from bot.services.weather import (
     fetch_today_weather,
     format_weather_line,
 )
+from bot.services.travels.watches import run_travel_alerts
 
 logger = logging.getLogger(__name__)
 
@@ -357,8 +358,16 @@ async def run_traffic_watch(
             continue
         if not should_alert(current_s, base):
             continue
-        if u.last_traffic_alert_at and u.last_traffic_alert_at >= cooldown_cut:
-            continue
+        # SQLite devolve last_traffic_alert_at naive → comparar com cooldown_cut
+        # (aware) lança TypeError. Normaliza antes (assume UTC).
+        if u.last_traffic_alert_at is not None:
+            last_alert = (
+                u.last_traffic_alert_at
+                if u.last_traffic_alert_at.tzinfo
+                else u.last_traffic_alert_at.replace(tzinfo=timezone.utc)
+            )
+            if last_alert >= cooldown_cut:
+                continue
 
         delta_pct = round((current_s / base - 1) * 100)
         text = (
@@ -397,6 +406,11 @@ async def run_purge(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
         n = await purge_old_notices(session)
         if n:
             logger.info("purged %d old proactive_notices", n)
+    from bot.services.travels.watches import purge_old_travel_data
+    async with sessionmaker() as session:
+        n = await purge_old_travel_data(session)
+        if n:
+            logger.info("purged %d old travel snapshots/alerts", n)
 
 
 async def run_card_closing_summary(
@@ -536,6 +550,11 @@ async def tick(
         await run_proactive(sessionmaker, bot)
     except Exception:
         logger.exception("proactive crashed")
+
+    try:
+        await run_travel_alerts(sessionmaker, bot)
+    except Exception:
+        logger.exception("travel alerts crashed")
 
 
 async def scheduler_loop(

@@ -69,16 +69,17 @@ def _fetch_mp_page(client: httpx.Client, url: str) -> tuple[str, str]:
         lines = [ln.strip() for ln in soup.get_text("\n", strip=True).splitlines() if ln.strip()]
         ementa = ""
         found_title = False
-        for ln in lines[:40]:
-            if re.match(r"MEDIDA PROVIS[ÓO]RIA\s+N", ln, re.I):
+        for ln in lines[:120]:
+            if re.search(r"MEDIDA\s+PROVIS[ÓO]RIA\s+N", ln, re.I):
                 found_title = True
                 continue
             if found_title and len(ln) > 20:
                 if not re.match(r"(A PRESIDENTA|O PRESIDENTE|O VICE)", ln, re.I):
                     ementa = ln
                     break
-        if not ementa:
-            ementa = lines[0] if lines else ""
+        # Sem fallback p/ lines[0]: a 1ª linha da página costuma ser o nome do
+        # arquivo ('mpv1365') ou navegação — lixo como ementa. Devolvendo ""
+        # aqui, _build_mp_dict cai na ementa derivada do excerpt do DOU.
         return ementa, "\n".join(lines[:500])
     except Exception as exc:
         logger.warning("dou: erro ao buscar página planalto %s: %s", url, exc)
@@ -103,10 +104,11 @@ def _build_mp_dict(
     target_date: date, pub_date: date | None = None,
 ) -> dict:
     period = _planalto_period(year)
-    ano2d = str(year)[-2:]
-    planalto_url = f"{PLANALTO_BASE}/ccivil_03/_Ato{period}/{year}/Mpv/mpv{numero}-{ano2d}.htm"
+    planalto_url = f"{PLANALTO_BASE}/ccivil_03/_ato{period}/{year}/mpv/mpv{numero}.htm"
     ementa_page, texto_planalto = _fetch_mp_page(client, planalto_url)
-    if ementa_page:
+    # Ementa válida tem espaços e é razoavelmente longa; rejeita lixo como
+    # 'mpv1365' (nome do arquivo) que às vezes vaza da extração da página.
+    if ementa_page and " " in ementa_page and len(ementa_page) > 20:
         ementa = ementa_page
     else:
         stripped = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text_excerpt)).strip()
@@ -314,6 +316,24 @@ _NOTA_SYSTEM = (
     "para operacionalizar o dispositivo.\n"
     "Descrição que apenas parafraseia 'acrescenta o inciso X ao art. Y' SEM "
     "explicar o que isso muda na vida real é INSUFICIENTE e deve ser evitada.\n\n"
+    "TIPOLOGIAS (use a checklist da que se aplicar; podem coexistir numa "
+    "mesma MP — cubra todas as que incidirem):\n"
+    "A. ALTERAÇÃO DE LEI(S) — para cada dispositivo alterado:\n"
+    "   (i) dispositivo (lei + artigo/§/inciso); (ii) o que muda no texto;\n"
+    "   (iii) efeito prático; (iv) histórico da lei (MPs/leis anteriores que\n"
+    "   já a modificaram); (v) direitos, obrigações, sanções ou mecanismos\n"
+    "   criados; (vi) normas infralegais ainda necessárias.\n"
+    "B. CRIAÇÃO DE REGIME/PROGRAMA:\n"
+    "   (i) estrutura por capítulos/eixos; (ii) operador (quem executa);\n"
+    "   (iii) fiscalizador (quem controla); (iv) prazos, limites, sanções;\n"
+    "   (v) mecanismos inéditos vs. já existentes na ordem jurídica;\n"
+    "   (vi) infralegais pendentes para operacionalizar.\n"
+    "C. SUBVENÇÃO ECONÔMICA:\n"
+    "   (i) valor por unidade (R$/litro, R$/tonelada, R$/kWh, etc.);\n"
+    "   (ii) limite global; (iii) beneficiários elegíveis; (iv) operador\n"
+    "   (ANP, BNDES, BB, Caixa, etc.); (v) vigência e regra de prorrogação;\n"
+    "   (vi) mecanismo de apuração; (vii) condicionantes (repasse ao\n"
+    "   consumidor, habilitação prévia, comprovação, prestação de contas).\n\n"
     "ESTRUTURA (5 parágrafos):\n"
     "1. CONTEXTO — por que a MP foi editada: evento motivador, dados "
     "quantitativos, atores políticos, MPs correlatas anteriores, conexão "

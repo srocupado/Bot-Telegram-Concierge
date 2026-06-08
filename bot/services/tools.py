@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from html import escape as _esc
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -69,6 +70,14 @@ from bot.services.workouts import (
     summary_current_week,
 )
 from bot.services.weather import WeatherError, fetch_today_weather, format_weather_line
+from bot.services.travels.tool_handlers import (
+    _h_buscar_hotel,
+    _h_buscar_voo,
+    _h_cancelar_watch_viagem,
+    _h_criar_watch_hotel,
+    _h_criar_watch_voo,
+    _h_listar_watches_viagem,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,10 +95,19 @@ async def _h_criar_tarefa(args: dict, ctx: ToolContext) -> str:
 
 
 async def _h_listar_tarefas(_args: dict, ctx: ToolContext) -> str:
+    # Listagem pura: envia direto (igual consultar_treinos/financeiro). Sem
+    # isso, modelos que param após a tool call deixam reply vazio → o handler
+    # manda "(sem resposta)" e o usuário não vê as tarefas.
     items = await list_open_tasks(ctx.session, ctx.user.id)
     if not items:
+        ctx.direct_html = "📭 Nenhuma tarefa aberta. É só me pedir pra criar uma."
+        ctx.short_circuit = True
         return "ok: nenhuma tarefa pendente"
-    return "ok: " + " | ".join(f"#{t.id} {t.text}" for t in items)
+    lines = ["📋 <b>Tarefas abertas</b>", ""]
+    lines.extend(f"• #{t.id} — {_esc(t.text)}" for t in items)
+    ctx.direct_html = "\n".join(lines)
+    ctx.short_circuit = True
+    return "ok: lista enviada ao usuário"
 
 
 async def _h_concluir_tarefa(args: dict, ctx: ToolContext) -> str:
@@ -1856,5 +1874,106 @@ TOOLS: list[Tool] = [
         ),
         parameters={"type": "object", "properties": {}},
         handler=_h_consultar_congresso,
+    ),
+    Tool(
+        name="buscar_voo",
+        description=(
+            "Busca passagem aérea agora via SerpAPI (Google Flights) e mostra "
+            "a melhor oferta. Use códigos IATA de aeroporto (BSB, GRU, GIG, JFK). "
+            "Datas em YYYY-MM-DD. `return_date` é opcional (sem ele, só ida). "
+            "Resposta vai pro usuário já formatada — não parafrasear."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "origin_iata": {"type": "string", "description": "IATA da origem (3 letras)"},
+                "destination_iata": {"type": "string", "description": "IATA do destino (3 letras)"},
+                "depart_date": {"type": "string", "description": "Data de ida YYYY-MM-DD"},
+                "return_date": {"type": "string", "description": "Data de volta YYYY-MM-DD (opcional)"},
+                "adults": {"type": "integer", "description": "Passageiros adultos (default 1)"},
+                "travel_class": {
+                    "type": "integer",
+                    "description": "1=econômica, 2=premium econômica, 3=executiva, 4=primeira",
+                },
+            },
+            "required": ["origin_iata", "destination_iata", "depart_date"],
+        },
+        handler=_h_buscar_voo,
+    ),
+    Tool(
+        name="buscar_hotel",
+        description=(
+            "Busca hotel agora via SerpAPI (Google Hotels) e mostra a melhor "
+            "diária. `location` é texto livre (cidade, bairro ou nome do hotel). "
+            "Datas em YYYY-MM-DD. Resposta vai pro usuário já formatada — não "
+            "parafrasear."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "location": {"type": "string", "description": "Cidade/bairro/hotel (ex: 'Paris', 'Hotel Fasano Rio')"},
+                "check_in": {"type": "string", "description": "YYYY-MM-DD"},
+                "check_out": {"type": "string", "description": "YYYY-MM-DD"},
+                "adults": {"type": "integer", "description": "Hóspedes adultos (default 2)"},
+            },
+            "required": ["location", "check_in", "check_out"],
+        },
+        handler=_h_buscar_hotel,
+    ),
+    Tool(
+        name="criar_watch_voo",
+        description=(
+            "Cria um monitor diário de preço de passagem. Toda manhã (8h BRT) "
+            "o bot verifica e avisa quando o preço cair abaixo do mínimo "
+            "histórico ou do `max_price` (se setado)."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "origin_iata": {"type": "string"},
+                "destination_iata": {"type": "string"},
+                "depart_date": {"type": "string", "description": "YYYY-MM-DD"},
+                "return_date": {"type": "string", "description": "YYYY-MM-DD (opcional)"},
+                "adults": {"type": "integer"},
+                "travel_class": {"type": "integer", "description": "1..4"},
+                "max_price": {"type": "number", "description": "Teto em BRL — alerta só dispara abaixo disso"},
+                "summary": {"type": "string", "description": "Rótulo curto (ex: 'férias julho BSB→GRU')"},
+            },
+            "required": ["origin_iata", "destination_iata", "depart_date"],
+        },
+        handler=_h_criar_watch_voo,
+    ),
+    Tool(
+        name="criar_watch_hotel",
+        description="Cria monitor diário de preço de hotel (mesma lógica do criar_watch_voo).",
+        parameters={
+            "type": "object",
+            "properties": {
+                "location": {"type": "string"},
+                "check_in": {"type": "string", "description": "YYYY-MM-DD"},
+                "check_out": {"type": "string", "description": "YYYY-MM-DD"},
+                "adults": {"type": "integer"},
+                "max_price": {"type": "number", "description": "Teto da diária em BRL"},
+                "summary": {"type": "string"},
+            },
+            "required": ["location", "check_in", "check_out"],
+        },
+        handler=_h_criar_watch_hotel,
+    ),
+    Tool(
+        name="listar_watches_viagem",
+        description="Lista todos os watches de viagem (voos + hotéis) ativos do usuário.",
+        parameters={"type": "object", "properties": {}},
+        handler=_h_listar_watches_viagem,
+    ),
+    Tool(
+        name="cancelar_watch_viagem",
+        description="Cancela (status=cancelled) um watch de viagem pelo id.",
+        parameters={
+            "type": "object",
+            "properties": {"id": {"type": "integer"}},
+            "required": ["id"],
+        },
+        handler=_h_cancelar_watch_viagem,
     ),
 ]

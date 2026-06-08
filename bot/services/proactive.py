@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.config import settings
 from bot.db.models import ProactiveNotice, Reminder, User, WorkoutLog
 from bot.services import shopping
-from bot.services.reminders import format_reminder_line
+from bot.services.reminders import as_utc, format_reminder_line
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,7 @@ class ProactiveFact:
     kind: str           # = ProactiveNotice.kind
     key: str            # = ProactiveNotice.key
     text: str           # linha já formatada (determinística)
+    date_iso: str | None = None  # MP: data de publicação no DOU (pro botão "gerar nota")
 
 
 # ──────────────────────── dedup ────────────────────────
@@ -117,7 +118,7 @@ async def collect_vencimentos(
     # o pagamento (sent=True) ou o vencimento passar. A trava run_key evita
     # repetir dentro da mesma janela.
     for r in rems:
-        key = f"{r.id}:{r.due_at.astimezone(tz).date().isoformat()}"
+        key = f"{r.id}:{as_utc(r.due_at).astimezone(tz).date().isoformat()}"
         facts.append(ProactiveFact("venc", "venc_rem", key,
                                     "⏳ " + format_reminder_line(r, user.timezone)))
 
@@ -161,6 +162,7 @@ async def collect_mp(
             facts.append(ProactiveFact(
                 "mp", "mp", key,
                 f"📜 MP {mp['numero']}/{mp['ano']}: {ementa}",
+                date_iso=d.isoformat(),
             ))
     return facts
 
@@ -394,11 +396,16 @@ async def run_for_user(
 
     text = await _redigir(user, _compose(facts, briefing=briefing))
 
-    # Botão de nota técnica só nas janelas regulares (data única = hoje).
+    # Botão de nota técnica quando houver MP nos facts. Usa a data da MP
+    # (não o `today` da execução), pra cobrir briefing que junta ontem+hoje.
+    # Se houver MPs de mais de uma data, usa a mais recente — o usuário ainda
+    # pode chamar /mp_dou_agora <data> pras outras.
     reply_markup = None
-    if not briefing and any(f.category == "mp" for f in facts):
+    mp_facts = [f for f in facts if f.category == "mp" and f.date_iso]
+    if mp_facts:
         from bot.handlers.dou_mp import nota_keyboard
-        reply_markup = nota_keyboard(today.isoformat())
+        latest_date = max(f.date_iso for f in mp_facts)
+        reply_markup = nota_keyboard(latest_date)
 
     sent = await _send(bot, user.id, text, reply_markup=reply_markup)
     logger.info("proactive: user %d window=%s %d fatos enviado=%s", user.id, window, len(facts), sent)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import JSON, BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from bot.db.base import Base
@@ -237,3 +237,56 @@ class WorkoutLog(Base):
     cardio_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     notes: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+
+class TravelWatch(Base):
+    """Monitor diário de preço de passagem aérea ou hotel via SerpAPI.
+
+    `kind` é 'flight' ou 'hotel'. `params` é JSON com os campos da busca:
+      flight: origin_iata, destination_iata (ou destination_iatas: list),
+              depart_date, return_date | window_start, window_end, nights,
+              adults, travel_class.
+      hotel:  location, check_in, check_out | window_start, window_end,
+              nights, adults.
+    Alerta dispara quando `last_price` < `min_price_seen` ou
+    `<= max_price` (se setado).
+    """
+
+    __tablename__ = "travel_watches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True, nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    params: Mapped[dict] = mapped_column(JSON, nullable=False)
+    max_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    currency: Mapped[str] = mapped_column(String(8), default="BRL", server_default="BRL", nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="active", server_default="active", index=True, nullable=False)
+    summary: Mapped[str] = mapped_column(String(256), default="", server_default="", nullable=False)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_alert_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    min_price_seen: Mapped[float | None] = mapped_column(Float, nullable=True)
+    snooze_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+
+class TravelPriceSnapshot(Base):
+    __tablename__ = "travel_price_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    watch_id: Mapped[int] = mapped_column(Integer, ForeignKey("travel_watches.id"), index=True, nullable=False)
+    price: Mapped[float] = mapped_column(Float, nullable=False)
+    currency: Mapped[str] = mapped_column(String(8), nullable=False)
+    raw: Mapped[dict] = mapped_column(JSON, nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+
+class TravelAlert(Base):
+    __tablename__ = "travel_alerts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    watch_id: Mapped[int] = mapped_column(Integer, ForeignKey("travel_watches.id"), index=True, nullable=False)
+    snapshot_id: Mapped[int] = mapped_column(Integer, ForeignKey("travel_price_snapshots.id"), nullable=False)
+    price: Mapped[float] = mapped_column(Float, nullable=False)
+    reason: Mapped[str] = mapped_column(String(64), nullable=False)
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
