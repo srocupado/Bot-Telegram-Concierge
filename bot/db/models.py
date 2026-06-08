@@ -57,6 +57,11 @@ class User(Base):
 
     # Monitor de MPs no Diário Oficial (Inlabs/DOU)
     dou_mp_subscribed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
+    # Override por usuário do motor da nota técnica (/dou_provider). NULL =
+    # segue DOU_MP_PROVIDER/DOU_MP_GEMINI_MODEL do .env. dou_mp_model só vale
+    # quando o provider efetivo for gemini.
+    dou_mp_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    dou_mp_model: Mapped[str | None] = mapped_column(String(48), nullable=True)
 
     # Agente proativo (opt-in): avisos automáticos (vencimentos, briefing, nudges, MP)
     proactive_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)

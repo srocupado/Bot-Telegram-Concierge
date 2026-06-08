@@ -443,12 +443,16 @@ def _nota_user_content(mp: dict, dossie: str) -> str:
     )
 
 
-async def generate_nota_tecnica(mp: dict) -> dict | None:
-    """Gera o conteúdo da nota técnica (pesquisa + redação estruturada),
-    roteando pelo provider de DOU_MP_PROVIDER. Retorna {ementa, p1_contexto,
-    ...} ou None se indisponível/falhar."""
-    if settings.dou_mp_provider == "gemini":
-        return await _gen_nota_gemini(mp)
+async def generate_nota_tecnica(
+    mp: dict, *, provider: str | None = None, gemini_model: str | None = None,
+) -> dict | None:
+    """Gera o conteúdo da nota técnica (pesquisa + redação estruturada).
+    `provider`/`gemini_model` são overrides por usuário (/dou_provider);
+    quando None, segue DOU_MP_PROVIDER/DOU_MP_GEMINI_MODEL do .env. Retorna
+    {ementa, p1_contexto, ...} ou None se indisponível/falhar."""
+    prov = (provider or settings.dou_mp_provider).lower()
+    if prov == "gemini":
+        return await _gen_nota_gemini(mp, model_override=gemini_model)
     return await _gen_nota_anthropic(mp)
 
 
@@ -495,11 +499,14 @@ _GEMINI_SCHEMA_PROPS = {
 }
 
 
-def _gemini_models() -> list[str]:
-    """Modelo principal + fallback (sem repetir)."""
-    models = [settings.dou_mp_gemini_model]
+def _gemini_models(primary: str | None = None) -> list[str]:
+    """Modelo principal + fallback (sem repetir). `primary` sobrepõe o
+    DOU_MP_GEMINI_MODEL do .env (override por usuário via /dou_provider);
+    o fallback continua sempre o do .env."""
+    main = primary or settings.dou_mp_gemini_model
+    models = [main]
     fb = settings.dou_mp_gemini_model_fallback
-    if fb and fb != settings.dou_mp_gemini_model:
+    if fb and fb != main:
         models.append(fb)
     return models
 
@@ -571,7 +578,7 @@ async def _pesquisar_contexto_gemini(client, mp: dict) -> str:
     return ""
 
 
-async def _gen_nota_gemini(mp: dict) -> dict | None:
+async def _gen_nota_gemini(mp: dict, *, model_override: str | None = None) -> dict | None:
     if not settings.gemini_api_key:
         logger.warning("dou: GEMINI_API_KEY ausente; nota pulada")
         return None
@@ -608,7 +615,7 @@ async def _gen_nota_gemini(mp: dict) -> dict | None:
         resp = client.models.generate_content(model=model, contents=user_content, config=config)
         return (resp.text or "").strip()
 
-    models = _gemini_models()
+    models = _gemini_models(model_override)
     last_exc: Exception | None = None
     for model in models:
         try:
@@ -815,7 +822,11 @@ async def deliver_to_user(
     async def _nota_e_docx(mp: dict) -> None:
         try:
             logger.info("dou: gerando nota técnica MP %s/%s…", mp["numero"], mp["ano"])
-            nota = await generate_nota_tecnica(mp)
+            nota = await generate_nota_tecnica(
+                mp,
+                provider=getattr(user, "dou_mp_provider", None),
+                gemini_model=getattr(user, "dou_mp_model", None),
+            )
             docx_bytes = await asyncio.to_thread(build_docx, mp, nota)
             await bot.send_document(
                 user.id,

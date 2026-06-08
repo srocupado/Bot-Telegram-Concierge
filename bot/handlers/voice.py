@@ -28,6 +28,7 @@ from bot.handlers.congress import (
 )
 from bot.handlers.ping import cmd_ping
 from bot.handlers.provider import cmd_provider
+from bot.handlers.dou_mp import cmd_dou_provider
 from bot.handlers.reminders import cmd_lembrar, cmd_lembretes
 from bot.handlers.reset import cmd_reset
 from bot.handlers.route import cmd_rota
@@ -136,6 +137,10 @@ async def _w_provider(message: Message, args: str, user: User, session: AsyncSes
     await cmd_provider(message, _cmd("provider", args), user, session)
 
 
+async def _w_dou_provider(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_dou_provider(message, _cmd("dou_provider", args), user, session)
+
+
 async def _w_reset(message: Message, args: str, user: User, session: AsyncSession) -> None:
     await cmd_reset(message)
 
@@ -168,6 +173,7 @@ _DISPATCH: dict[str, callable] = {
     "buscar": _w_buscar,
     "ping": _w_ping,
     "provider": _w_provider,
+    "dou_provider": _w_dou_provider,
     "reset": _w_reset,
     "start": _w_start,
     "help": _w_help,

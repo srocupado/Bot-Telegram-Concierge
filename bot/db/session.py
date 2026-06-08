@@ -111,6 +111,12 @@ async def _ensure_columns(conn) -> None:
     if "voice_stt_model" not in cols:
         await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN voice_stt_model VARCHAR(48)")
         logger.info("migrated: added users.voice_stt_model")
+    if "dou_mp_provider" not in cols:
+        await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN dou_mp_provider VARCHAR(32)")
+        logger.info("migrated: added users.dou_mp_provider")
+    if "dou_mp_model" not in cols:
+        await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN dou_mp_model VARCHAR(48)")
+        logger.info("migrated: added users.dou_mp_model")
 
     rem_cols = await conn.exec_driver_sql("PRAGMA table_info(reminders)")
     cols = {row[1] for row in rem_cols.fetchall()}
