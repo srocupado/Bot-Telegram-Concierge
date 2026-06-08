@@ -40,6 +40,7 @@ from bot.services.weather import (
     format_weather_line,
 )
 from bot.services.travels.watches import run_travel_alerts
+from bot.utils import as_utc
 
 logger = logging.getLogger(__name__)
 
@@ -358,16 +359,11 @@ async def run_traffic_watch(
             continue
         if not should_alert(current_s, base):
             continue
-        # SQLite devolve last_traffic_alert_at naive → comparar com cooldown_cut
-        # (aware) lança TypeError. Normaliza antes (assume UTC).
-        if u.last_traffic_alert_at is not None:
-            last_alert = (
-                u.last_traffic_alert_at
-                if u.last_traffic_alert_at.tzinfo
-                else u.last_traffic_alert_at.replace(tzinfo=timezone.utc)
-            )
-            if last_alert >= cooldown_cut:
-                continue
+        # SQLite devolve last_traffic_alert_at naive → as_utc normaliza pra
+        # poder comparar com cooldown_cut (aware) sem TypeError.
+        last_alert = as_utc(u.last_traffic_alert_at)
+        if last_alert is not None and last_alert >= cooldown_cut:
+            continue
 
         delta_pct = round((current_s / base - 1) * 100)
         text = (

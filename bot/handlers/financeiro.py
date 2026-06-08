@@ -18,6 +18,7 @@ from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.models import User
+from bot.utils import as_utc
 from bot.services.financeiro import (
     FinanceiroError,
     describe_credential,
@@ -125,12 +126,9 @@ async def on_document(message: Message, user: User, session: AsyncSession) -> No
     if not _is_json_doc(message):
         return
 
-    awaiting = user.awaiting_firebase_json_until
+    awaiting = as_utc(user.awaiting_firebase_json_until)
     if awaiting is None:
         return
-    # SQLite via aiosqlite devolve naive UTC; normaliza pra aware.
-    if awaiting.tzinfo is None:
-        awaiting = awaiting.replace(tzinfo=timezone.utc)
     if datetime.now(timezone.utc) > awaiting:
         return  # janela expirou — ignora silenciosamente
 

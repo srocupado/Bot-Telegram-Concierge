@@ -12,12 +12,8 @@ from bot.db.models import Reminder
 
 logger = logging.getLogger(__name__)
 
-
-def as_utc(dt: datetime) -> datetime:
-    """Normaliza datetime do banco pra aware-UTC. O SQLite devolve campos
-    DateTime NAIVE (não preserva tz, apesar de DateTime(timezone=True)); sem
-    isso, astimezone()/aritmética com aware dá resultado errado ou TypeError."""
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+# Re-export pra compatibilidade — implementação central em bot/utils.py.
+from bot.utils import as_utc  # noqa: E402,F401
 
 
 class ReminderParseError(Exception):

@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from bot.config import settings
 from bot.db.models import TravelAlert, TravelPriceSnapshot, TravelWatch, User
+from bot.utils import as_utc
 from bot.services.travels.serpapi_client import (
     SerpAPIClient,
     SerpAPIError,
@@ -35,19 +36,11 @@ logger = logging.getLogger(__name__)
 BRT = ZoneInfo("America/Sao_Paulo")
 
 
-def _as_utc(dt: datetime | None) -> datetime | None:
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt
-
-
 def _is_due(watch: TravelWatch, now_utc: datetime) -> bool:
     now_brt = now_utc.astimezone(BRT)
     if now_brt.hour < settings.travels_alert_hour:
         return False
-    last_checked = _as_utc(watch.last_checked_at)
+    last_checked = as_utc(watch.last_checked_at)
     if last_checked is None:
         return True
     last_brt = last_checked.astimezone(BRT)
@@ -58,7 +51,7 @@ def _should_alert(
     watch: TravelWatch, new_price: float
 ) -> tuple[bool, str]:
     now = datetime.now(timezone.utc)
-    snooze_until = _as_utc(watch.snooze_until)
+    snooze_until = as_utc(watch.snooze_until)
     if snooze_until and snooze_until > now:
         return False, "snoozed"
     if watch.max_price is not None:
