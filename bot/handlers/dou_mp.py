@@ -74,6 +74,105 @@ async def cb_nota_sim(query: CallbackQuery, user: User, session: AsyncSession) -
         await query.message.answer("Nenhuma MP encontrada nessa data.", parse_mode=None)
 
 
+@router.message(Command("dou_provider"))
+async def cmd_dou_provider(
+    message: Message, command: CommandObject, user: User, session: AsyncSession
+) -> None:
+    """Escolhe o motor da nota técnica por usuário (vale na agendada e na
+    on-demand). Sem args mostra o atual.
+
+    /dou_provider                  → mostra atual
+    /dou_provider anthropic        → Claude (web_search nativo)
+    /dou_provider gemini           → gemini, modelo do .env
+    /dou_provider gemini <alias>   → gemini + modelo específico
+    /dou_provider <alias>          → atalho: gemini + modelo (ex.: 3.5, 3.1-pro)
+    /dou_provider padrao           → volta ao .env
+    """
+    from bot.handlers.provider import _GEMINI_VARIANTS
+
+    if not user.is_authorized:
+        return
+    tokens = (command.args or "").strip().lower().split()
+
+    if not tokens:
+        prov = user.dou_mp_provider or settings.dou_mp_provider
+        if prov == "gemini":
+            label = f"gemini ({user.dou_mp_model or settings.dou_mp_gemini_model})"
+        else:
+            label = prov
+        aliases = ", ".join(sorted(set(_GEMINI_VARIANTS)))
+        await message.answer(
+            f"Motor da nota técnica: <b>{label}</b>\n"
+            f"Fallback (fixo no .env): <code>{settings.dou_mp_gemini_model_fallback}</code>\n\n"
+            "<b>Comandos:</b>\n"
+            "<code>/dou_provider anthropic</code> · Claude (web_search)\n"
+            "<code>/dou_provider gemini</code> · gemini, modelo do .env\n"
+            "<code>/dou_provider gemini &lt;alias&gt;</code> · escolhe o modelo\n"
+            "<code>/dou_provider &lt;alias&gt;</code> · atalho (assume gemini)\n"
+            "<code>/dou_provider padrao</code> · volta ao .env\n\n"
+            f"<b>Aliases:</b> {aliases}",
+            parse_mode="HTML",
+        )
+        return
+
+    arg = tokens[0]
+    variant = tokens[1] if len(tokens) > 1 else None
+
+    if arg in ("padrao", "padrão", "auto", "limpar", "none"):
+        user.dou_mp_provider = None
+        user.dou_mp_model = None
+        await session.commit()
+        await message.answer(
+            f"✅ Nota técnica volta ao default do .env "
+            f"(<b>{settings.dou_mp_provider}</b> · {settings.dou_mp_gemini_model}).",
+            parse_mode="HTML",
+        )
+        return
+
+    if arg == "anthropic":
+        user.dou_mp_provider = "anthropic"
+        user.dou_mp_model = None
+        await session.commit()
+        await message.answer(
+            "✅ Nota técnica via <b>anthropic</b> (Claude + web_search).",
+            parse_mode="HTML",
+        )
+        return
+
+    if arg == "gemini":
+        if variant is None:
+            user.dou_mp_model = None  # volta ao DOU_MP_GEMINI_MODEL do .env
+        elif variant in _GEMINI_VARIANTS:
+            user.dou_mp_model = _GEMINI_VARIANTS[variant]
+        else:
+            opts = ", ".join(sorted(set(_GEMINI_VARIANTS)))
+            await message.answer(f"Alias inválido. Opções: {opts}", parse_mode=None)
+            return
+        user.dou_mp_provider = "gemini"
+        await session.commit()
+        await message.answer(
+            f"✅ Nota técnica via <b>gemini ({user.dou_mp_model or settings.dou_mp_gemini_model})</b>.",
+            parse_mode="HTML",
+        )
+        return
+
+    # Atalho: /dou_provider <alias> assume gemini.
+    if arg in _GEMINI_VARIANTS:
+        user.dou_mp_provider = "gemini"
+        user.dou_mp_model = _GEMINI_VARIANTS[arg]
+        await session.commit()
+        await message.answer(
+            f"✅ Nota técnica via <b>gemini ({user.dou_mp_model})</b>.",
+            parse_mode="HTML",
+        )
+        return
+
+    await message.answer(
+        "Opção inválida. Use: /dou_provider anthropic | gemini [alias] | padrao",
+        parse_mode=None,
+    )
+
+
 @router.message(Command("mp_dou_on"))
 async def cmd_on(message: Message, user: User, session: AsyncSession) -> None:
     if not user.is_authorized:
