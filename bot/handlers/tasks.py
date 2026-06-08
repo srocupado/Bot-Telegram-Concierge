@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from aiogram import Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,7 +37,14 @@ async def cmd_tarefas(message: Message, user: User, session: AsyncSession) -> No
     for t in tasks:
         age = _humanize_age(now - t.created_at)
         lines.append(f"• #{t.id} — {t.text}  _(há {age})_")
-    await message.answer("\n".join(lines), parse_mode="Markdown")
+    body = "\n".join(lines)
+    # Texto de tarefa pode ter '_', '*', '[' etc. → Markdown quebra e o
+    # Telegram rejeita a mensagem inteira (BadRequest). Reenviar em texto puro
+    # evita que a listagem suma silenciosamente.
+    try:
+        await message.answer(body, parse_mode="Markdown")
+    except TelegramBadRequest:
+        await message.answer(body, parse_mode=None)
 
 
 @router.message(Command("feito"))
