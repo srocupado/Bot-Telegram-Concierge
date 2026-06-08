@@ -69,16 +69,17 @@ def _fetch_mp_page(client: httpx.Client, url: str) -> tuple[str, str]:
         lines = [ln.strip() for ln in soup.get_text("\n", strip=True).splitlines() if ln.strip()]
         ementa = ""
         found_title = False
-        for ln in lines[:40]:
-            if re.match(r"MEDIDA PROVIS[ÓO]RIA\s+N", ln, re.I):
+        for ln in lines[:120]:
+            if re.search(r"MEDIDA\s+PROVIS[ÓO]RIA\s+N", ln, re.I):
                 found_title = True
                 continue
             if found_title and len(ln) > 20:
                 if not re.match(r"(A PRESIDENTA|O PRESIDENTE|O VICE)", ln, re.I):
                     ementa = ln
                     break
-        if not ementa:
-            ementa = lines[0] if lines else ""
+        # Sem fallback p/ lines[0]: a 1ª linha da página costuma ser o nome do
+        # arquivo ('mpv1365') ou navegação — lixo como ementa. Devolvendo ""
+        # aqui, _build_mp_dict cai na ementa derivada do excerpt do DOU.
         return ementa, "\n".join(lines[:500])
     except Exception as exc:
         logger.warning("dou: erro ao buscar página planalto %s: %s", url, exc)
@@ -105,7 +106,9 @@ def _build_mp_dict(
     period = _planalto_period(year)
     planalto_url = f"{PLANALTO_BASE}/ccivil_03/_ato{period}/{year}/mpv/mpv{numero}.htm"
     ementa_page, texto_planalto = _fetch_mp_page(client, planalto_url)
-    if ementa_page:
+    # Ementa válida tem espaços e é razoavelmente longa; rejeita lixo como
+    # 'mpv1365' (nome do arquivo) que às vezes vaza da extração da página.
+    if ementa_page and " " in ementa_page and len(ementa_page) > 20:
         ementa = ementa_page
     else:
         stripped = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text_excerpt)).strip()
