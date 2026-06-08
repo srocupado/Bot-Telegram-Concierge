@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from html import escape as _esc
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -95,19 +94,10 @@ async def _h_criar_tarefa(args: dict, ctx: ToolContext) -> str:
 
 
 async def _h_listar_tarefas(_args: dict, ctx: ToolContext) -> str:
-    # Listagem pura: envia direto (igual consultar_treinos/financeiro). Sem
-    # isso, modelos que param após a tool call deixam reply vazio → o handler
-    # manda "(sem resposta)" e o usuário não vê as tarefas.
     items = await list_open_tasks(ctx.session, ctx.user.id)
     if not items:
-        ctx.direct_html = "📭 Nenhuma tarefa aberta. É só me pedir pra criar uma."
-        ctx.short_circuit = True
         return "ok: nenhuma tarefa pendente"
-    lines = ["📋 <b>Tarefas abertas</b>", ""]
-    lines.extend(f"• #{t.id} — {_esc(t.text)}" for t in items)
-    ctx.direct_html = "\n".join(lines)
-    ctx.short_circuit = True
-    return "ok: lista enviada ao usuário"
+    return "ok: " + " | ".join(f"#{t.id} {t.text}" for t in items)
 
 
 async def _h_concluir_tarefa(args: dict, ctx: ToolContext) -> str:
