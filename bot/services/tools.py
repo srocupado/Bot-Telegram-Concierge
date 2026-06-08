@@ -869,7 +869,9 @@ async def _h_consultar_mp_dou(args: dict, ctx: ToolContext) -> str:
         return "erro: falha ao consultar o DOU"
 
     if not mps:
-        return f"ok (repasse): 📭 Nenhuma MP publicada no DOU em {target.strftime('%d/%m/%Y')}."
+        vazio = f"📭 Nenhuma MP publicada no DOU em {target.strftime('%d/%m/%Y')}."
+        ctx.fallback_text = vazio
+        return f"ok (repasse): {vazio}"
     # Sinaliza ao handler de chat/voz pra oferecer a nota técnica com botões.
     ctx.dou_mp_found = {"date_iso": target.isoformat(), "count": len(mps)}
     from bot.services.proactive import _clean_ementa
@@ -879,6 +881,9 @@ async def _h_consultar_mp_dou(args: dict, ctx: ToolContext) -> str:
     for mp in mps:
         linhas.append(f"• MP {mp['numero']}/{mp['ano']} — {_clean_ementa(mp.get('ementa') or '')}")
     linhas.append("\nQuer a nota técnica completa? 👇")
+    # Guarda o texto limpo: se o LLM vier vazio após a tool call, o handler
+    # usa isso (e ainda anexa os botões Sim/Não via ctx.dou_mp_found).
+    ctx.fallback_text = "\n".join(linhas)
     return (
         "ok (repasse estas linhas EXATAMENTE como estão, com emojis; os botões "
         "Sim/Não aparecem automaticamente — não cite /mp_dou_agora):\n"

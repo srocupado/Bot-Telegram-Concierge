@@ -50,6 +50,10 @@ class ToolContext:
     # Setado por consultar_mp_dou quando acha MP(s) numa data: {"date_iso", "count"}.
     # O handler de chat/voz usa pra oferecer a nota técnica com botões Sim/Não.
     dou_mp_found: Any = None
+    # Texto já formatado que o handler usa SÓ quando o LLM volta vazio (a
+    # geração que segue uma tool call às vezes vem sem texto no Gemini). Não
+    # short-circuita — preserva teclados (ex.: botões Sim/Não da nota técnica).
+    fallback_text: str | None = None
     # Texto HTML já formatado que o handler de chat/voz envia verbatim
     # (parse_mode=HTML), ignorando a resposta do LLM — evita paráfrase. Usado
     # por consultar_congresso e consultar_transito (saída idêntica aos /comandos).

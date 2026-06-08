@@ -301,6 +301,11 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
             )
         return
 
+    # O Gemini às vezes volta texto vazio após uma tool call; se a tool deixou
+    # um texto pronto, usa ele em vez de "(sem resposta)".
+    if not (reply or "").strip() and ctx.fallback_text:
+        reply = ctx.fallback_text
+
     memory.append(chat_id, "user", user_text)
     memory.append(chat_id, "assistant", reply)
 
