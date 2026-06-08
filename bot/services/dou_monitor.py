@@ -382,12 +382,14 @@ _WEB_TOOLS = [
 ]
 
 
-async def _pesquisar_contexto(client, mp: dict) -> str:
+async def _pesquisar_contexto(client, mp: dict, *, model: str | None = None) -> str:
     """Fase 1: pesquisa contexto político/noticioso da MP via web search.
     Retorna um dossiê textual (ou string vazia se desligado/indisponível).
-    Limitado no tempo pra não pendurar a entrega."""
+    Limitado no tempo pra não pendurar a entrega. `model` segue o override
+    do /dou_provider (default ANTHROPIC_MODEL)."""
     if not settings.dou_mp_web_research:
         return ""
+    model = model or settings.anthropic_model
     prompt = (
         f"Pesquise o contexto da Medida Provisória nº {mp['numero']}, de "
         f"{mp['ano']} (publicada no DOU em {mp['data_publicacao']}). "
@@ -406,7 +408,7 @@ async def _pesquisar_contexto(client, mp: dict) -> str:
             msgs = messages
             for _ in range(3):
                 resp = await bounded.messages.create(
-                    model=settings.anthropic_model,
+                    model=model,
                     max_tokens=2048,
                     tools=_WEB_TOOLS,
                     messages=msgs,
@@ -444,34 +446,36 @@ def _nota_user_content(mp: dict, dossie: str) -> str:
 
 
 async def generate_nota_tecnica(
-    mp: dict, *, provider: str | None = None, gemini_model: str | None = None,
+    mp: dict, *, provider: str | None = None, model: str | None = None,
 ) -> dict | None:
     """Gera o conteúdo da nota técnica (pesquisa + redação estruturada).
-    `provider`/`gemini_model` são overrides por usuário (/dou_provider);
-    quando None, segue DOU_MP_PROVIDER/DOU_MP_GEMINI_MODEL do .env. Retorna
-    {ementa, p1_contexto, ...} ou None se indisponível/falhar."""
+    `provider`/`model` são overrides por usuário (/dou_provider); quando None,
+    segue DOU_MP_PROVIDER + DOU_MP_GEMINI_MODEL/ANTHROPIC_MODEL do .env. O
+    `model` é interpretado conforme o provider efetivo (id gemini-* ou
+    claude-*). Retorna {ementa, p1_contexto, ...} ou None se falhar."""
     prov = (provider or settings.dou_mp_provider).lower()
     if prov == "gemini":
-        return await _gen_nota_gemini(mp, model_override=gemini_model)
-    return await _gen_nota_anthropic(mp)
+        return await _gen_nota_gemini(mp, model_override=model)
+    return await _gen_nota_anthropic(mp, model_override=model)
 
 
 # ── Anthropic (Claude + web_search) ──
 
-async def _gen_nota_anthropic(mp: dict) -> dict | None:
+async def _gen_nota_anthropic(mp: dict, *, model_override: str | None = None) -> dict | None:
     if not settings.anthropic_api_key:
         logger.warning("dou: ANTHROPIC_API_KEY ausente; nota pulada")
         return None
+    model = model_override or settings.anthropic_model
     try:
         import anthropic
     except ImportError:
         return None
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-    dossie = await _pesquisar_contexto(client, mp)
+    dossie = await _pesquisar_contexto(client, mp, model=model)
     user_content = _nota_user_content(mp, dossie)
     try:
         resp = await client.with_options(timeout=240.0, max_retries=1).messages.create(
-            model=settings.anthropic_model,
+            model=model,
             max_tokens=16384,
             system=[{"type": "text", "text": _NOTA_SYSTEM, "cache_control": {"type": "ephemeral"}}],
             tools=[_NOTA_TOOL],
@@ -825,7 +829,7 @@ async def deliver_to_user(
             nota = await generate_nota_tecnica(
                 mp,
                 provider=getattr(user, "dou_mp_provider", None),
-                gemini_model=getattr(user, "dou_mp_model", None),
+                model=getattr(user, "dou_mp_model", None),
             )
             docx_bytes = await asyncio.to_thread(build_docx, mp, nota)
             await bot.send_document(

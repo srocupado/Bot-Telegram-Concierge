@@ -26,6 +26,13 @@ from bot.services.dou_monitor import DouError, deliver_to_user
 logger = logging.getLogger(__name__)
 router = Router(name="dou_mp")
 
+# Aliases de modelo Claude pra nota técnica (/dou_provider anthropic <alias>).
+# sonnet é o recomendado: qualidade alta a ~metade do custo do opus.
+_ANTHROPIC_VARIANTS = {
+    "sonnet": "claude-sonnet-4-6",
+    "opus": "claude-opus-4-8",
+}
+
 
 def nota_keyboard(date_iso: str) -> InlineKeyboardMarkup:
     """Botões Sim/Não pra oferecer a nota técnica das MPs de uma data."""
@@ -81,12 +88,14 @@ async def cmd_dou_provider(
     """Escolhe o motor da nota técnica por usuário (vale na agendada e na
     on-demand). Sem args mostra o atual.
 
-    /dou_provider                  → mostra atual
-    /dou_provider anthropic        → Claude (web_search nativo)
-    /dou_provider gemini           → gemini, modelo do .env
-    /dou_provider gemini <alias>   → gemini + modelo específico
-    /dou_provider <alias>          → atalho: gemini + modelo (ex.: 3.5, 3.1-pro)
-    /dou_provider padrao           → volta ao .env
+    /dou_provider                   → mostra atual
+    /dou_provider anthropic         → Claude, modelo do .env (ANTHROPIC_MODEL)
+    /dou_provider anthropic <alias> → Claude + modelo (sonnet | opus)
+    /dou_provider gemini            → gemini, modelo do .env
+    /dou_provider gemini <alias>    → gemini + modelo específico
+    /dou_provider <alias>           → atalho: gemini-* assume gemini;
+                                      sonnet/opus assumem anthropic
+    /dou_provider padrao            → volta ao .env
     """
     from bot.handlers.provider import _GEMINI_VARIANTS
 
@@ -99,18 +108,19 @@ async def cmd_dou_provider(
         if prov == "gemini":
             label = f"gemini ({user.dou_mp_model or settings.dou_mp_gemini_model})"
         else:
-            label = prov
-        aliases = ", ".join(sorted(set(_GEMINI_VARIANTS)))
+            label = f"anthropic ({user.dou_mp_model or settings.anthropic_model})"
+        gem_aliases = ", ".join(sorted(set(_GEMINI_VARIANTS)))
+        ant_aliases = ", ".join(sorted(_ANTHROPIC_VARIANTS))
         await message.answer(
             f"Motor da nota técnica: <b>{label}</b>\n"
-            f"Fallback (fixo no .env): <code>{settings.dou_mp_gemini_model_fallback}</code>\n\n"
+            f"Fallback gemini (fixo no .env): <code>{settings.dou_mp_gemini_model_fallback}</code>\n\n"
             "<b>Comandos:</b>\n"
-            "<code>/dou_provider anthropic</code> · Claude (web_search)\n"
-            "<code>/dou_provider gemini</code> · gemini, modelo do .env\n"
-            "<code>/dou_provider gemini &lt;alias&gt;</code> · escolhe o modelo\n"
-            "<code>/dou_provider &lt;alias&gt;</code> · atalho (assume gemini)\n"
+            "<code>/dou_provider anthropic [alias]</code> · Claude (web_search)\n"
+            "<code>/dou_provider gemini [alias]</code> · Gemini\n"
+            "<code>/dou_provider &lt;alias&gt;</code> · atalho (infere o provider)\n"
             "<code>/dou_provider padrao</code> · volta ao .env\n\n"
-            f"<b>Aliases:</b> {aliases}",
+            f"<b>Aliases Gemini:</b> {gem_aliases}\n"
+            f"<b>Aliases Claude:</b> {ant_aliases} <i>(sonnet recomendado — ~½ do custo do opus)</i>",
             parse_mode="HTML",
         )
         return
@@ -130,11 +140,19 @@ async def cmd_dou_provider(
         return
 
     if arg == "anthropic":
+        if variant is None:
+            user.dou_mp_model = None  # volta ao ANTHROPIC_MODEL do .env
+        elif variant in _ANTHROPIC_VARIANTS:
+            user.dou_mp_model = _ANTHROPIC_VARIANTS[variant]
+        else:
+            opts = ", ".join(sorted(_ANTHROPIC_VARIANTS))
+            await message.answer(f"Alias Claude inválido. Opções: {opts}", parse_mode=None)
+            return
         user.dou_mp_provider = "anthropic"
-        user.dou_mp_model = None
         await session.commit()
         await message.answer(
-            "✅ Nota técnica via <b>anthropic</b> (Claude + web_search).",
+            f"✅ Nota técnica via <b>anthropic ({user.dou_mp_model or settings.anthropic_model})</b> "
+            "(Claude + web_search).",
             parse_mode="HTML",
         )
         return
@@ -146,7 +164,7 @@ async def cmd_dou_provider(
             user.dou_mp_model = _GEMINI_VARIANTS[variant]
         else:
             opts = ", ".join(sorted(set(_GEMINI_VARIANTS)))
-            await message.answer(f"Alias inválido. Opções: {opts}", parse_mode=None)
+            await message.answer(f"Alias Gemini inválido. Opções: {opts}", parse_mode=None)
             return
         user.dou_mp_provider = "gemini"
         await session.commit()
@@ -156,7 +174,17 @@ async def cmd_dou_provider(
         )
         return
 
-    # Atalho: /dou_provider <alias> assume gemini.
+    # Atalhos de uma palavra: sonnet/opus → anthropic; gemini-* → gemini.
+    if arg in _ANTHROPIC_VARIANTS:
+        user.dou_mp_provider = "anthropic"
+        user.dou_mp_model = _ANTHROPIC_VARIANTS[arg]
+        await session.commit()
+        await message.answer(
+            f"✅ Nota técnica via <b>anthropic ({user.dou_mp_model})</b> (Claude + web_search).",
+            parse_mode="HTML",
+        )
+        return
+
     if arg in _GEMINI_VARIANTS:
         user.dou_mp_provider = "gemini"
         user.dou_mp_model = _GEMINI_VARIANTS[arg]
@@ -168,7 +196,8 @@ async def cmd_dou_provider(
         return
 
     await message.answer(
-        "Opção inválida. Use: /dou_provider anthropic | gemini [alias] | padrao",
+        "Opção inválida. Use: /dou_provider anthropic [sonnet|opus] | "
+        "gemini [alias] | padrao",
         parse_mode=None,
     )
 
