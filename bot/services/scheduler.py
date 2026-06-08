@@ -358,8 +358,16 @@ async def run_traffic_watch(
             continue
         if not should_alert(current_s, base):
             continue
-        if u.last_traffic_alert_at and u.last_traffic_alert_at >= cooldown_cut:
-            continue
+        # SQLite devolve last_traffic_alert_at naive → comparar com cooldown_cut
+        # (aware) lança TypeError. Normaliza antes (assume UTC).
+        if u.last_traffic_alert_at is not None:
+            last_alert = (
+                u.last_traffic_alert_at
+                if u.last_traffic_alert_at.tzinfo
+                else u.last_traffic_alert_at.replace(tzinfo=timezone.utc)
+            )
+            if last_alert >= cooldown_cut:
+                continue
 
         delta_pct = round((current_s / base - 1) * 100)
         text = (

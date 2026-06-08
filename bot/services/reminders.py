@@ -13,6 +13,13 @@ from bot.db.models import Reminder
 logger = logging.getLogger(__name__)
 
 
+def as_utc(dt: datetime) -> datetime:
+    """Normaliza datetime do banco pra aware-UTC. O SQLite devolve campos
+    DateTime NAIVE (não preserva tz, apesar de DateTime(timezone=True)); sem
+    isso, astimezone()/aritmética com aware dá resultado errado ou TypeError."""
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 class ReminderParseError(Exception):
     pass
 
@@ -162,7 +169,7 @@ def _emoji_for(r: Reminder) -> str:
 def format_reminder_line(r: Reminder, tz_name: str) -> str:
     """Uma linha padronizada do lembrete: '{emoji} #id — Dia, hora → texto'."""
     tz = ZoneInfo(tz_name)
-    local = r.due_at.astimezone(tz)
+    local = as_utc(r.due_at).astimezone(tz)
     today = datetime.now(tz).date()
     rec = f" ({r.recurrence})" if r.recurrence else ""
     return (

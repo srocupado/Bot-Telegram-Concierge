@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.config import settings
 from bot.db.models import ProactiveNotice, Reminder, User, WorkoutLog
 from bot.services import shopping
-from bot.services.reminders import format_reminder_line
+from bot.services.reminders import as_utc, format_reminder_line
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +118,7 @@ async def collect_vencimentos(
     # o pagamento (sent=True) ou o vencimento passar. A trava run_key evita
     # repetir dentro da mesma janela.
     for r in rems:
-        key = f"{r.id}:{r.due_at.astimezone(tz).date().isoformat()}"
+        key = f"{r.id}:{as_utc(r.due_at).astimezone(tz).date().isoformat()}"
         facts.append(ProactiveFact("venc", "venc_rem", key,
                                     "⏳ " + format_reminder_line(r, user.timezone)))
 
