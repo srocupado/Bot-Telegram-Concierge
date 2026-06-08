@@ -125,7 +125,7 @@ def _build_mp_dict(
         # se o XML não trouxer. É a base dos prazos regimentais.
         "data_publicacao": (pub_date or target_date).isoformat(),
         "url_planalto": planalto_url,
-        "texto_integral": texto_planalto or text_excerpt[:6000],
+        "texto_integral": texto_planalto or text_excerpt[:50000],
     }
 
 
@@ -435,7 +435,10 @@ def _nota_user_content(mp: dict, dossie: str) -> str:
         f"=== DOSSIÊ DE PESQUISA (contexto; use só o que tiver fonte) ===\n"
         f"{dossie or '(pesquisa web indisponível — baseie-se apenas no texto da MP)'}\n\n"
         f"=== TEXTO INTEGRAL DA MP ===\n"
-        f"{(mp.get('texto_integral') or 'Não disponível')[:8000]}\n\n"
+        # Cap generoso (200k chars ≈ 50k tokens): cobre qualquer MP real
+        # (a maior histórica ficou em ~250k), evita estouro de contexto e
+        # protege contra página HTML quebrada virando MB de entrada.
+        f"{(mp.get('texto_integral') or 'Não disponível')[:200000]}\n\n"
         "Emita a nota técnica seguindo a estrutura de 5 parágrafos."
     )
 
@@ -463,9 +466,9 @@ async def _gen_nota_anthropic(mp: dict) -> dict | None:
     dossie = await _pesquisar_contexto(client, mp)
     user_content = _nota_user_content(mp, dossie)
     try:
-        resp = await client.with_options(timeout=120.0, max_retries=1).messages.create(
+        resp = await client.with_options(timeout=240.0, max_retries=1).messages.create(
             model=settings.anthropic_model,
-            max_tokens=4096,
+            max_tokens=16384,
             system=[{"type": "text", "text": _NOTA_SYSTEM, "cache_control": {"type": "ephemeral"}}],
             tools=[_NOTA_TOOL],
             tool_choice={"type": "tool", "name": "nota_tecnica"},
