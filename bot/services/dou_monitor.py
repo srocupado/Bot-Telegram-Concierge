@@ -227,7 +227,7 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
             )
             resp.raise_for_status()
         except Exception as exc:
-            raise DouError(f"falha ao autenticar no Inlabs: {exc}")
+            raise DouError(f"falha ao autenticar no Inlabs: {exc}") from exc
         cookie = client.cookies.get("inlabs_session_cookie")
         if not cookie:
             raise DouError("autenticação Inlabs falhou (cookie ausente) — verifique e-mail/senha.")
@@ -551,7 +551,7 @@ def _gemini_no_thinking_config():
         return None
 
 
-async def _pesquisar_contexto_gemini(client, mp: dict) -> str:
+async def _pesquisar_contexto_gemini(client, mp: dict, *, model_override: str | None = None) -> str:
     if not settings.dou_mp_web_research:
         return ""
     from google.genai import types
@@ -571,7 +571,7 @@ async def _pesquisar_contexto_gemini(client, mp: dict) -> str:
         resp = client.models.generate_content(model=model, contents=prompt, config=config)
         return (resp.text or "").strip()
 
-    models_p = _gemini_models()
+    models_p = _gemini_models(model_override)
     for model in models_p:
         try:
             return await asyncio.wait_for(asyncio.to_thread(_call, model), timeout=120.0)
@@ -597,7 +597,7 @@ async def _gen_nota_gemini(mp: dict, *, model_override: str | None = None) -> di
     except ImportError:
         return None
     client = genai.Client(api_key=settings.gemini_api_key)
-    dossie = await _pesquisar_contexto_gemini(client, mp)
+    dossie = await _pesquisar_contexto_gemini(client, mp, model_override=model_override)
     user_content = _nota_user_content(mp, dossie)
 
     schema = types.Schema(
