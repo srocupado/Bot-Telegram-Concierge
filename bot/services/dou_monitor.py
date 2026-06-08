@@ -103,8 +103,7 @@ def _build_mp_dict(
     target_date: date, pub_date: date | None = None,
 ) -> dict:
     period = _planalto_period(year)
-    ano2d = str(year)[-2:]
-    planalto_url = f"{PLANALTO_BASE}/ccivil_03/_Ato{period}/{year}/Mpv/mpv{numero}-{ano2d}.htm"
+    planalto_url = f"{PLANALTO_BASE}/ccivil_03/_ato{period}/{year}/mpv/mpv{numero}.htm"
     ementa_page, texto_planalto = _fetch_mp_page(client, planalto_url)
     if ementa_page:
         ementa = ementa_page
