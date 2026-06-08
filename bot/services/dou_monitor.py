@@ -59,9 +59,14 @@ def _planalto_period(year: int) -> str:
 
 
 def _fetch_mp_page(client: httpx.Client, url: str) -> tuple[str, str]:
-    """Best-effort: busca ementa + texto limpo na página do Planalto."""
+    """Best-effort: busca ementa + texto limpo na página do Planalto.
+
+    Timeout curto: planalto.gov.br é instável e segura o request por dezenas
+    de segundos quando está caindo. Como temos try/except e caímos no excerpt
+    do DOU como fallback, falhar rápido é melhor que pendurar o tick inteiro.
+    """
     try:
-        resp = client.get(url, timeout=20.0)
+        resp = client.get(url, timeout=5.0)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
         for tag in soup(["script", "style", "nav", "header", "footer"]):
