@@ -125,7 +125,7 @@ def _build_mp_dict(
         # se o XML não trouxer. É a base dos prazos regimentais.
         "data_publicacao": (pub_date or target_date).isoformat(),
         "url_planalto": planalto_url,
-        "texto_integral": texto_planalto or text_excerpt[:50000],
+        "texto_integral": texto_planalto or text_excerpt[:20000],
     }
 
 
@@ -437,10 +437,10 @@ def _nota_user_content(mp: dict, dossie: str) -> str:
         f"=== DOSSIÊ DE PESQUISA (contexto; use só o que tiver fonte) ===\n"
         f"{dossie or '(pesquisa web indisponível — baseie-se apenas no texto da MP)'}\n\n"
         f"=== TEXTO INTEGRAL DA MP ===\n"
-        # Cap generoso (200k chars ≈ 50k tokens): cobre qualquer MP real
-        # (a maior histórica ficou em ~250k), evita estouro de contexto e
-        # protege contra página HTML quebrada virando MB de entrada.
-        f"{(mp.get('texto_integral') or 'Não disponível')[:200000]}\n\n"
+        # Cap moderado (50k chars ≈ 12k tokens) — cobre a esmagadora maioria
+        # das MPs sem inflar o prompt; megapacote (>50k chars de texto legal)
+        # é o caso raro, fica truncado mas mantém prazos+ementa+inicio.
+        f"{(mp.get('texto_integral') or 'Não disponível')[:50000]}\n\n"
         "Emita a nota técnica seguindo a estrutura de 5 parágrafos."
     )
 
