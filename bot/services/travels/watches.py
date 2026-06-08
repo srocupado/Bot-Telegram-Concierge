@@ -7,12 +7,12 @@ adaptado pra reusar `SessionLocal`/`settings` do Concierge e rodar no
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from bot.config import settings
@@ -141,6 +141,8 @@ async def check_watch(
                 single_dest = watch.params.get("destination_iata") or (
                     (watch.params.get("destination_iatas") or [""])[0]
                 )
+                chosen_dep = watch.params["depart_date"]
+                chosen_ret = watch.params.get("return_date")
                 raw = await serpapi.search_flights(
                     origin_iata=watch.params["origin_iata"],
                     destination_iata=single_dest,
@@ -178,6 +180,8 @@ async def check_watch(
                     price, payload, chosen_ci, chosen_co = flex
                     best = (price, payload)
             else:
+                chosen_ci = watch.params["check_in"]
+                chosen_co = watch.params["check_out"]
                 raw = await serpapi.search_hotels(
                     location=watch.params["location"],
                     check_in=watch.params["check_in"],
@@ -265,3 +269,21 @@ async def run_travel_alerts(
                     await check_watch(session, serpapi, bot, fresh)
                 except Exception:
                     logger.exception("check_watch crashed for watch %d", w.id)
+
+
+async def purge_old_travel_data(session: AsyncSession, days: int = 90) -> int:
+    """Remove snapshots e alertas de viagem com mais de `days` dias.
+
+    Cada checagem diária grava um TravelPriceSnapshot com o payload bruto
+    (JSON gordo); sem limpeza, a tabela cresce indefinidamente no SQLite.
+    Alertas saem antes dos snapshots por causa da FK alert→snapshot.
+    Retorna o total de linhas removidas."""
+    cut = datetime.now(timezone.utc) - timedelta(days=days)
+    n_alerts = (await session.execute(
+        delete(TravelAlert).where(TravelAlert.sent_at < cut)
+    )).rowcount or 0
+    n_snaps = (await session.execute(
+        delete(TravelPriceSnapshot).where(TravelPriceSnapshot.captured_at < cut)
+    )).rowcount or 0
+    await session.commit()
+    return n_alerts + n_snaps

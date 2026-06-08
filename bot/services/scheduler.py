@@ -398,6 +398,11 @@ async def run_purge(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
         n = await purge_old_notices(session)
         if n:
             logger.info("purged %d old proactive_notices", n)
+    from bot.services.travels.watches import purge_old_travel_data
+    async with sessionmaker() as session:
+        n = await purge_old_travel_data(session)
+        if n:
+            logger.info("purged %d old travel snapshots/alerts", n)
 
 
 async def run_card_closing_summary(
