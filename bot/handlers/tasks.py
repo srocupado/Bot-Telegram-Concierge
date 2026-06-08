@@ -35,7 +35,11 @@ async def cmd_tarefas(message: Message, user: User, session: AsyncSession) -> No
     now = datetime.now(timezone.utc)
     lines = ["📋 *Tarefas abertas*\n"]
     for t in tasks:
-        age = _humanize_age(now - t.created_at)
+        # SQLite devolve created_at naive (não preserva tz, apesar do
+        # DateTime(timezone=True)); assume UTC pra não estourar TypeError
+        # ao subtrair de `now` (aware).
+        created = t.created_at if t.created_at.tzinfo else t.created_at.replace(tzinfo=timezone.utc)
+        age = _humanize_age(now - created)
         lines.append(f"• #{t.id} — {t.text}  _(há {age})_")
     body = "\n".join(lines)
     # Texto de tarefa pode ter '_', '*', '[' etc. → Markdown quebra e o
