@@ -78,9 +78,7 @@ async def _nudge_recent(session: AsyncSession, user_id: int, kind: str, cooldown
     )
     if last is None:
         return False
-    if last.tzinfo is None:
-        last = last.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - last) < timedelta(days=cooldown_days)
+    return (datetime.now(timezone.utc) - as_utc(last)) < timedelta(days=cooldown_days)
 
 
 def parse_proactive_hours(csv: str) -> set[int]:
@@ -217,9 +215,7 @@ async def collect_nudges(
     # Lista de compras parada.
     items = await shopping.list_items(session, user.id, only_pending=True)
     if items:
-        oldest = min(i.created_at for i in items)
-        if oldest.tzinfo is None:
-            oldest = oldest.replace(tzinfo=timezone.utc)
+        oldest = as_utc(min(i.created_at for i in items))
         dias = (today - oldest.astimezone(ZoneInfo(user.timezone)).date()).days
         if dias >= settings.proactive_shopping_idle_days and await _ok("nudge_shopping"):
             n = len(items)
