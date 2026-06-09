@@ -22,8 +22,8 @@ from bot.services.route_pending import pending_routes
 from bot.services.traffic import (
     USER_AGENT,
     TrafficError,
-    fetch_traffic,
-    format_traffic_message,
+    fetch_traffic_with_alternative,
+    format_traffic_message_dual,
 )
 
 logger = logging.getLogger(__name__)
@@ -160,15 +160,15 @@ async def on_location(
         dest_coords = hit.coords
         dest_label = hit.formatted_address
 
-    # Calcula rota.
+    # Calcula rota + alternativa do Google (mostra as duas, ⭐ na mais rápida).
     try:
         async with httpx.AsyncClient(
             timeout=20.0,
             follow_redirects=True,
             headers={"User-Agent": USER_AGENT},
         ) as client:
-            infos = await fetch_traffic(
-                client, api_key, user_coords, dest_coords, [], alternatives=False
+            pref, alt = await fetch_traffic_with_alternative(
+                client, api_key, user_coords, dest_coords, [],
             )
     except TrafficError:
         logger.exception("/rota directions failed")
@@ -178,7 +178,7 @@ async def on_location(
         )
         return
 
-    text = format_traffic_message(infos[0], f"até {dest_label}")
+    text = format_traffic_message_dual(pref, alt, f"até {dest_label}")
     try:
         await message.answer(
             text, parse_mode="HTML", disable_web_page_preview=True,
