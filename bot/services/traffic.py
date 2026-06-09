@@ -315,11 +315,11 @@ def format_traffic_message_dual(
     label = html.escape(when_label)
     lines = [f"🚗 <b>Trânsito {label}</b>", ""]
     alt_faster = alternative.duration_minutes < preferred.duration_minutes
-    lines += _route_block("➡️ <i>rota 1:</i>", preferred, star=not alt_faster)
+    lines += _route_block("➡️ <i>rota A:</i>", preferred, star=not alt_faster)
     lines.append("")
-    lines += _route_block("➡️ <i>rota 2:</i>", alternative, star=alt_faster)
+    lines += _route_block("➡️ <i>rota B:</i>", alternative, star=alt_faster)
     delta = abs(preferred.duration_minutes - alternative.duration_minutes)
     if delta > 0:
-        faster = "Rota 2" if alt_faster else "Rota 1"
+        faster = "Rota B" if alt_faster else "Rota A"
         lines.append(f"\n💡 {faster} poupa ~{delta} min")
     return "\n".join(lines)
