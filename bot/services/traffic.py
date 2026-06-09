@@ -318,8 +318,23 @@ def format_traffic_message_dual(
     lines += _route_block("➡️ <i>rota A:</i>", preferred, star=not alt_faster)
     lines.append("")
     lines += _route_block("➡️ <i>rota B:</i>", alternative, star=alt_faster)
-    delta = abs(preferred.duration_minutes - alternative.duration_minutes)
-    if delta > 0:
-        faster = "Rota B" if alt_faster else "Rota A"
-        lines.append(f"\n💡 {faster} poupa ~{delta} min")
+
+    # Resumo em duas dimensões: tempo (rápida) e distância (curta) — podem
+    # favorecer rotas diferentes, que é o trade-off que interessa.
+    lines.append("")
+    time_delta = abs(preferred.duration_minutes - alternative.duration_minutes)
+    if time_delta > 0:
+        nome = "Rota B" if alt_faster else "Rota A"
+        lines.append(f"⚡ <b>Rota rápida:</b> {nome} (poupa ~{time_delta} min)")
+    else:
+        lines.append(f"⚡ <b>Rota rápida:</b> empate (~{preferred.duration_minutes} min)")
+
+    dist_delta = abs(preferred.distance_km - alternative.distance_km)
+    if dist_delta > 0:
+        alt_shorter = alternative.distance_km < preferred.distance_km
+        nome = "Rota B" if alt_shorter else "Rota A"
+        dkm = f"{dist_delta:.1f}".rstrip("0").rstrip(".")
+        lines.append(f"📏 <b>Rota curta:</b> {nome} (poupa ~{dkm} km)")
+    else:
+        lines.append("📏 <b>Rota curta:</b> mesma distância")
     return "\n".join(lines)
