@@ -42,7 +42,7 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "- consultar_clima, consultar_transito\n"
     "- lembrar_fato, recuperar_fato, listar_fatos, esquecer_fato\n"
     "- registrar_treino, apagar_treino_dia, consultar_treinos\n"
-    "- lancar_movimento_banco, lancar_despesa_cartao, registrar_aporte_tesouro, consultar_lancamentos, apagar_lancamento\n"
+    "- lancar_movimento_banco, lancar_despesa_cartao, registrar_aporte_tesouro, registrar_operacao_ativo, consultar_lancamentos, consultar_saldo, apagar_lancamento\n"
     "- adicionar_lista_compras, listar_compras, marcar_comprado, desmarcar_compra, remover_lista_compras, limpar_comprados, zerar_lista_compras\n"
     "- analisar_gastos, desfazer_ultima_acao\n"
     "- consultar_mp_dou, consultar_congresso\n"
