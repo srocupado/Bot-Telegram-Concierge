@@ -76,6 +76,55 @@ def _format_waypoints(waypoints: list[str]) -> str:
     return "|".join(parts)
 
 
+def _decode_polyline(encoded: str) -> list[tuple[float, float]]:
+    """Decodifica o overview_polyline do Directions (algoritmo de polyline
+    codificada do Google). Retorna lista de (lat, lng)."""
+    points: list[tuple[float, float]] = []
+    index = lat = lng = 0
+    n = len(encoded)
+    while index < n:
+        for is_lng in (False, True):
+            shift = result = 0
+            while True:
+                if index >= n:
+                    return points
+                b = ord(encoded[index]) - 63
+                index += 1
+                result |= (b & 0x1F) << shift
+                shift += 5
+                if b < 0x20:
+                    break
+            delta = ~(result >> 1) if (result & 1) else (result >> 1)
+            if is_lng:
+                lng += delta
+            else:
+                lat += delta
+        points.append((lat / 1e5, lng / 1e5))
+    return points
+
+
+def _route_maps_url(route: dict, origin: str, destination: str) -> str | None:
+    """Link do Maps que abre ~nesta rota específica, usando um ponto no meio
+    do traçado (overview_polyline) como waypoint. Sem o waypoint o link seria
+    genérico origem→destino e o Maps escolheria a rota dele. Custo zero de API:
+    o polyline já vem na mesma resposta do Directions. None se não decodificar."""
+    enc = (route.get("overview_polyline") or {}).get("points") or ""
+    if not enc:
+        return None
+    pts = _decode_polyline(enc)
+    if len(pts) < 3:
+        return None
+    mid_lat, mid_lng = pts[len(pts) // 2]
+    waypoint = f"{mid_lat:.5f},{mid_lng:.5f}"
+    return (
+        "https://www.google.com/maps/dir/?api=1"
+        f"&origin={quote(origin, safe=',')}"
+        f"&destination={quote(destination, safe=',')}"
+        f"&waypoints={quote(waypoint, safe=',')}"
+        "&travelmode=driving"
+    )
+
+
 def _route_to_info(route: dict, origin: str, destination: str, maps_url: str) -> TrafficInfo:
     legs = route.get("legs") or []
     duration_traffic_s = 0
@@ -98,12 +147,16 @@ def _route_to_info(route: dict, origin: str, destination: str, maps_url: str) ->
         f"&origin={fallback_origin}&destination={fallback_dest}&travelmode=driving"
     )
 
+    # Prioridade: link específico desta rota (waypoint no meio do traçado) →
+    # link pré-configurado (.env) → genérico origem→destino. O 1º faz cada
+    # opção abrir a SUA rota; sem ele dois links seriam idênticos.
+    route_url = _route_maps_url(route, origin, destination)
     return TrafficInfo(
         duration_minutes=max(1, round(duration_traffic_s / 60)),
         typical_minutes=max(1, round(duration_typical_s / 60)),
         distance_km=round(distance_m / 1000, 1),
         summary=summary,
-        maps_url=maps_url or fallback_url,
+        maps_url=route_url or maps_url or fallback_url,
     )
 
 
@@ -232,7 +285,7 @@ def format_traffic_message(info: TrafficInfo, when_label: str) -> str:
     ]
     if info.maps_url:
         lines.append("")
-        lines.append(f'<a href="{html.escape(info.maps_url, quote=True)}">abrir no Google Maps</a>')
+        lines.append(f'🗺️ <a href="{html.escape(info.maps_url, quote=True)}">abrir no Maps</a>')
     return "\n".join(lines)
 
 
@@ -240,10 +293,15 @@ def _route_block(label: str, info: TrafficInfo, star: bool = False) -> list[str]
     emoji = _severity_emoji(info.duration_minutes, info.typical_minutes)
     suffix = " ⭐" if star else ""
     via = f" via {html.escape(info.summary)}" if info.summary else ""
-    return [
+    lines = [
         f"{label} <b>~{info.duration_minutes} min</b> (típico: ~{info.typical_minutes}){suffix}",
         f"{emoji} {info.distance_km} km{via}",
     ]
+    if info.maps_url:
+        lines.append(
+            f'🗺️ <a href="{html.escape(info.maps_url, quote=True)}">abrir no Maps</a>'
+        )
+    return lines
 
 
 def format_traffic_message_dual(
@@ -257,15 +315,26 @@ def format_traffic_message_dual(
     label = html.escape(when_label)
     lines = [f"🚗 <b>Trânsito {label}</b>", ""]
     alt_faster = alternative.duration_minutes < preferred.duration_minutes
-    lines += _route_block("➡️ <i>sua rota:</i>", preferred, star=not alt_faster)
+    lines += _route_block("➡️ <i>rota A:</i>", preferred, star=not alt_faster)
     lines.append("")
-    lines += _route_block("➡️ <i>alternativa:</i>", alternative, star=alt_faster)
-    if alt_faster:
-        delta = preferred.duration_minutes - alternative.duration_minutes
-        lines.append(f"\n💡 Alternativa pode poupar ~{delta} min")
-    if preferred.maps_url:
-        lines.append("")
-        lines.append(
-            f'<a href="{html.escape(preferred.maps_url, quote=True)}">abrir sua rota no Google Maps</a>'
-        )
+    lines += _route_block("➡️ <i>rota B:</i>", alternative, star=alt_faster)
+
+    # Resumo em duas dimensões: tempo (rápida) e distância (curta) — podem
+    # favorecer rotas diferentes, que é o trade-off que interessa.
+    lines.append("")
+    time_delta = abs(preferred.duration_minutes - alternative.duration_minutes)
+    if time_delta > 0:
+        nome = "Rota B" if alt_faster else "Rota A"
+        lines.append(f"⚡ <b>Rota rápida:</b> {nome} (poupa ~{time_delta} min)")
+    else:
+        lines.append(f"⚡ <b>Rota rápida:</b> empate (~{preferred.duration_minutes} min)")
+
+    dist_delta = abs(preferred.distance_km - alternative.distance_km)
+    if dist_delta > 0:
+        alt_shorter = alternative.distance_km < preferred.distance_km
+        nome = "Rota B" if alt_shorter else "Rota A"
+        dkm = f"{dist_delta:.1f}".rstrip("0").rstrip(".")
+        lines.append(f"📏 <b>Rota curta:</b> {nome} (poupa ~{dkm} km)")
+    else:
+        lines.append("📏 <b>Rota curta:</b> mesma distância")
     return "\n".join(lines)
