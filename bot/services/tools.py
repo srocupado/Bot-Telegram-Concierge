@@ -379,7 +379,11 @@ async def _h_registrar_treino(args: dict, ctx: ToolContext) -> str:
     label = _groups_label(log.groups.split(","))
     if log.cardio_minutes:
         label += f" ({log.cardio_minutes}min)"
-    return f"ok (repasse): ✅ Treino registrado em {log.date.strftime('%d/%m')}: {label}"
+    msg = f"✅ Treino registrado em {log.date.strftime('%d/%m')}: {label}"
+    # Fallback pra quando o Gemini volta vazio após a tool call — o handler
+    # de chat/voz usa ctx.fallback_text em vez de mandar "(sem resposta)".
+    ctx.fallback_text = msg
+    return f"ok (repasse): {msg}"
 
 
 async def _h_consultar_treinos(_args: dict, ctx: ToolContext) -> str:
@@ -404,9 +408,13 @@ async def _h_apagar_treino_dia(args: dict, ctx: ToolContext) -> str:
         target = datetime.now(tz).date()
     n = await delete_workouts_on_date(ctx.session, ctx.user.id, target)
     if n == 0:
-        return f"ok (repasse): nenhum treino registrado em {target.strftime('%d/%m')}."
+        msg = f"nenhum treino registrado em {target.strftime('%d/%m')}."
+        ctx.fallback_text = msg
+        return f"ok (repasse): {msg}"
     plural = "treino" if n == 1 else "treinos"
-    return f"ok (repasse): 🗑️ {n} {plural} apagado(s) em {target.strftime('%d/%m')}."
+    msg = f"🗑️ {n} {plural} apagado(s) em {target.strftime('%d/%m')}."
+    ctx.fallback_text = msg
+    return f"ok (repasse): {msg}"
 
 
 async def _h_consultar_clima(args: dict, ctx: ToolContext) -> str:
@@ -685,7 +693,9 @@ async def _h_listar_compras(args: dict, ctx: ToolContext) -> str:
     only_pending = escopo != "todos"
     items = await list_items(ctx.session, ctx.user.id, only_pending=only_pending)
     if not items:
-        return "ok (repasse): 🛒 Sua lista de compras está vazia."
+        vazio = "🛒 Sua lista de compras está vazia."
+        ctx.fallback_text = vazio
+        return f"ok (repasse): {vazio}"
     lines = ["🛒 Lista de compras:"]
     for it in items:
         box = "☑️" if it.checked else "🔲"
@@ -792,7 +802,9 @@ async def _h_limpar_comprados(_args: dict, ctx: ToolContext) -> str:
 async def _h_zerar_lista_compras(_args: dict, ctx: ToolContext) -> str:
     items = await list_items(ctx.session, ctx.user.id, only_pending=False)
     if not items:
-        return "ok (repasse): 🛒 A lista já está vazia."
+        vazio = "🛒 A lista já está vazia."
+        ctx.fallback_text = vazio
+        return f"ok (repasse): {vazio}"
     ctx.confirm_clear_shopping = True
     return (
         f"ok: NÃO zere ainda. Há {len(items)} item(ns). Peça confirmação ao "
