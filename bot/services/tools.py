@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from html import escape as _html_escape
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -649,7 +650,12 @@ async def _h_consultar_saldo(args: dict, ctx: ToolContext) -> str:
         return f"erro: {e}"
     except FinanceiroError as e:
         return f"erro: {e}"
-    return "ok (repasse estas linhas EXATAMENTE como estão, sem reformatar nem trocar emojis/valores):\n" + out
+    # Hard guard contra alucinação: envia verbatim via direct_html e
+    # encerra o loop antes que o LLM tenha a chance de reformatar ou
+    # inventar valores. Mesmo padrão de consultar_treinos/congresso.
+    ctx.direct_html = _html_escape(out)
+    ctx.short_circuit = True
+    return "ok: saldo enviado ao usuário (não escreva nada, a mensagem já foi enviada)"
 
 
 async def _h_adicionar_lista_compras(args: dict, ctx: ToolContext) -> str:
