@@ -470,7 +470,9 @@ async def _h_lancar_movimento_banco(args: dict, ctx: ToolContext) -> str:
         {"modulo": "banco", "entry_id": entry["id"]},
     )
     ctx.financial_logged_ok = True
-    return "ok (repasse esta confirmação, não mostre id nem 'ok:'):\n" + confirm_banco(entry)
+    confirmacao = confirm_banco(entry)
+    ctx.fallback_text = confirmacao
+    return "ok (repasse esta confirmação, não mostre id nem 'ok:'):\n" + confirmacao
 
 
 async def _h_lancar_despesa_cartao(args: dict, ctx: ToolContext) -> str:
@@ -506,7 +508,9 @@ async def _h_lancar_despesa_cartao(args: dict, ctx: ToolContext) -> str:
         {"modulo": "cartao", "entry_id": entry["id"]},
     )
     ctx.financial_logged_ok = True
-    return "ok (repasse esta confirmação, não mostre id nem 'ok:'):\n" + confirm_cartao(entry, parcelas)
+    confirmacao = confirm_cartao(entry, parcelas)
+    ctx.fallback_text = confirmacao
+    return "ok (repasse esta confirmação, não mostre id nem 'ok:'):\n" + confirmacao
 
 
 async def _h_registrar_aporte_tesouro(args: dict, ctx: ToolContext) -> str:
@@ -543,9 +547,9 @@ async def _h_registrar_aporte_tesouro(args: dict, ctx: ToolContext) -> str:
             {"modulo": "tesouro", "entry_id": contrib_id},
         )
     ctx.financial_logged_ok = True
-    return "ok (repasse esta confirmação, não mostre id nem 'ok:'):\n" + confirm_tesouro(
-        res["titulo"], valor_f, data_iso, taxa,
-    )
+    confirmacao = confirm_tesouro(res["titulo"], valor_f, data_iso, taxa)
+    ctx.fallback_text = confirmacao
+    return "ok (repasse esta confirmação, não mostre id nem 'ok:'):\n" + confirmacao
 
 
 async def _h_registrar_operacao_ativo(args: dict, ctx: ToolContext) -> str:
@@ -596,9 +600,11 @@ async def _h_registrar_operacao_ativo(args: dict, ctx: ToolContext) -> str:
             {"modulo": "investimento", "entry_id": op_id},
         )
     ctx.financial_logged_ok = True
-    return "ok (repasse esta confirmação, não mostre id nem 'ok:'):\n" + confirm_operacao_ativo(
+    confirmacao = confirm_operacao_ativo(
         res, (res.get("operation") or {}).get("type", "buy"),
     )
+    ctx.fallback_text = confirmacao
+    return "ok (repasse esta confirmação, não mostre id nem 'ok:'):\n" + confirmacao
 
 
 async def _h_apagar_lancamento(args: dict, ctx: ToolContext) -> str:
@@ -616,6 +622,9 @@ async def _h_apagar_lancamento(args: dict, ctx: ToolContext) -> str:
     desc = rem.get("desc") or f"aporte em {res.get('titulo', '?')}"
     amt = float(rem.get("amount") or 0)
     date = rem.get("date", "?")
+    ctx.fallback_text = (
+        f"🗑️ Removido: {desc} — R$ {abs(amt):.2f} em {date}"
+    )
     return f"ok: removido {entry_id} ({res['modulo']}) — {desc} R$ {abs(amt):.2f} em {date}"
 
 
