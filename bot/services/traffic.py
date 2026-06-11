@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import html
 import logging
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from urllib.parse import quote, unquote_plus
 
 import httpx
@@ -17,6 +18,15 @@ USER_AGENT = (
 MAX_WAYPOINTS = 23
 SHORT_LINK_HOSTS = ("maps.app.goo.gl", "goo.gl")
 
+# Seleção de rota alternativa: uma alternativa só vale a pena se divergir de
+# verdade da preferida. Pontos a menos do raio contam como sobrepostos; rotas
+# acima do teto de sobreposição são descartadas (antes o critério era só o
+# `summary` textual, que deixava passar rotas 95% idênticas). O raio largo
+# (500m) trata via principal vs marginal/paralela como o MESMO corredor.
+_OVERLAP_RADIUS_M = 500.0
+_MAX_OVERLAP_RATIO = 0.70
+_OVERLAP_MAX_SAMPLES = 120
+
 
 class TrafficError(Exception):
     pass
@@ -29,6 +39,7 @@ class TrafficInfo:
     distance_km: float
     summary: str
     maps_url: str
+    polyline: tuple[tuple[float, float], ...] = field(default=(), compare=False)
 
 
 async def parse_route_waypoints(client: httpx.AsyncClient, url: str) -> list[str]:
@@ -103,15 +114,13 @@ def _decode_polyline(encoded: str) -> list[tuple[float, float]]:
     return points
 
 
-def _route_maps_url(route: dict, origin: str, destination: str) -> str | None:
+def _route_maps_url(
+    pts: list[tuple[float, float]], origin: str, destination: str
+) -> str | None:
     """Link do Maps que abre ~nesta rota específica, usando um ponto no meio
     do traçado (overview_polyline) como waypoint. Sem o waypoint o link seria
     genérico origem→destino e o Maps escolheria a rota dele. Custo zero de API:
     o polyline já vem na mesma resposta do Directions. None se não decodificar."""
-    enc = (route.get("overview_polyline") or {}).get("points") or ""
-    if not enc:
-        return None
-    pts = _decode_polyline(enc)
     if len(pts) < 3:
         return None
     mid_lat, mid_lng = pts[len(pts) // 2]
@@ -123,6 +132,79 @@ def _route_maps_url(route: dict, origin: str, destination: str) -> str | None:
         f"&waypoints={quote(waypoint, safe=',')}"
         "&travelmode=driving"
     )
+
+
+def _sample_points(
+    points: tuple[tuple[float, float], ...], max_n: int
+) -> list[tuple[float, float]]:
+    if len(points) <= max_n:
+        return list(points)
+    step = len(points) / max_n
+    return [points[int(i * step)] for i in range(max_n)]
+
+
+def route_overlap_ratio(
+    candidate: tuple[tuple[float, float], ...],
+    reference: tuple[tuple[float, float], ...],
+    radius_m: float = _OVERLAP_RADIUS_M,
+) -> float:
+    """Fração dos pontos de `candidate` a menos de `radius_m` de algum
+    ponto de `reference` (aprox. equiretangular — erro desprezível na escala
+    urbana). Ambos os traçados são amostrados pra limitar o custo a
+    O(_OVERLAP_MAX_SAMPLES²). Retorna 1.0 (totalmente sobreposta) se faltar
+    geometria de algum lado."""
+    if not candidate or not reference:
+        return 1.0
+    cand = _sample_points(candidate, _OVERLAP_MAX_SAMPLES)
+    ref = _sample_points(reference, _OVERLAP_MAX_SAMPLES * 2)
+
+    # Pré-projeta a referência em metros (plano local na latitude média).
+    lat0 = math.radians(sum(p[0] for p in ref) / len(ref))
+    m_per_deg_lat = 111_320.0
+    m_per_deg_lng = 111_320.0 * math.cos(lat0)
+    ref_m = [(p[0] * m_per_deg_lat, p[1] * m_per_deg_lng) for p in ref]
+
+    near = 0
+    r2 = radius_m ** 2
+    for lat, lng in cand:
+        cx, cy = lat * m_per_deg_lat, lng * m_per_deg_lng
+        if any((cx - rx) ** 2 + (cy - ry) ** 2 <= r2 for rx, ry in ref_m):
+            near += 1
+    return near / len(cand)
+
+
+def _pick_alternative(
+    preferred: TrafficInfo, candidates: list[TrafficInfo]
+) -> TrafficInfo | None:
+    """Escolhe a alternativa geometricamente mais distinta da preferida.
+    Candidatas com sobreposição acima do teto são descartadas — melhor
+    mostrar uma rota só do que duas praticamente iguais. Sem polyline
+    (não deveria acontecer com o Directions), cai no critério antigo de
+    `summary` distinto."""
+    if not candidates:
+        logger.info("alternative selection: API returned no alternative routes")
+        return None
+    if not preferred.polyline:
+        return next(
+            (c for c in candidates if c.summary and c.summary != preferred.summary),
+            None,
+        )
+    scored = [
+        (route_overlap_ratio(c.polyline, preferred.polyline), c) for c in candidates
+    ]
+    logger.info(
+        "alternative selection: pref='%s', %d candidate(s): %s "
+        "(radius=%.0fm, threshold=%.2f)",
+        preferred.summary,
+        len(scored),
+        "; ".join(f"overlap={o:.2f} via '{c.summary}'" for o, c in scored),
+        _OVERLAP_RADIUS_M,
+        _MAX_OVERLAP_RATIO,
+    )
+    best_overlap, best = min(scored, key=lambda t: t[0])
+    if best_overlap >= _MAX_OVERLAP_RATIO:
+        return None
+    return best
 
 
 def _route_to_info(route: dict, origin: str, destination: str, maps_url: str) -> TrafficInfo:
@@ -147,16 +229,20 @@ def _route_to_info(route: dict, origin: str, destination: str, maps_url: str) ->
         f"&origin={fallback_origin}&destination={fallback_dest}&travelmode=driving"
     )
 
+    enc = (route.get("overview_polyline") or {}).get("points") or ""
+    pts = _decode_polyline(enc) if enc else []
+
     # Prioridade: link específico desta rota (waypoint no meio do traçado) →
     # link pré-configurado (.env) → genérico origem→destino. O 1º faz cada
     # opção abrir a SUA rota; sem ele dois links seriam idênticos.
-    route_url = _route_maps_url(route, origin, destination)
+    route_url = _route_maps_url(pts, origin, destination)
     return TrafficInfo(
         duration_minutes=max(1, round(duration_traffic_s / 60)),
         typical_minutes=max(1, round(duration_typical_s / 60)),
         distance_km=round(distance_m / 1000, 1),
         summary=summary,
         maps_url=route_url or maps_url or fallback_url,
+        polyline=tuple(pts),
     )
 
 
@@ -228,11 +314,7 @@ async def fetch_traffic_with_alternative(
             maps_url=maps_url, alternatives=True,
         )
         pref = infos[0]
-        alt = next(
-            (i for i in infos[1:] if i.summary and i.summary != pref.summary),
-            None,
-        )
-        return pref, alt
+        return pref, _pick_alternative(pref, infos[1:])
 
     pref_task = fetch_traffic(
         client, api_key, origin, destination, preferred_waypoints,
@@ -246,11 +328,7 @@ async def fetch_traffic_with_alternative(
         pref_task, free_task, return_exceptions=False
     )
     pref = pref_list[0]
-    alt = next(
-        (i for i in free_list if i.summary and i.summary != pref.summary),
-        None,
-    )
-    return pref, alt
+    return pref, _pick_alternative(pref, free_list)
 
 
 def _severity_emoji(duration: int, typical: int) -> str:
