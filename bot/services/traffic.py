@@ -181,23 +181,26 @@ def _pick_alternative(
     (não deveria acontecer com o Directions), cai no critério antigo de
     `summary` distinto."""
     if not candidates:
+        logger.info("alternative selection: API returned no alternative routes")
         return None
     if not preferred.polyline:
         return next(
             (c for c in candidates if c.summary and c.summary != preferred.summary),
             None,
         )
-    best: TrafficInfo | None = None
-    best_overlap = _MAX_OVERLAP_RATIO
-    for cand in candidates:
-        overlap = route_overlap_ratio(cand.polyline, preferred.polyline)
-        if overlap < best_overlap:
-            best_overlap = overlap
-            best = cand
-    if best is not None:
-        logger.debug(
-            "alternative picked: overlap=%.2f summary=%s", best_overlap, best.summary
-        )
+    scored = [
+        (route_overlap_ratio(c.polyline, preferred.polyline), c) for c in candidates
+    ]
+    logger.info(
+        "alternative selection: pref='%s', %d candidate(s): %s (threshold=%.2f)",
+        preferred.summary,
+        len(scored),
+        "; ".join(f"overlap={o:.2f} via '{c.summary}'" for o, c in scored),
+        _MAX_OVERLAP_RATIO,
+    )
+    best_overlap, best = min(scored, key=lambda t: t[0])
+    if best_overlap >= _MAX_OVERLAP_RATIO:
+        return None
     return best
 
 
