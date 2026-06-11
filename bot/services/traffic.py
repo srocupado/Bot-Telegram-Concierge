@@ -19,13 +19,24 @@ MAX_WAYPOINTS = 23
 SHORT_LINK_HOSTS = ("maps.app.goo.gl", "goo.gl")
 
 # Seleção de rota alternativa: uma alternativa só vale a pena se divergir de
-# verdade da preferida. Pontos a menos de _OVERLAP_RADIUS_M do traçado da
-# preferida contam como sobrepostos; rotas com mais de _MAX_OVERLAP_RATIO de
-# sobreposição são descartadas (antes o critério era só o `summary` textual,
-# que deixava passar rotas 95% idênticas).
-_OVERLAP_RADIUS_M = 200.0
+# verdade da preferida. Pontos a menos do raio contam como sobrepostos; rotas
+# acima do teto de sobreposição são descartadas (antes o critério era só o
+# `summary` textual, que deixava passar rotas 95% idênticas). O raio largo
+# (500m) trata via principal vs marginal/paralela como o MESMO corredor.
+# Defaults aqui; sobrescritos por TRAFFIC_ALT_RADIUS_M / TRAFFIC_ALT_MAX_OVERLAP.
+_OVERLAP_RADIUS_M = 500.0
 _MAX_OVERLAP_RATIO = 0.70
 _OVERLAP_MAX_SAMPLES = 120
+
+
+def _alt_thresholds() -> tuple[float, float]:
+    """(raio_m, teto_overlap) do .env quando disponível. Import lazy pra não
+    exigir settings completos (BOT_TOKEN etc.) em testes do módulo."""
+    try:
+        from bot.config import settings
+        return settings.traffic_alt_radius_m, settings.traffic_alt_max_overlap
+    except Exception:
+        return _OVERLAP_RADIUS_M, _MAX_OVERLAP_RATIO
 
 
 class TrafficError(Exception):
@@ -146,8 +157,9 @@ def _sample_points(
 def route_overlap_ratio(
     candidate: tuple[tuple[float, float], ...],
     reference: tuple[tuple[float, float], ...],
+    radius_m: float = _OVERLAP_RADIUS_M,
 ) -> float:
-    """Fração dos pontos de `candidate` a menos de _OVERLAP_RADIUS_M de algum
+    """Fração dos pontos de `candidate` a menos de `radius_m` de algum
     ponto de `reference` (aprox. equiretangular — erro desprezível na escala
     urbana). Ambos os traçados são amostrados pra limitar o custo a
     O(_OVERLAP_MAX_SAMPLES²). Retorna 1.0 (totalmente sobreposta) se faltar
@@ -164,7 +176,7 @@ def route_overlap_ratio(
     ref_m = [(p[0] * m_per_deg_lat, p[1] * m_per_deg_lng) for p in ref]
 
     near = 0
-    r2 = _OVERLAP_RADIUS_M ** 2
+    r2 = radius_m ** 2
     for lat, lng in cand:
         cx, cy = lat * m_per_deg_lat, lng * m_per_deg_lng
         if any((cx - rx) ** 2 + (cy - ry) ** 2 <= r2 for rx, ry in ref_m):
@@ -176,8 +188,8 @@ def _pick_alternative(
     preferred: TrafficInfo, candidates: list[TrafficInfo]
 ) -> TrafficInfo | None:
     """Escolhe a alternativa geometricamente mais distinta da preferida.
-    Candidatas com sobreposição acima de _MAX_OVERLAP_RATIO são descartadas —
-    melhor mostrar uma rota só do que duas praticamente iguais. Sem polyline
+    Candidatas com sobreposição acima do teto são descartadas — melhor
+    mostrar uma rota só do que duas praticamente iguais. Sem polyline
     (não deveria acontecer com o Directions), cai no critério antigo de
     `summary` distinto."""
     if not candidates:
@@ -188,18 +200,22 @@ def _pick_alternative(
             (c for c in candidates if c.summary and c.summary != preferred.summary),
             None,
         )
+    radius_m, max_overlap = _alt_thresholds()
     scored = [
-        (route_overlap_ratio(c.polyline, preferred.polyline), c) for c in candidates
+        (route_overlap_ratio(c.polyline, preferred.polyline, radius_m), c)
+        for c in candidates
     ]
     logger.info(
-        "alternative selection: pref='%s', %d candidate(s): %s (threshold=%.2f)",
+        "alternative selection: pref='%s', %d candidate(s): %s "
+        "(radius=%.0fm, threshold=%.2f)",
         preferred.summary,
         len(scored),
         "; ".join(f"overlap={o:.2f} via '{c.summary}'" for o, c in scored),
-        _MAX_OVERLAP_RATIO,
+        radius_m,
+        max_overlap,
     )
     best_overlap, best = min(scored, key=lambda t: t[0])
-    if best_overlap >= _MAX_OVERLAP_RATIO:
+    if best_overlap >= max_overlap:
         return None
     return best
 
