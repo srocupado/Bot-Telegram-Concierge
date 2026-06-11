@@ -471,8 +471,13 @@ async def _h_lancar_movimento_banco(args: dict, ctx: ToolContext) -> str:
     )
     ctx.financial_logged_ok = True
     confirmacao = confirm_banco(entry)
+    # Hard guard: envia verbatim pra garantir que ✅ / ➖ / · / categoria
+    # cheguem inteiros (modelos leves como 3.1-lite cortam emojis ao
+    # "repassar"). Mesmo padrão de consultar_saldo.
     ctx.fallback_text = confirmacao
-    return "ok (repasse esta confirmação, não mostre id nem 'ok:'):\n" + confirmacao
+    ctx.direct_html = _html_escape(confirmacao)
+    ctx.short_circuit = True
+    return "ok: confirmação enviada ao usuário (não escreva nada, a mensagem já foi enviada)"
 
 
 async def _h_lancar_despesa_cartao(args: dict, ctx: ToolContext) -> str:
@@ -510,7 +515,9 @@ async def _h_lancar_despesa_cartao(args: dict, ctx: ToolContext) -> str:
     ctx.financial_logged_ok = True
     confirmacao = confirm_cartao(entry, parcelas)
     ctx.fallback_text = confirmacao
-    return "ok (repasse esta confirmação, não mostre id nem 'ok:'):\n" + confirmacao
+    ctx.direct_html = _html_escape(confirmacao)
+    ctx.short_circuit = True
+    return "ok: confirmação enviada ao usuário (não escreva nada, a mensagem já foi enviada)"
 
 
 async def _h_registrar_aporte_tesouro(args: dict, ctx: ToolContext) -> str:
@@ -549,7 +556,9 @@ async def _h_registrar_aporte_tesouro(args: dict, ctx: ToolContext) -> str:
     ctx.financial_logged_ok = True
     confirmacao = confirm_tesouro(res["titulo"], valor_f, data_iso, taxa)
     ctx.fallback_text = confirmacao
-    return "ok (repasse esta confirmação, não mostre id nem 'ok:'):\n" + confirmacao
+    ctx.direct_html = _html_escape(confirmacao)
+    ctx.short_circuit = True
+    return "ok: confirmação enviada ao usuário (não escreva nada, a mensagem já foi enviada)"
 
 
 async def _h_registrar_operacao_ativo(args: dict, ctx: ToolContext) -> str:
@@ -604,7 +613,9 @@ async def _h_registrar_operacao_ativo(args: dict, ctx: ToolContext) -> str:
         res, (res.get("operation") or {}).get("type", "buy"),
     )
     ctx.fallback_text = confirmacao
-    return "ok (repasse esta confirmação, não mostre id nem 'ok:'):\n" + confirmacao
+    ctx.direct_html = _html_escape(confirmacao)
+    ctx.short_circuit = True
+    return "ok: confirmação enviada ao usuário (não escreva nada, a mensagem já foi enviada)"
 
 
 async def _h_apagar_lancamento(args: dict, ctx: ToolContext) -> str:
@@ -622,10 +633,11 @@ async def _h_apagar_lancamento(args: dict, ctx: ToolContext) -> str:
     desc = rem.get("desc") or f"aporte em {res.get('titulo', '?')}"
     amt = float(rem.get("amount") or 0)
     date = rem.get("date", "?")
-    ctx.fallback_text = (
-        f"🗑️ Removido: {desc} — R$ {abs(amt):.2f} em {date}"
-    )
-    return f"ok: removido {entry_id} ({res['modulo']}) — {desc} R$ {abs(amt):.2f} em {date}"
+    confirmacao = f"🗑️ Removido: {desc} — R$ {abs(amt):.2f} em {date}"
+    ctx.fallback_text = confirmacao
+    ctx.direct_html = _html_escape(confirmacao)
+    ctx.short_circuit = True
+    return f"ok: removido {entry_id} ({res['modulo']})"
 
 
 async def _h_consultar_lancamentos(args: dict, ctx: ToolContext) -> str:
