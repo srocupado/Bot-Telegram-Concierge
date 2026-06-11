@@ -52,6 +52,21 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   linguagem natural (`/lembrar tomar remédio em 30min`), **recorrentes**
   (*"todo domingo 20h..."*), e **ações agendadas** (trânsito/congresso/clima/
   prompt livre disparam no horário).
+- **Viagens** (SerpAPI): busca de **passagens** (Google Flights) e **hotéis**
+  (Google Hotels) por texto/voz — *"voo BSB→GRU dia 20/07"*, *"hotel em
+  Florianópolis de 10 a 14/01"*. Supports voos ida e volta, classe de viagem
+  (econômica/executiva/etc.) e múltiplos passageiros. **Watches diários**: o
+  bot verifica o preço 1x/dia (8h BRT por padrão) e avisa quando cair abaixo do
+  mínimo histórico ou de um teto que você definir — *"monitora esse voo e me
+  avisa se ficar abaixo de 800"*. Gestão por texto: *"lista meus watches"*,
+  *"cancela o watch 3"*. Requer `SERPAPI_KEY`.
+- **Memória persistente de fatos**: o LLM salva automaticamente — ou você pede
+  explicitamente — qualquer informação pessoal que queira que o bot lembre entre
+  sessões: preferências, nomes de família, alergias, hábitos, configurações
+  favoritas etc. Sobrevive a restart do container (gravado no SQLite). Exemplos:
+  *"lembra que minha esposa se chama Dani"*, *"meu editor preferido é nvim"*,
+  *"tenho alergia a amendoim"*. Para consultar: *"o que você sabe sobre mim?"*.
+  Para esquecer: *"esquece meu editor preferido"*.
 - **Desfazer**: *"desfaz"* / *"errei, cancela"* desfaz o último item criado
   pelo bot (lançamento/tarefa/lembrete/compra). Encadeia.
 - **Chat livre com LLM agente**: texto, voz e imagem viram conversa com
@@ -133,6 +148,45 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
 | `/rota <endereço>` | Geocoda o endereço e calcula a rota a partir da sua localização |
 
 O bot envia um botão **📍 Enviar localização** (não persiste a localização).
+
+### Viagens (voos e hotéis)
+
+> Tudo por texto/voz livre — não há slash commands dedicados.
+
+**Busca pontual:**
+- *"voo de BSB pra GRU no dia 20/07"* → melhor oferta (companhia, horários, preço, link)
+- *"voo ida e volta BSB→GRU, saindo 20/07 voltando 27/07"*
+- *"hotel em Florianópolis de 10 a 14/01 para 2 pessoas"*
+- *"passagem executiva GRU→JFK para 2 adultos em 15/08"*
+
+**Watches diários (monitor de preço):**
+
+| Intenção | Exemplo |
+|---|---|
+| Criar watch de voo | *"monitora passagem BSB→GRU 20/07 e me avisa se cair"* |
+| Watch com teto | *"cria alerta se o voo ficar abaixo de R$ 800"* |
+| Criar watch de hotel | *"monitora hotel em SP de 10 a 12/07, teto R$ 300/noite"* |
+| Listar watches | *"lista meus watches de viagem"* |
+| Cancelar watch | *"cancela o watch 3"* |
+
+O bot verifica 1x/dia (padrão 8h BRT). Sem teto definido, avisa sempre que bater um novo mínimo histórico. Requer `SERPAPI_KEY`.
+
+### Memória persistente de fatos
+
+> Tudo por texto/voz — sem slash commands.
+
+O LLM salva fatos automaticamente quando você conta algo sobre si, ou você pede explicitamente. Os fatos sobrevivem a restart do container e ficam disponíveis em qualquer sessão futura.
+
+| Intenção | Exemplo |
+|---|---|
+| Salvar fato | *"lembra que minha esposa se chama Dani"* |
+| Salvar preferência | *"meu editor preferido é nvim"* |
+| Salvar dado de saúde | *"tenho alergia a amendoim"* |
+| Consultar tudo | *"o que você sabe sobre mim?"* |
+| Consultar um fato | *"como eu disse que prefiro café?"* |
+| Esquecer um fato | *"esquece meu editor preferido"* |
+
+Chaves são snake_case curto (ex: `esposa_nome`, `alergia`, `editor_preferido`). Um fato com a mesma chave sobrescreve o anterior.
 
 ### Tarefas e lembretes
 | Comando | Descrição |
@@ -227,6 +281,15 @@ PROACTIVE_BRIEFING_HOUR=7       # hora do briefing matinal
 PROACTIVE_LOOKAHEAD_HOURS=48    # antecedência de vencimentos (em toda janela até vencer)
 PROACTIVE_USE_LLM=false         # false = texto determinístico (barato, sem alucinar)
 ```
+
+### Viagens (SerpAPI)
+
+```bash
+SERPAPI_KEY=...          # cadastro em https://serpapi.com (plano free inclui 100 buscas/mês)
+TRAVELS_ALERT_HOUR=8     # hora BRT em que os watches diários são verificados (padrão: 8)
+```
+
+Sem `SERPAPI_KEY` as tools de viagem ficam desabilitadas mas não causam erro.
 
 ### Voz (STT)
 
@@ -378,6 +441,17 @@ para `concierge.db` e colocar dentro de `./data/`.
   Purge >90 dias.
 - **`shopping_items`**: lista de compras (`text`, `quantity`, `checked`).
 - **`workout_logs`**: registros de academia da semana corrente.
+- **`user_facts`**: memória persistente entre sessões (`user_id`, `key`
+  snake_case, `value` texto livre, `updated_at`). Chave única por usuário;
+  upsert automático.
+- **`travel_watches`**: monitors diários de preço (`kind` flight/hotel,
+  `params` JSON com IATA/datas/classe, `max_price`, `min_price_seen`,
+  `last_price`, `last_checked_at`, `last_alert_at`, `status`
+  active/cancelled, `currency`, `snooze_until`).
+- **`travel_price_snapshots`**: histórico de preços capturados a cada
+  verificação (`watch_id`, `price`, `currency`, `raw` JSON). Purge >90 dias.
+- **`travel_alerts`**: log de alertas enviados (`watch_id`, `snapshot_id`,
+  `price`, `reason` below_max/new_min). Purge >90 dias.
 
 Idempotência dos digests é via timestamps `last_*_digest_at` no User. Migrações
 de coluna são aplicadas inline em `init_db` (ALTER TABLE guardado por PRAGMA).
