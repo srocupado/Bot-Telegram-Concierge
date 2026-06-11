@@ -23,20 +23,9 @@ SHORT_LINK_HOSTS = ("maps.app.goo.gl", "goo.gl")
 # acima do teto de sobreposição são descartadas (antes o critério era só o
 # `summary` textual, que deixava passar rotas 95% idênticas). O raio largo
 # (500m) trata via principal vs marginal/paralela como o MESMO corredor.
-# Defaults aqui; sobrescritos por TRAFFIC_ALT_RADIUS_M / TRAFFIC_ALT_MAX_OVERLAP.
 _OVERLAP_RADIUS_M = 500.0
 _MAX_OVERLAP_RATIO = 0.70
 _OVERLAP_MAX_SAMPLES = 120
-
-
-def _alt_thresholds() -> tuple[float, float]:
-    """(raio_m, teto_overlap) do .env quando disponível. Import lazy pra não
-    exigir settings completos (BOT_TOKEN etc.) em testes do módulo."""
-    try:
-        from bot.config import settings
-        return settings.traffic_alt_radius_m, settings.traffic_alt_max_overlap
-    except Exception:
-        return _OVERLAP_RADIUS_M, _MAX_OVERLAP_RATIO
 
 
 class TrafficError(Exception):
@@ -200,10 +189,8 @@ def _pick_alternative(
             (c for c in candidates if c.summary and c.summary != preferred.summary),
             None,
         )
-    radius_m, max_overlap = _alt_thresholds()
     scored = [
-        (route_overlap_ratio(c.polyline, preferred.polyline, radius_m), c)
-        for c in candidates
+        (route_overlap_ratio(c.polyline, preferred.polyline), c) for c in candidates
     ]
     logger.info(
         "alternative selection: pref='%s', %d candidate(s): %s "
@@ -211,11 +198,11 @@ def _pick_alternative(
         preferred.summary,
         len(scored),
         "; ".join(f"overlap={o:.2f} via '{c.summary}'" for o, c in scored),
-        radius_m,
-        max_overlap,
+        _OVERLAP_RADIUS_M,
+        _MAX_OVERLAP_RATIO,
     )
     best_overlap, best = min(scored, key=lambda t: t[0])
-    if best_overlap >= max_overlap:
+    if best_overlap >= _MAX_OVERLAP_RATIO:
         return None
     return best
 

@@ -45,12 +45,6 @@ class Settings(BaseSettings):
     traffic_digest_enabled: bool = Field(True, alias="TRAFFIC_DIGEST_ENABLED")
     traffic_hour: int = Field(7, alias="TRAFFIC_HOUR")
     traffic_minute: int = Field(20, alias="TRAFFIC_MINUTE")
-    # Seleção de rota alternativa (/rota e digest): pontos a menos de
-    # TRAFFIC_ALT_RADIUS_M do traçado preferido contam como sobrepostos;
-    # alternativa com sobreposição >= TRAFFIC_ALT_MAX_OVERLAP é descartada.
-    # Raio largo (500m) trata via principal vs marginal como mesmo corredor.
-    traffic_alt_radius_m: float = Field(500.0, alias="TRAFFIC_ALT_RADIUS_M")
-    traffic_alt_max_overlap: float = Field(0.70, alias="TRAFFIC_ALT_MAX_OVERLAP")
 
     # Medidas Provisórias
     congress_digest_enabled: bool = Field(True, alias="CONGRESS_DIGEST_ENABLED")
