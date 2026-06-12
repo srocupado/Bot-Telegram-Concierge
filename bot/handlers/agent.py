@@ -1,8 +1,10 @@
 """Agente de execução (/agente) — owner-only.
 
 Comandos: /agente <tarefa>, /agente_parar, /agente_status, /agente_fim,
-/agente_config. Texto livre do owner com sessão ativa (TTL) continua a
-mesma sessão (resume). Não-owner: silêncio total (nem vê o recurso).
+/agente_config. Continuação: RESPONDER (reply) a uma mensagem de entrega
+do agente dentro do TTL continua a mesma sessão (resume) — texto livre
+solto vai pro chat normal, sem captura. Não-owner: silêncio total (nem vê
+o recurso).
 
 A tarefa roda em background (asyncio.create_task) — o handler retorna logo
 e o progresso vai numa ÚNICA mensagem de status editada (máx 1 edição/3s).
@@ -38,8 +40,10 @@ router = Router(name=__name__)
 _bot: Bot | None = None
 
 # Sessão de continuação (owner-only → 1 sessão global): após uma tarefa,
-# texto livre do owner dentro do TTL continua a MESMA sessão via resume.
-_session: dict | None = None  # {"id": str, "expires": float}
+# RESPONDER (reply) a uma das mensagens de entrega dentro do TTL continua a
+# MESMA sessão via resume. msg_ids = mensagens "respondíveis" (status final,
+# texto entregue, artefatos). Texto livre sem reply nunca é capturado.
+_session: dict | None = None  # {"id": str, "expires": float, "msg_ids": set[int]}
 
 _BUSY_MSG = (
     "⏳ O agente já está executando uma tarefa. "
@@ -68,13 +72,24 @@ def _active_session_id() -> str | None:
     return None
 
 
-def _store_session(session_id: str | None) -> None:
+def _store_session(session_id: str | None, msg_ids: set[int]) -> None:
     global _session
     if session_id:
         _session = {
             "id": session_id,
             "expires": time.time() + agent_config.session_ttl_minutes * 60,
+            "msg_ids": msg_ids,
         }
+
+
+def _continuation_sid_for_reply(message: Message) -> str | None:
+    """Sessão a retomar SE a mensagem for reply a uma entrega do agente."""
+    sid = _active_session_id()
+    if sid is None or message.reply_to_message is None or _session is None:
+        return None
+    if message.reply_to_message.message_id in _session["msg_ids"]:
+        return sid
+    return None
 
 
 def _clear_session() -> None:
@@ -104,6 +119,10 @@ class ProgressReporter:
             self._chat_id, self._header, parse_mode="HTML",
         )
         self._message_id = msg.message_id
+
+    @property
+    def message_id(self) -> int | None:
+        return self._message_id
 
     async def on_event(self, event: AgentEvent) -> None:
         self._lines.append(html.escape(event.line))
@@ -173,25 +192,32 @@ def _summary_html(result: AgentResult, *, scheduled: bool = False) -> str:
     extra = ""
     if result.ok and not scheduled:
         extra = (
-            f"\n💬 Responda em até {agent_config.session_ttl_minutes} min pra "
-            "continuar a mesma tarefa (/agente_fim encerra)."
+            "\n↩️ Pra continuar essa tarefa, RESPONDA (reply) esta mensagem "
+            f"ou um dos arquivos — vale {agent_config.session_ttl_minutes} min. "
+            "Texto solto segue como chat normal."
         )
     return f"{head}\n<i>{meta}</i>{extra}"
 
 
-async def _deliver(bot: Bot, chat_id: int, result: AgentResult) -> None:
-    """Texto final fatiado + artefatos do workspace via sendDocument."""
+async def _deliver(bot: Bot, chat_id: int, result: AgentResult) -> set[int]:
+    """Texto final fatiado + artefatos do workspace via sendDocument.
+
+    Retorna os message_ids enviados — responder (reply) a qualquer um deles
+    continua a sessão."""
+    sent: set[int] = set()
     text = (result.final_text or "").strip()
     if text:
         for chunk in _chunk_text(text):
             try:
-                await bot.send_message(chat_id, chunk, parse_mode=None)
+                msg = await bot.send_message(chat_id, chunk, parse_mode=None)
+                sent.add(msg.message_id)
             except Exception:
                 logger.exception("agent: falha ao enviar texto final")
                 break
     for path in result.artifacts:
         try:
-            await bot.send_document(chat_id, FSInputFile(path))
+            msg = await bot.send_document(chat_id, FSInputFile(path))
+            sent.add(msg.message_id)
         except Exception:
             logger.exception("agent: falha ao enviar artefato %s", path)
             try:
@@ -202,6 +228,7 @@ async def _deliver(bot: Bot, chat_id: int, result: AgentResult) -> None:
                 )
             except Exception:
                 pass
+    return sent
 
 
 async def _run_and_report(
@@ -223,25 +250,27 @@ async def _run_and_report(
         logger.exception("agent: tarefa falhou")
         await reporter.finish(f"❌ <b>Erro no agente</b>: {html.escape(str(e))}")
         return
+    await reporter.finish(_summary_html(result, scheduled=scheduled))
+    delivered = await _deliver(bot, chat_id, result)
     if scheduled:
-        # Execução agendada não cria sessão de continuação (não sequestra o
-        # texto livre do chat) e soma no teto diário de custo do cron.
+        # Execução agendada não cria sessão de continuação e soma no teto
+        # diário de custo do cron.
         _add_cron_spend(result.total_cost_usd)
     else:
-        _store_session(result.session_id if result.ok else None)
-    await reporter.finish(_summary_html(result, scheduled=scheduled))
-    await _deliver(bot, chat_id, result)
+        if reporter.message_id is not None:
+            delivered.add(reporter.message_id)
+        _store_session(result.session_id if result.ok else None, delivered)
 
 
 def try_continuation(message: Message, user: User, text: str) -> bool:
-    """Se o owner tem sessão ativa em TTL, continua a tarefa com `text`.
+    """Continua a sessão SE a mensagem for reply a uma entrega do agente.
 
     Usado pelo handler de voz (texto transcrito não passa pelo filtro de
     mensagem deste router). True = consumiu a mensagem.
     """
     if not (_is_owner(message) and user.is_authorized):
         return False
-    sid = _active_session_id()
+    sid = _continuation_sid_for_reply(message)
     if sid is None or runner.busy:
         return False
     asyncio.create_task(_run_and_report(message.bot, message.chat.id, text, sid))
@@ -392,7 +421,8 @@ async def cmd_agente_status(message: Message, user: User) -> None:
         left = int((_session["expires"] - time.time()) / 60)
         await message.answer(
             f"💤 Ocioso. Sessão de continuação ativa por mais ~{left} min "
-            "(texto livre continua a última tarefa; /agente_fim encerra).",
+            "(responda/reply a última entrega pra continuar; /agente_fim "
+            "encerra).",
             parse_mode=None,
         )
     else:
@@ -406,7 +436,7 @@ async def cmd_agente_fim(message: Message, user: User) -> None:
     had = _active_session_id() is not None
     _clear_session()
     await message.answer(
-        "✅ Sessão encerrada — texto livre volta ao chat normal."
+        "✅ Sessão encerrada — replies à última entrega não continuam mais a tarefa."
         if had else "Não havia sessão de continuação ativa.",
         parse_mode=None,
     )
@@ -442,14 +472,18 @@ async def cmd_agente_config(message: Message, command: CommandObject, user: User
 
 
 def _continuation_gate(message: Message) -> bool:
-    return _is_owner(message) and not runner.busy and _active_session_id() is not None
+    return (
+        _is_owner(message)
+        and not runner.busy
+        and _continuation_sid_for_reply(message) is not None
+    )
 
 
 @router.message(F.text & ~F.text.startswith("/"), _continuation_gate)
 async def agent_continuation(message: Message, user: User) -> None:
     if not user.is_authorized:
         return
-    sid = _active_session_id()
+    sid = _continuation_sid_for_reply(message)
     if sid is None:  # TTL expirou entre o filtro e o handler
         return
     if runner.busy:

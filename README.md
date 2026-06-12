@@ -105,8 +105,8 @@ Só o usuário com `OWNER_TELEGRAM_ID` vê/usa — pros demais o recurso não ex
 |---|---|
 | `/agente <tarefa>` | Inicia a tarefa em background; progresso numa mensagem editada |
 | texto/voz livre | `"constrói um app que..."` aciona via tool `executar_agente`; por voz com slash: `"barra agente ..."` |
-| resposta em TTL | Texto/voz livre após a tarefa **continua a mesma sessão** (resume) |
-| `/agente_fim` | Encerra a sessão de continuação na hora |
+| reply em TTL | **Responder (reply)** à mensagem de entrega (resumo ou arquivos) **continua a mesma sessão** (resume); texto solto segue como chat normal |
+| `/agente_fim` | Encerra a janela de continuação antes do TTL |
 | `/agente_parar` | Interrompe a tarefa em andamento |
 | `/agente_status` | Rodando há quanto tempo / sessão ativa |
 | `/agente_config` | Ajustes finos em runtime, sem restart: `modelo opus\|sonnet\|haiku`, `timeout 1800`, `turnos 20`, `custo 5`, `ttl 60`, `padrao` (volta ao `.env`) |
