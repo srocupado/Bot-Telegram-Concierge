@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gnupg \
         git \
         openssh-client \
+        sshpass \
         rsync \
     && rm -rf /var/lib/apt/lists/*
 
