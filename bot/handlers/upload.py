@@ -18,7 +18,7 @@ import re
 from aiogram import F, Router
 from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
+from aiogram.types import FSInputFile, Message
 
 from bot.config import settings
 from bot.db.models import User
@@ -27,6 +27,7 @@ from bot.services.uploads import (
     delete_file,
     format_listing,
     human_size,
+    resolve_file,
     sanitize_name,
     unique_path,
 )
@@ -103,6 +104,30 @@ async def cmd_arquivos(message: Message, command: CommandObject, user: User) -> 
         else:
             await message.answer(
                 f"Não achei uploads/{name} (veja /arquivos).", parse_mode=None,
+            )
+        return
+    if args.lower().startswith(("enviar ", "baixar ", "download ")):
+        name = args.split(None, 1)[1].strip()
+        path = resolve_file(name)
+        if path is None:
+            await message.answer(
+                f"Não achei uploads/{name} (veja /arquivos).", parse_mode=None,
+            )
+            return
+        if path.stat().st_size > 50 * 1024 * 1024:  # teto do sendDocument
+            await message.answer(
+                f"⚠️ uploads/{name} tem {human_size(path.stat().st_size)} — "
+                "acima dos 50 MB que o Telegram aceita enviar. Peça ao "
+                "/agente pra compactar ou fatiar.",
+                parse_mode=None,
+            )
+            return
+        try:
+            await message.answer_document(FSInputFile(path))
+        except Exception:
+            logger.exception("upload: falha ao enviar %s", name)
+            await message.answer(
+                f"⚠️ Falha ao enviar uploads/{name}.", parse_mode=None,
             )
         return
     await message.answer("📁 " + format_listing(), parse_mode=None)

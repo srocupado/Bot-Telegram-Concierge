@@ -81,14 +81,20 @@ def format_listing() -> str:
     return head + ":\n" + "\n".join(lines)
 
 
-def delete_file(name: str) -> bool:
-    """Apaga um arquivo de uploads/. False = não existe. Recusa qualquer
-    caminho que escape da pasta."""
+def resolve_file(name: str) -> Path | None:
+    """Caminho de um arquivo existente em uploads/, ou None. Recusa
+    qualquer caminho que escape da pasta."""
     d = uploads_dir().resolve()
     target = (d / name).resolve()
     if not str(target).startswith(str(d) + os.sep):
-        return False
-    if not target.is_file():
+        return None
+    return target if target.is_file() else None
+
+
+def delete_file(name: str) -> bool:
+    """Apaga um arquivo de uploads/. False = não existe."""
+    target = resolve_file(name)
+    if target is None:
         return False
     target.unlink()
     return True

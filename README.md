@@ -127,7 +127,8 @@ Owner-only: anexe um documento no chat e ele é salvo em
 `./workspace/uploads/` (persiste no host; máx 20 MB — limite de download da
 Bot API). Caption `guarda como <nome.ext>` renomeia; **PDF sem caption**
 continua indo pra análise multimodal (caption `guarda` força salvar).
-`/arquivos` lista, `/arquivos apagar <nome>` remove — em linguagem natural
+`/arquivos` lista, `/arquivos enviar <nome>` manda o arquivo de volta no
+chat (≤ 50 MB), `/arquivos apagar <nome>` remove — em linguagem natural
 também: *"que arquivos você tem salvos?"* (tool `listar_arquivos`). Como a
 pasta fica no workspace do agente, o fluxo natural é anexar a planilha hoje
 e amanhã pedir */agente pega o uploads/planilha.xlsx e cruza com…*
