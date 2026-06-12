@@ -46,7 +46,8 @@ HELP_TEXT = (
     "• <code>/lembrar &lt;texto&gt; em 2h | amanhã 09:00</code> — cria lembrete\n"
     "• <code>/lembretes</code> — lista lembretes pendentes\n"
     "• <code>/apagar_lembrete &lt;id&gt;</code> — apaga um lembrete pendente\n"
-    "• <code>/agendar_comando &lt;tipo&gt; [args] &lt;quando&gt;</code> — agenda uma ação (transito/congresso/clima/chat) pra rodar no horário\n\n"
+    "• <code>/agendar_comando &lt;tipo&gt; [args] &lt;quando&gt;</code> — agenda uma ação (transito/congresso/clima/chat) pra rodar no horário\n"
+    "• Recorrência por chat: <i>\"todo dia útil 7h…\"</i>, <i>\"a cada 2 horas…\"</i> (aceita padrão cron)\n\n"
     "<b>LLM</b>:\n"
     "• <code>/ping</code> — testa o LLM atual (mostra provider e modelo)\n"
     "• <code>/provider anthropic|openai|gemini</code> — troca de LLM. No Gemini dá pra escolher o modelo: <code>/provider gemini pro</code> | <code>/provider gemini flash</code>\n"
@@ -134,8 +135,12 @@ AGENT_HELP_TEXT = (
     "runtime, sem reiniciar (ex.: <code>/agente_config modelo opus</code>)\n"
     "• GitHub: com AGENT_GITHUB_TOKEN no .env, o agente clona, commita, "
     "faz push e abre PRs.\n"
+    "• Agendado (cron): <i>\"todo dia útil 7h, roda o agente pra…\"</i> — "
+    "execução recorrente. Comando shell fixo sem LLM: <i>\"todo dia 3h roda "
+    "&lt;comando&gt;\"</i> (tipo shell). Veja em /lembretes; apaga com "
+    "/apagar_lembrete.\n"
     "• Guardrails: confinado a ./workspace, env limpo, 1 tarefa por vez, "
-    "teto de custo por tarefa.\n"
+    "teto de custo por tarefa (+ teto diário pro agendado).\n"
 )
 
 

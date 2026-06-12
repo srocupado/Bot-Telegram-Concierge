@@ -240,7 +240,13 @@ async def run_reminders(
             for rem in items:
                 try:
                     if rem.command_kind:
-                        await run_action(bot, session, user, rem.command_kind, rem.command_args)
+                        dispatched = await run_action(
+                            bot, session, user, rem.command_kind, rem.command_args
+                        )
+                        if not dispatched:
+                            # Ex.: agente ocupado — mantém pendente e tenta
+                            # de novo no próximo tick, sem reagendar.
+                            continue
                     else:
                         # Lembretes recorrentes não mostram botões snooze/done
                         # (a próxima ocorrência já vem; snooze não faz sentido).
@@ -259,8 +265,9 @@ async def run_reminders(
                             reply_markup=kb,
                         )
                     if rem.recurrence:
-                        # Reagenda: mesmo HH:MM, próximo dia conforme rrule. Mantém row.
-                        rem.due_at = next_due_from(rem.recurrence, rem.due_at)
+                        # Reagenda: mesmo HH:MM, próximo dia conforme rrule
+                        # (cron: avaliado no tz do usuário). Mantém row.
+                        rem.due_at = next_due_from(rem.recurrence, rem.due_at, user.timezone)
                         rem.sent = False
                         rem.sent_at = None
                         await session.commit()

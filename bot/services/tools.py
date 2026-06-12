@@ -275,34 +275,60 @@ async def _h_apagar_lembrete(args: dict, ctx: ToolContext) -> str:
 
 
 async def _h_agendar_comando(args: dict, ctx: ToolContext) -> str:
-    from bot.services.scheduled_actions import VALID_KINDS
+    from bot.config import settings as _settings
+    from bot.services.reminders import (
+        CRON_MIN_INTERVAL_MINUTES,
+        cron_expr,
+        cron_interval_ok,
+        cron_next_fire,
+    )
+    from bot.services.scheduled_actions import OWNER_KINDS, VALID_KINDS
 
     tipo = (args.get("tipo") or "").strip()
     parametros = (args.get("parametros") or "").strip()
     quando_iso = (args.get("quando_iso") or "").strip()
     recorrencia = (args.get("recorrencia") or "").strip().lower()
-    if not tipo or not quando_iso:
-        return "erro: 'tipo' e 'quando_iso' são obrigatórios"
+    if not tipo:
+        return "erro: 'tipo' é obrigatório"
     if tipo not in VALID_KINDS:
         return f"erro: tipo inválido. Use um de: {sorted(VALID_KINDS)}"
+    if tipo in OWNER_KINDS and ctx.user.id != _settings.owner_telegram_id:
+        return f"erro: tipo '{tipo}' é restrito ao dono do bot"
     if tipo == "chat" and not parametros:
         return "erro: para tipo='chat', 'parametros' deve conter o prompt a executar"
+    if tipo == "agente" and not parametros:
+        return "erro: para tipo='agente', 'parametros' deve conter a tarefa do agente"
+    if tipo == "shell" and not parametros:
+        return "erro: para tipo='shell', 'parametros' deve conter o comando a executar"
     if recorrencia and not is_valid_recurrence(recorrencia):
         return (
             "erro: recorrencia inválida. Use 'daily', 'weekday', 'weekend', "
-            "'monthly' ou 'weekly:mon,wed,fri'."
+            "'monthly', 'weekly:mon,wed,fri' ou 'cron:<expressão de 5 campos>' "
+            "(ex: 'cron:0 8 * * 1-5')."
+        )
+    expr = cron_expr(recorrencia or None)
+    if expr is not None and not cron_interval_ok(expr):
+        return (
+            f"erro: expressão cron dispara com intervalo menor que "
+            f"{CRON_MIN_INTERVAL_MINUTES} min — frequência mínima não atendida"
         )
 
     tz = ZoneInfo(ctx.tz)
-    try:
-        dt_local = datetime.fromisoformat(quando_iso.replace(" ", "T"))
-    except ValueError:
-        return f"erro: 'quando_iso' inválido ({quando_iso!r}). Use 'YYYY-MM-DDTHH:MM'."
-    if dt_local.tzinfo is None:
-        dt_local = dt_local.replace(tzinfo=tz)
-    due_utc = dt_local.astimezone(timezone.utc)
-    if due_utc <= datetime.now(timezone.utc):
-        return f"erro: data/hora ({quando_iso}) já passou"
+    if quando_iso:
+        try:
+            dt_local = datetime.fromisoformat(quando_iso.replace(" ", "T"))
+        except ValueError:
+            return f"erro: 'quando_iso' inválido ({quando_iso!r}). Use 'YYYY-MM-DDTHH:MM'."
+        if dt_local.tzinfo is None:
+            dt_local = dt_local.replace(tzinfo=tz)
+        due_utc = dt_local.astimezone(timezone.utc)
+        if due_utc <= datetime.now(timezone.utc):
+            return f"erro: data/hora ({quando_iso}) já passou"
+    elif expr is not None:
+        # Cron sem quando_iso: primeiro disparo = próxima ocorrência da expressão.
+        due_utc = cron_next_fire(expr, ctx.tz)
+    else:
+        return "erro: 'quando_iso' é obrigatório (exceto com recorrencia 'cron:...')"
 
     descricao_map = {
         "transito_casa": "trânsito → casa",
@@ -310,6 +336,8 @@ async def _h_agendar_comando(args: dict, ctx: ToolContext) -> str:
         "congresso": "pauta do congresso",
         "clima": "clima",
         "chat": parametros[:60] + ("…" if len(parametros) > 60 else ""),
+        "agente": "🤖 " + parametros[:60] + ("…" if len(parametros) > 60 else ""),
+        "shell": "$ " + parametros[:60] + ("…" if len(parametros) > 60 else ""),
     }
     label = descricao_map.get(tipo, tipo)
     texto = f"[agendado] {label}"
@@ -1235,40 +1263,60 @@ TOOLS: list[Tool] = [
             "fazer (resumo de gastos, fatura do cartão, lista de compras, "
             "consulta de treino, etc). Ex: parametros='me manda o resumo dos "
             "meus gastos da semana e quanto sobrou no orçamento'.\n"
+            "- 'agente' (SÓ o dono do bot): roda o agente de execução de "
+            "código (Claude Code) com a tarefa em parametros. Use quando a "
+            "tarefa agendada exigir escrever/executar código, mexer em "
+            "arquivos do workspace ou shell com raciocínio.\n"
+            "- 'shell' (SÓ o dono do bot): executa um comando FIXO no shell "
+            "do container, sem LLM (barato e determinístico — backups, "
+            "healthchecks). parametros = o comando. Prefixe '@silencioso ' "
+            "pra só avisar quando falhar (exit != 0).\n"
             "Para agendamentos RECORRENTES (todo dia/semana/mês), passe "
             "'recorrencia'. Ex: 'todo domingo 20h me manda o resumo da "
             "semana' → tipo='chat', parametros='resumo dos meus gastos e "
             "treinos da semana', quando_iso=<próximo domingo 20h>, "
-            "recorrencia='weekly:sun'."
+            "recorrencia='weekly:sun'. Pra horários que os presets não "
+            "expressam (ex: 'a cada 2 horas', 'dia 1 e 15 às 9h'), use "
+            "'cron:<expr>' — aí quando_iso é opcional (default: próxima "
+            "ocorrência da expressão)."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "tipo": {
                     "type": "string",
-                    "enum": ["transito_casa", "transito_trabalho", "congresso", "clima", "chat"],
+                    "enum": [
+                        "transito_casa", "transito_trabalho", "congresso",
+                        "clima", "chat", "agente", "shell",
+                    ],
                 },
                 "parametros": {
                     "type": "string",
                     "description": (
-                        "Args opcionais (coords pra clima; prompt pra chat). "
+                        "Args opcionais (coords pra clima; prompt pra chat; "
+                        "tarefa pra agente; comando pra shell). "
                         "Vazio pra transito/congresso."
                     ),
                 },
                 "quando_iso": {
                     "type": "string",
-                    "description": "Data/hora local ISO 'YYYY-MM-DDTHH:MM' do primeiro disparo.",
+                    "description": (
+                        "Data/hora local ISO 'YYYY-MM-DDTHH:MM' do primeiro "
+                        "disparo. Opcional quando recorrencia for 'cron:...'."
+                    ),
                 },
                 "recorrencia": {
                     "type": "string",
                     "description": (
                         "Opcional. Pra repetir: 'daily', 'weekday', 'weekend', "
-                        "'monthly' ou 'weekly:<dias>' (ex: 'weekly:mon,wed,fri' "
-                        "ou 'weekly:sun'). Vazio = dispara só uma vez."
+                        "'monthly', 'weekly:<dias>' (ex: 'weekly:mon,wed,fri') "
+                        "ou 'cron:<expressão de 5 campos, avaliada no fuso do "
+                        "usuário>' (ex: 'cron:0 */2 * * *'; intervalo mínimo "
+                        "10 min). Vazio = dispara só uma vez."
                     ),
                 },
             },
-            "required": ["tipo", "quando_iso"],
+            "required": ["tipo"],
         },
         handler=_h_agendar_comando,
     ),

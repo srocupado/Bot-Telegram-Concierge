@@ -85,17 +85,21 @@ def _clear_session() -> None:
 class ProgressReporter:
     """Edita UMA mensagem de status, coalescendo eventos (máx 1 edição/3s)."""
 
-    def __init__(self, bot: Bot, chat_id: int) -> None:
+    def __init__(self, bot: Bot, chat_id: int, *, scheduled: bool = False) -> None:
         self._bot = bot
         self._chat_id = chat_id
         self._message_id: int | None = None
         self._lines: deque[str] = deque(maxlen=8)
         self._last_edit = 0.0
-        self._header = "🤖 <b>Agente trabalhando…</b>"
+        self._title = (
+            "🤖⏰ <b>Agente (agendado) trabalhando…</b>" if scheduled
+            else "🤖 <b>Agente trabalhando…</b>"
+        )
+        self._header = self._title
 
     async def start(self, prompt: str) -> None:
         preview = prompt if len(prompt) <= 120 else prompt[:117] + "…"
-        self._header = f"🤖 <b>Agente trabalhando…</b>\n<i>{html.escape(preview)}</i>"
+        self._header = f"{self._title}\n<i>{html.escape(preview)}</i>"
         msg = await self._bot.send_message(
             self._chat_id, self._header, parse_mode="HTML",
         )
@@ -153,7 +157,7 @@ def _chunk_text(text: str, limit: int = 4000) -> list[str]:
     return chunks
 
 
-def _summary_html(result: AgentResult) -> str:
+def _summary_html(result: AgentResult, *, scheduled: bool = False) -> str:
     mins, secs = divmod(int(result.duration_s), 60)
     parts = [f"{mins}min {secs}s" if mins else f"{secs}s"]
     if result.num_turns:
@@ -161,12 +165,13 @@ def _summary_html(result: AgentResult) -> str:
     if result.total_cost_usd is not None:
         parts.append(f"US$ {result.total_cost_usd:.3f}")
     meta = " · ".join(parts)
+    label = "Tarefa agendada" if scheduled else "Tarefa"
     if result.ok:
-        head = "✅ <b>Tarefa concluída</b>"
+        head = f"✅ <b>{label} concluída</b>"
     else:
-        head = f"⚠️ <b>Tarefa não concluída</b> — {html.escape(result.error or 'erro')}"
+        head = f"⚠️ <b>{label} não concluída</b> — {html.escape(result.error or 'erro')}"
     extra = ""
-    if result.ok:
+    if result.ok and not scheduled:
         extra = (
             f"\n💬 Responda em até {agent_config.session_ttl_minutes} min pra "
             "continuar a mesma tarefa (/agente_fim encerra)."
@@ -201,8 +206,9 @@ async def _deliver(bot: Bot, chat_id: int, result: AgentResult) -> None:
 
 async def _run_and_report(
     bot: Bot, chat_id: int, prompt: str, resume_session_id: str | None,
+    *, scheduled: bool = False,
 ) -> None:
-    reporter = ProgressReporter(bot, chat_id)
+    reporter = ProgressReporter(bot, chat_id, scheduled=scheduled)
     try:
         await reporter.start(prompt)
         result = await runner.run(
@@ -217,8 +223,13 @@ async def _run_and_report(
         logger.exception("agent: tarefa falhou")
         await reporter.finish(f"❌ <b>Erro no agente</b>: {html.escape(str(e))}")
         return
-    _store_session(result.session_id if result.ok else None)
-    await reporter.finish(_summary_html(result))
+    if scheduled:
+        # Execução agendada não cria sessão de continuação (não sequestra o
+        # texto livre do chat) e soma no teto diário de custo do cron.
+        _add_cron_spend(result.total_cost_usd)
+    else:
+        _store_session(result.session_id if result.ok else None)
+    await reporter.finish(_summary_html(result, scheduled=scheduled))
     await _deliver(bot, chat_id, result)
 
 
@@ -237,16 +248,58 @@ def try_continuation(message: Message, user: User, text: str) -> bool:
     return True
 
 
-def start_background_task(prompt: str, chat_id: int) -> str:
-    """Entrada usada pela tool executar_agente (chat livre / voz).
+# Gasto diário das execuções AGENDADAS do agente (teto opcional
+# AGENT_CRON_DAILY_BUDGET_USD). Em memória: zera no restart.
+_cron_spend = {"day": None, "usd": 0.0, "notified": False}
 
-    Retorna: 'started' | 'busy' | 'disabled'.
+
+def _add_cron_spend(cost_usd: float | None) -> None:
+    from datetime import date
+
+    today = date.today()
+    if _cron_spend["day"] != today:
+        _cron_spend.update(day=today, usd=0.0, notified=False)
+    _cron_spend["usd"] += cost_usd or 0.0
+
+
+def _cron_budget_exceeded(chat_id: int) -> bool:
+    """True se o teto diário do cron foi atingido. Avisa o owner 1x/dia."""
+    from datetime import date
+
+    budget = settings.agent_cron_daily_budget_usd
+    if budget <= 0:
+        return False
+    if _cron_spend["day"] != date.today():
+        return False
+    if _cron_spend["usd"] < budget:
+        return False
+    if not _cron_spend["notified"] and _bot is not None:
+        _cron_spend["notified"] = True
+        asyncio.create_task(_bot.send_message(
+            chat_id,
+            f"⏰ ⚠️ Teto diário das tarefas agendadas do agente atingido "
+            f"(US$ {_cron_spend['usd']:.2f} ≥ US$ {budget:.2f}). "
+            "Execuções de hoje serão puladas; volta amanhã.",
+            parse_mode=None,
+        ))
+    return True
+
+
+def start_background_task(prompt: str, chat_id: int, *, scheduled: bool = False) -> str:
+    """Entrada usada pela tool executar_agente (chat livre / voz) e pelo
+    scheduler (tarefas cron, scheduled=True — sessão sempre nova).
+
+    Retorna: 'started' | 'busy' | 'disabled' | 'budget'.
     """
     if not runner.enabled or _bot is None:
         return "disabled"
+    if scheduled and _cron_budget_exceeded(chat_id):
+        return "budget"
     if runner.busy:
         return "busy"
-    asyncio.create_task(_run_and_report(_bot, chat_id, prompt, None))
+    asyncio.create_task(
+        _run_and_report(_bot, chat_id, prompt, None, scheduled=scheduled)
+    )
     return "started"
 
 
@@ -285,7 +338,10 @@ async def cmd_agente(message: Message, command: CommandObject, user: User) -> No
             "<code>/agente_status</code> · <code>/agente_parar</code> · "
             "<code>/agente_fim</code> · <code>/agente_config</code>\n\n"
             "Também funciona por voz (<i>\"barra agente …\"</i>) e em linguagem "
-            "natural no chat (<i>\"constrói um app que…\"</i>).",
+            "natural no chat (<i>\"constrói um app que…\"</i>).\n\n"
+            "⏰ <b>Agendado</b>: peça no chat <i>\"todo dia útil às 7h, roda o "
+            "agente pra…\"</i> (aceita padrão cron). Lista em /lembretes, "
+            "apaga com /apagar_lembrete.",
             parse_mode="HTML",
         )
         return

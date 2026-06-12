@@ -222,7 +222,18 @@ _WEEKDAY_MAP = {
     "sun": 6, "dom": 6,
 }
 
-VALID_RECURRENCES = {"daily", "weekday", "weekend", "monthly"}  # + "weekly:<dias>"
+VALID_RECURRENCES = {"daily", "weekday", "weekend", "monthly"}  # + "weekly:<dias>" + "cron:<expr>"
+
+# Frequência mínima de uma expressão cron (proteção de custo/spam — um
+# '* * * * *' dispararia a cada tick do scheduler).
+CRON_MIN_INTERVAL_MINUTES = 10
+
+
+def cron_expr(rrule: str | None) -> str | None:
+    """Extrai a expressão de um rrule 'cron:<expr>' (None se não for cron)."""
+    if rrule and rrule.startswith("cron:"):
+        return rrule.split(":", 1)[1].strip()
+    return None
 
 
 def is_valid_recurrence(rrule: str) -> bool:
@@ -231,11 +242,48 @@ def is_valid_recurrence(rrule: str) -> bool:
     if rrule.startswith("weekly:"):
         days = rrule.split(":", 1)[1].split(",")
         return all(d.strip().lower() in _WEEKDAY_MAP for d in days if d.strip())
+    expr = cron_expr(rrule)
+    if expr is not None:
+        from croniter import croniter
+        return croniter.is_valid(expr)
     return False
 
 
-def next_due_from(rrule: str, after: datetime) -> datetime:
-    """Calcula o próximo disparo a partir de `after` (timezone-aware), no mesmo HH:MM."""
+def cron_interval_ok(expr: str, min_minutes: int = CRON_MIN_INTERVAL_MINUTES) -> bool:
+    """True se nenhum intervalo entre os próximos disparos for menor que
+    `min_minutes`. Amostra alguns disparos a partir de agora — suficiente
+    pra pegar '*/5 * * * *' e afins."""
+    from croniter import croniter
+
+    it = croniter(expr, datetime.now(timezone.utc))
+    fires = [it.get_next(datetime) for _ in range(6)]
+    return all(
+        (b - a).total_seconds() >= min_minutes * 60
+        for a, b in zip(fires, fires[1:])
+    )
+
+
+def cron_next_fire(expr: str, tz_name: str, *, base: datetime | None = None) -> datetime:
+    """Próximo disparo da expressão (avaliada no tz do usuário), em UTC."""
+    from croniter import croniter
+
+    tz = ZoneInfo(tz_name)
+    base_local = (base or datetime.now(timezone.utc)).astimezone(tz)
+    nxt: datetime = croniter(expr, base_local).get_next(datetime)
+    return nxt.astimezone(timezone.utc)
+
+
+def next_due_from(rrule: str, after: datetime, tz_name: str = "America/Sao_Paulo") -> datetime:
+    """Calcula o próximo disparo a partir de `after` (timezone-aware), no mesmo HH:MM.
+
+    Pra 'cron:<expr>' a expressão é avaliada no timezone do usuário e a base
+    é max(after, agora) — se o bot ficou fora do ar, não dispara rajada de
+    ocorrências perdidas (no máx. 1 catch-up, que é o próprio `after` vencido).
+    """
+    expr = cron_expr(rrule)
+    if expr is not None:
+        base = max(as_utc(after) or after, datetime.now(timezone.utc))
+        return cron_next_fire(expr, tz_name, base=base)
     if rrule == "daily":
         return after + timedelta(days=1)
     if rrule == "weekday":

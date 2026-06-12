@@ -114,6 +114,10 @@ class Settings(BaseSettings):
     # Fine-grained PAT restrito aos repos que o agente pode tocar (opcional).
     # Entra no env do agente como GH_TOKEN — habilita push/PRs via git/gh.
     agent_github_token: SecretStr | None = Field(None, alias="AGENT_GITHUB_TOKEN")
+    # Teto diário (US$) somado das execuções AGENDADAS do agente (cron).
+    # 0 = sem teto. Cada execução continua limitada por AGENT_MAX_COST_USD.
+    # Contador em memória — zera no restart do bot (aceitável pro uso pessoal).
+    agent_cron_daily_budget_usd: float = Field(0.0, alias="AGENT_CRON_DAILY_BUDGET_USD")
 
     # Notificação ao reiniciar (mensagem '🟢 online' pra usuários autorizados).
     restart_notification_enabled: bool = Field(True, alias="RESTART_NOTIFICATION_ENABLED")

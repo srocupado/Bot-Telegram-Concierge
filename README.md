@@ -110,13 +110,16 @@ Só o usuário com `OWNER_TELEGRAM_ID` vê/usa — pros demais o recurso não ex
 | `/agente_parar` | Interrompe a tarefa em andamento |
 | `/agente_status` | Rodando há quanto tempo / sessão ativa |
 | `/agente_config` | Ajustes finos em runtime, sem restart: `modelo opus\|sonnet\|haiku`, `timeout 1800`, `turnos 20`, `custo 5`, `ttl 60`, `padrao` (volta ao `.env`) |
+| agendado (cron) | *"todo dia útil 7h, roda o agente pra..."* — execução recorrente via scheduler; ver [Tarefas e lembretes](#tarefas-e-lembretes) |
 
 Guardrails: 1 tarefa por vez; env do agente com **whitelist** (nunca vê
 `BOT_TOKEN`/senhas); deny rules de leitura/escrita fora do workspace
-(`/app/data`, `/app/bot`); `max_turns`, timeout e **teto de custo por tarefa**
-(`max_budget_usd`); `mem_limit: 2g` no compose protege o host. Com
-`AGENT_GITHUB_TOKEN` (fine-grained PAT restrito aos repos permitidos) o agente
-também clona privados, commita, faz push e abre PRs via `git`/`gh`.
+(`/app/data`, `/app/bot`) + hook que bloqueia `Bash` nesses paths;
+`max_turns`, timeout e **teto de custo por tarefa** (`max_budget_usd`) —
+e, pra execuções agendadas, teto **diário** opcional
+(`AGENT_CRON_DAILY_BUDGET_USD`); `mem_limit: 2g` no compose protege o host.
+Com `AGENT_GITHUB_TOKEN` (fine-grained PAT restrito aos repos permitidos) o
+agente também clona privados, commita, faz push e abre PRs via `git`/`gh`.
 
 ### Agente proativo
 | Comando | Descrição |
@@ -222,10 +225,26 @@ Chaves são snake_case curto (ex: `esposa_nome`, `alergia`, `editor_preferido`).
 | `/lembrar <texto> em 2h \| amanhã 09:00` | Cria lembrete com horário |
 | `/lembretes` | Lista lembretes pendentes |
 | `/apagar_lembrete <id>` | Apaga um lembrete pendente |
-| `/agendar_comando <tipo> [args] <quando>` | Agenda uma ação automática (`transito_casa`/`transito_trabalho`/`congresso`/`clima`/`chat`) |
+| `/agendar_comando <tipo> [args] <quando>` | Agenda uma ação automática (`transito_casa`/`transito_trabalho`/`congresso`/`clima`/`chat`; owner também: `agente`/`shell`) |
 
 > Também por texto/voz livre: *"me lembre de pagar o boleto amanhã 10h"*,
 > *"todo domingo 20h me manda o resumo da semana"*, *"apaga o lembrete 5"*.
+
+**Recorrência cron** — além dos presets (`daily`, `weekday`, `weekend`,
+`weekly:<dias>`, `monthly`), qualquer agendamento aceita `cron:<expressão de
+5 campos>` (avaliada no fuso do usuário, intervalo mínimo de 10 min). Pedidos
+como *"a cada 2 horas"* ou *"dia 1 e 15 às 9h"* viram cron automaticamente
+via chat. Tipos owner-only:
+
+- **`agente`** — roda o [agente de execução](#agente-de-execução-de-código-owner-only)
+  com a tarefa dada (sessão sempre nova, progresso e artefatos como no
+  `/agente`). Se o agente estiver ocupado no disparo, o scheduler re-tenta a
+  cada tick até despachar.
+- **`shell`** — executa um comando **fixo** no shell do container, sem LLM
+  (custo zero, determinístico): backups, healthchecks, limpeza. Timeout de
+  300s, saída (cap 3000 chars) + exit code no chat; prefixo `@silencioso`
+  só notifica em falha. Roda com env mínimo (sem tokens do bot), `cwd` no
+  workspace.
 
 ### LLM e utilitários
 | Comando | Descrição |
@@ -389,6 +408,10 @@ Passos manuais pra ligar (depois do rebuild):
    `AGENT_MAX_COST_USD`, `AGENT_SESSION_TTL_MINUTES`) têm default no `.env.example`
    e podem ser mudados **em runtime** via `/agente_config`, sem restart — os
    overrides ficam em `data/agent_config.json` e sobrevivem a reinício.
+6. **`AGENT_CRON_DAILY_BUDGET_USD`** (opcional, default 0 = sem teto): limite
+   diário somado das execuções **agendadas** (cron) do agente. Atingiu o teto,
+   as ocorrências do dia são puladas (aviso 1×/dia). Contador em memória —
+   zera no restart.
 
 Limitações de desenho: a execução vive dentro da tarefa (processos longos,
 tipo um servidor web, morrem no fim/timeout; o compose não expõe portas) e o

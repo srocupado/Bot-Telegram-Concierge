@@ -156,6 +156,34 @@ def _build_permission_settings(workspace: Path) -> str:
     return json.dumps({"permissions": {"deny": deny}})
 
 
+# Os deny rules acima cobrem Read/Edit/Write mas NÃO o Bash (`cat /app/.env`
+# passaria). Este hook PreToolUse bloqueia comandos Bash que referenciem os
+# paths sensíveis. Best-effort (substring — não pega ofuscação deliberada),
+# mas fecha o caminho óbvio, importante com tarefas cron rodando sozinhas.
+_BASH_DENY_SUBSTRINGS = (
+    "/app/data", "/app/bot", "/app/.env", "/root/.claude", "concierge.db",
+)
+
+
+async def _bash_guard(input_data, tool_use_id, context):  # noqa: ANN001
+    cmd = str((input_data.get("tool_input") or {}).get("command") or "")
+    hit = next((p for p in _BASH_DENY_SUBSTRINGS if p in cmd), None)
+    if hit is None:
+        return {}
+    logger.warning("agent: bash bloqueado por path sensível (%s): %.120s", hit, cmd)
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": (
+                f"Comando bloqueado: '{hit}' é um path sensível do bot "
+                "(fora do workspace permitido). Trabalhe somente dentro do "
+                "diretório de trabalho atual."
+            ),
+        }
+    }
+
+
 _AGENT_SYSTEM_APPEND = (
     "Você é o agente de execução do bot Concierge, operando para o dono do "
     "bot via Telegram. Trabalhe SOMENTE dentro do diretório de trabalho "
@@ -243,6 +271,7 @@ class AgentRunner:
             AssistantMessage,
             ClaudeAgentOptions,
             ClaudeSDKClient,
+            HookMatcher,
             ResultMessage,
             TextBlock,
             ToolUseBlock,
@@ -263,6 +292,9 @@ class AgentRunner:
                 "append": _AGENT_SYSTEM_APPEND,
             },
             allowed_tools=_ALLOWED_TOOLS,
+            hooks={
+                "PreToolUse": [HookMatcher(matcher="Bash", hooks=[_bash_guard])],
+            },
             permission_mode="bypassPermissions",
             max_turns=agent_config.max_turns,
             max_budget_usd=agent_config.max_cost_usd,

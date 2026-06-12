@@ -70,23 +70,34 @@ async def cmd_agendar_comando(
       /agendar_comando congresso segunda 9h
       /agendar_comando chat resumo das notícias da semana sexta 18h
     """
+    from bot.config import settings
     from bot.services.reminders import ReminderParseError, parse_reminder
-    from bot.services.scheduled_actions import VALID_KINDS
+    from bot.services.scheduled_actions import OWNER_KINDS, VALID_KINDS
+
+    is_owner = bool(
+        settings.owner_telegram_id
+        and message.from_user
+        and message.from_user.id == settings.owner_telegram_id
+    )
+    # Não-owner nem fica sabendo dos tipos restritos (agente/shell).
+    visible_kinds = VALID_KINDS if is_owner else (VALID_KINDS - OWNER_KINDS)
 
     raw = (command.args or "").strip()
     if not raw:
         await message.answer(
             "Uso: /agendar_comando <tipo> [parametros] <quando NL>\n"
-            f"Tipos: {', '.join(sorted(VALID_KINDS))}\n"
+            f"Tipos: {', '.join(sorted(visible_kinds))}\n"
             "Ex: /agendar_comando transito_casa amanhã 15h\n"
-            "Ex: /agendar_comando chat resumo da semana sexta 18h"
+            "Ex: /agendar_comando chat resumo da semana sexta 18h\n"
+            "Recorrente (todo dia/semana/cron) → peça em linguagem natural "
+            "no chat (ex: 'todo dia útil 7h me manda o trânsito')."
         )
         return
 
     parts = raw.split(None, 1)
     tipo = parts[0]
-    if tipo not in VALID_KINDS:
-        await message.answer(f"⚠️ Tipo inválido. Use um de: {', '.join(sorted(VALID_KINDS))}")
+    if tipo not in visible_kinds:
+        await message.answer(f"⚠️ Tipo inválido. Use um de: {', '.join(sorted(visible_kinds))}")
         return
     resto = parts[1] if len(parts) > 1 else ""
     if not resto:
@@ -105,16 +116,21 @@ async def cmd_agendar_comando(
         await message.answer(f"⚠️ {e}")
         return
 
-    if tipo == "chat" and not parametros:
-        await message.answer("⚠️ Para tipo='chat', forneça o prompt antes da data/hora.")
+    if tipo in ("chat", "agente", "shell") and not parametros:
+        await message.answer(
+            f"⚠️ Para tipo='{tipo}', forneça o conteúdo antes da data/hora."
+        )
         return
 
+    _trunc = (parametros[:60] + ("…" if len(parametros) > 60 else "")) if parametros else ""
     descricao_map = {
         "transito_casa": "trânsito → casa",
         "transito_trabalho": "trânsito → trabalho",
         "congresso": "pauta do congresso",
         "clima": "clima",
-        "chat": (parametros[:60] + ("…" if len(parametros) > 60 else "")) if parametros else "chat",
+        "chat": _trunc or "chat",
+        "agente": f"🤖 {_trunc}",
+        "shell": f"$ {_trunc}",
     }
     texto = f"[agendado] {descricao_map[tipo]}"
     from bot.services.reminders import create_reminder

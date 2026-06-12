@@ -13,6 +13,7 @@ openai==1.109.1
 google-genai==1.75.0
 python-dateutil==2.9.0
 dateparser==1.2.0
+croniter==6.2.2
 firebase-admin==6.5.0
 python-docx==1.1.2
 claude-agent-sdk==0.2.99
