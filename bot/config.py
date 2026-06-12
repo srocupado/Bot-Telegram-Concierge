@@ -100,6 +100,21 @@ class Settings(BaseSettings):
         "gpt-4o-mini-transcribe", alias="VOICE_STT_OPENAI_MODEL"
     )
 
+    # Agente de execução (Claude Code headless via claude-agent-sdk).
+    # Owner-only: só o usuário com este ID Telegram vê/usa o recurso.
+    # Vazio = agente desabilitado. Os AGENT_* abaixo são defaults iniciais —
+    # podem ser sobrepostos em runtime via /agente_config (sem restart).
+    owner_telegram_id: int | None = Field(None, alias="OWNER_TELEGRAM_ID")
+    agent_model: str = Field("claude-sonnet-4-6", alias="AGENT_MODEL")
+    agent_timeout_seconds: int = Field(900, alias="AGENT_TIMEOUT_SECONDS")
+    agent_max_turns: int = Field(40, alias="AGENT_MAX_TURNS")
+    agent_max_cost_usd: float = Field(1.50, alias="AGENT_MAX_COST_USD")
+    agent_session_ttl_minutes: int = Field(30, alias="AGENT_SESSION_TTL_MINUTES")
+    agent_workspace: str = Field("/app/workspace", alias="AGENT_WORKSPACE")
+    # Fine-grained PAT restrito aos repos que o agente pode tocar (opcional).
+    # Entra no env do agente como GH_TOKEN — habilita push/PRs via git/gh.
+    agent_github_token: SecretStr | None = Field(None, alias="AGENT_GITHUB_TOKEN")
+
     # Notificação ao reiniciar (mensagem '🟢 online' pra usuários autorizados).
     restart_notification_enabled: bool = Field(True, alias="RESTART_NOTIFICATION_ENABLED")
 

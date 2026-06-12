@@ -4,6 +4,7 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
+from bot.config import settings
 from bot.db.models import User
 
 router = Router(name=__name__)
@@ -117,6 +118,26 @@ HELP_TEXT = (
     "Mensagens de texto livre são enviadas ao LLM com contexto curto."
 )
 
+# Seção exibida só pro dono do bot (OWNER_TELEGRAM_ID) — os demais usuários
+# não ficam sabendo que o recurso existe.
+AGENT_HELP_TEXT = (
+    "<b>Agente de execução de código</b> (só você):\n"
+    "• <code>/agente &lt;tarefa&gt;</code> — escreve, EXECUTA e itera código "
+    "num workspace isolado; pesquisa docs na web; entrega os arquivos prontos. "
+    "Ex.: <i>/agente cria um script que baixa cotações e plota um gráfico</i>\n"
+    "• Em linguagem natural também: <i>\"constrói um app que…\"</i> "
+    "(texto ou voz). Por voz com slash: <i>\"barra agente …\"</i>.\n"
+    "• Após terminar, responder em texto/voz livre CONTINUA a mesma tarefa "
+    "(janela de tempo configurável); <code>/agente_fim</code> encerra.\n"
+    "• <code>/agente_status</code> · <code>/agente_parar</code>\n"
+    "• <code>/agente_config</code> — modelo/timeout/turnos/custo/ttl em "
+    "runtime, sem reiniciar (ex.: <code>/agente_config modelo opus</code>)\n"
+    "• GitHub: com AGENT_GITHUB_TOKEN no .env, o agente clona, commita, "
+    "faz push e abre PRs.\n"
+    "• Guardrails: confinado a ./workspace, env limpo, 1 tarefa por vez, "
+    "teto de custo por tarefa.\n"
+)
+
 
 @router.message(Command("start"))
 async def cmd_start(message: Message, user: User) -> None:
@@ -148,5 +169,12 @@ def _chunk_text(text: str, limit: int = 4000) -> list[str]:
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
-    for chunk in _chunk_text(HELP_TEXT):
+    text = HELP_TEXT
+    if (
+        settings.owner_telegram_id
+        and message.from_user
+        and message.from_user.id == settings.owner_telegram_id
+    ):
+        text = AGENT_HELP_TEXT + "\n" + text
+    for chunk in _chunk_text(text):
         await message.answer(chunk, parse_mode="HTML", disable_web_page_preview=True)

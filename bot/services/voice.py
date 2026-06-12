@@ -29,6 +29,10 @@ transcrição literal):
      "barra trânsito agora casa"  → /transito_agora casa
      "barra tarefas"              → /tarefas
      "barra ping"                 → /ping
+     "barra agente cria um servidor web simples"
+                                  → /agente cria um servidor web simples
+   (no /agente, tudo que vier depois de "agente" é a tarefa — preserve
+   literalmente, com nomes próprios, números e acentos)
 
 2. Para trânsito, qualquer das formas abaixo deve virar "/transito_agora <destino>":
      "trânsito para casa", "trânsito pra casa", "trânsito casa",
@@ -68,6 +72,10 @@ agir). Exemplos do que NÃO virar comando:
   "me lembre de pagar boleto amanhã"   → transcrição literal
   "apaga o lembrete 5"                 → transcrição literal
   "qual a previsão do tempo hoje"      → transcrição literal
+  "constrói um script que baixa cotações" → transcrição literal
+  (pedidos de construir/criar app/script/código em linguagem natural são
+  tratados pelo chat livre; só vire /agente quando o falante disser
+  explicitamente "barra agente ...")
 """
 
 # Cadeia de fallback quando o modelo principal está sobrecarregado (503).

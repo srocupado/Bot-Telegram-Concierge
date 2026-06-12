@@ -26,6 +26,13 @@ from bot.handlers.congress import (
     cmd_congress_on,
     cmd_congress_reset,
 )
+from bot.handlers.agent import (
+    cmd_agente,
+    cmd_agente_config,
+    cmd_agente_fim,
+    cmd_agente_parar,
+    cmd_agente_status,
+)
 from bot.handlers.ping import cmd_ping
 from bot.handlers.provider import cmd_provider
 from bot.handlers.dou_mp import cmd_dou_provider
@@ -153,6 +160,26 @@ async def _w_help(message: Message, args: str, user: User, session: AsyncSession
     await cmd_help(message)
 
 
+async def _w_agente(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_agente(message, _cmd("agente", args), user)
+
+
+async def _w_agente_parar(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_agente_parar(message, user)
+
+
+async def _w_agente_status(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_agente_status(message, user)
+
+
+async def _w_agente_fim(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_agente_fim(message, user)
+
+
+async def _w_agente_config(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_agente_config(message, _cmd("agente_config", args), user)
+
+
 _DISPATCH: dict[str, callable] = {
     "transito_agora": _w_transito_agora,
     "transito_on": _w_transito_on,
@@ -177,6 +204,11 @@ _DISPATCH: dict[str, callable] = {
     "reset": _w_reset,
     "start": _w_start,
     "help": _w_help,
+    "agente": _w_agente,
+    "agente_parar": _w_agente_parar,
+    "agente_status": _w_agente_status,
+    "agente_fim": _w_agente_fim,
+    "agente_config": _w_agente_config,
 }
 
 
@@ -303,6 +335,13 @@ async def _dispatch_chat(
     """Mesma lógica do handlers/chat.py::free_chat, adaptada para texto vindo de voz."""
     from bot.services.llm.base import ToolContext
     from bot.services.tools import TOOLS
+
+    # Sessão de continuação do agente ativa? Voz livre continua a tarefa
+    # (mesmo comportamento do texto livre, que é capturado pelo router do
+    # agente antes do catch-all).
+    from bot.handlers.agent import try_continuation
+    if try_continuation(message, user, text):
+        return
 
     chat_id = message.chat.id
     history = memory.get(chat_id)  # já retorna cópia

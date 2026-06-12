@@ -82,6 +82,33 @@ from bot.services.travels.tool_handlers import (
 logger = logging.getLogger(__name__)
 
 
+async def _h_executar_agente(args: dict, ctx: ToolContext) -> str:
+    tarefa = (args.get("tarefa") or "").strip()
+    if not tarefa:
+        return "erro: parâmetro 'tarefa' vazio"
+    # Owner-only: pra qualquer outro usuário o recurso "não existe".
+    if not settings.owner_telegram_id or ctx.user.id != settings.owner_telegram_id:
+        return "erro: recurso indisponível para este usuário"
+    from bot.handlers.agent import start_background_task
+
+    status = start_background_task(tarefa, ctx.user.id)
+    if status == "disabled":
+        return "erro: agente desabilitado (OWNER_TELEGRAM_ID/ANTHROPIC_API_KEY no .env)"
+    if status == "busy":
+        ctx.direct_html = (
+            "⏳ O agente já está executando uma tarefa. Acompanhe na mensagem "
+            "de status, ou use /agente_parar."
+        )
+        ctx.short_circuit = True
+        return "ok: aviso de ocupado enviado (não escreva nada)"
+    ctx.direct_html = (
+        "🤖 Agente iniciado — vou te mandando o progresso e entrego os "
+        "arquivos quando terminar."
+    )
+    ctx.short_circuit = True
+    return "ok: agente iniciado em background (não escreva nada)"
+
+
 async def _h_criar_tarefa(args: dict, ctx: ToolContext) -> str:
     texto = (args.get("texto") or "").strip()
     if not texto:
@@ -2009,5 +2036,34 @@ TOOLS: list[Tool] = [
             "required": ["id"],
         },
         handler=_h_cancelar_watch_viagem,
+    ),
+    Tool(
+        name="executar_agente",
+        description=(
+            "Dispara o agente de execução de código (estilo Claude Code): "
+            "escreve, EXECUTA e itera programas/scripts num workspace "
+            "isolado, pesquisa documentação na web, e entrega os arquivos "
+            "prontos pelo Telegram. Roda em BACKGROUND (minutos).\n"
+            "USE quando o usuário pedir pra CONSTRUIR/CRIAR/PROGRAMAR algo: "
+            "'constrói um script que...', 'cria um app/programa que...', "
+            "'escreve um código que...', 'faz uma análise de dados com "
+            "código', 'automatiza X com um script'.\n"
+            "NÃO use para pedidos que outras tools já resolvem (lembretes, "
+            "finanças, lista de compras, trânsito, viagens, busca simples na "
+            "web) nem para perguntas conceituais sobre programação (essas "
+            "responda você mesmo). Passe em 'tarefa' a descrição completa "
+            "do que construir, fiel ao pedido do usuário."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "tarefa": {
+                    "type": "string",
+                    "description": "Descrição completa da tarefa de construção/execução de código",
+                },
+            },
+            "required": ["tarefa"],
+        },
+        handler=_h_executar_agente,
     ),
 ]

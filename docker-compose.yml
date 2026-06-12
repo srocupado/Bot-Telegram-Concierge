@@ -4,8 +4,12 @@ services:
     container_name: concierge
     restart: unless-stopped
     env_file: .env
+    # Teto de RAM: protege o host (Orange Pi 4GB) de um pip install/execução
+    # pesada disparada pelo agente — sem isso o OOM killer derruba o host.
+    mem_limit: 2g
     volumes:
       - ./data:/app/data
+      - ./workspace:/app/workspace
     logging:
       driver: json-file
       options:

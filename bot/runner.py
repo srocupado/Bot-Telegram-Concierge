@@ -15,6 +15,7 @@ from sqlalchemy import select
 from bot.config import settings
 from bot.db.models import User
 from bot.db.session import SessionLocal, init_db
+from bot.handlers import agent as agent_handler
 from bot.handlers import chat as chat_handler
 from bot.handlers import congress as congress_handler
 from bot.handlers import dou_mp as dou_mp_handler
@@ -70,6 +71,7 @@ def _build_dispatcher() -> Dispatcher:
     dp.include_router(document_handler.router)  # PDF: multimodal → chat agente
     dp.include_router(reminder_callbacks_handler.router)  # botões snooze/done
     dp.include_router(shopping_handler.router)  # botões confirmar limpeza da lista
+    dp.include_router(agent_handler.router)  # /agente + continuação (antes do catch-all!)
     dp.include_router(chat_handler.router)  # catch-all texto livre
     return dp
 
@@ -116,6 +118,11 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN),
     )
     dp = _build_dispatcher()
+
+    # Agente de execução: bot global pro caminho da tool executar_agente +
+    # aviso ao owner se o restart matou uma tarefa no meio.
+    agent_handler.set_bot(bot)
+    await agent_handler.notify_stale_task(bot)
 
     await _notify_restart(bot)
 

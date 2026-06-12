@@ -94,6 +94,30 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
 
 ## Comandos
 
+### Agente de execução de código (owner-only)
+
+Estilo Claude Code dentro do bot: escreve, **executa** e itera código num
+workspace isolado (`./workspace`), pesquisa documentação na web
+(WebSearch/WebFetch nativos) e entrega os arquivos prontos pelo Telegram.
+Só o usuário com `OWNER_TELEGRAM_ID` vê/usa — pros demais o recurso não existe.
+
+| Comando | Descrição |
+|---|---|
+| `/agente <tarefa>` | Inicia a tarefa em background; progresso numa mensagem editada |
+| texto/voz livre | `"constrói um app que..."` aciona via tool `executar_agente`; por voz com slash: `"barra agente ..."` |
+| resposta em TTL | Texto/voz livre após a tarefa **continua a mesma sessão** (resume) |
+| `/agente_fim` | Encerra a sessão de continuação na hora |
+| `/agente_parar` | Interrompe a tarefa em andamento |
+| `/agente_status` | Rodando há quanto tempo / sessão ativa |
+| `/agente_config` | Ajustes finos em runtime, sem restart: `modelo opus\|sonnet\|haiku`, `timeout 1800`, `turnos 20`, `custo 5`, `ttl 60`, `padrao` (volta ao `.env`) |
+
+Guardrails: 1 tarefa por vez; env do agente com **whitelist** (nunca vê
+`BOT_TOKEN`/senhas); deny rules de leitura/escrita fora do workspace
+(`/app/data`, `/app/bot`); `max_turns`, timeout e **teto de custo por tarefa**
+(`max_budget_usd`); `mem_limit: 2g` no compose protege o host. Com
+`AGENT_GITHUB_TOKEN` (fine-grained PAT restrito aos repos permitidos) o agente
+também clona privados, commita, faz push e abre PRs via `git`/`gh`.
+
 ### Agente proativo
 | Comando | Descrição |
 |---|---|
@@ -344,6 +368,32 @@ mesmas chaves do `state` no Firestore (`bankTransactions`, `cardEntries`,
 `treasuryHoldings`, `investments.assets`) e nunca altera o schema. Cálculos de
 saldo, projeção do Tesouro pra hoje e métricas dos ativos (PM/posição/P&L)
 replicam as fórmulas do `src/store.jsx`/`src/investimentos.jsx` do app.
+
+### Agente de execução (Claude Code headless)
+
+Passos manuais pra ligar (depois do rebuild):
+
+1. **`OWNER_TELEGRAM_ID`** (obrigatório): seu ID numérico do Telegram (pegue
+   com o @userinfobot). Vazio = agente desabilitado.
+2. **`ANTHROPIC_API_KEY`**: o agente reusa a chave já configurada. Atenção a
+   custo — cada tarefa consome mais tokens que um chat; `AGENT_MAX_COST_USD`
+   (default US$ 1,50) limita o gasto **por tarefa**.
+3. **`AGENT_GITHUB_TOKEN`** (opcional): fine-grained PAT em GitHub → Settings →
+   Developer settings → Fine-grained tokens, selecionando **apenas os repos**
+   que o agente pode tocar (Contents read/write + Pull requests read/write).
+   Sem ele o agente só clona repositórios públicos.
+4. **Rebuild**: `git pull && docker compose build && docker compose up -d`
+   (a primeira build instala Node 22 + Claude Code CLI + git + gh — demora
+   mais no Pi).
+5. Ajustes finos (`AGENT_MODEL`, `AGENT_TIMEOUT_SECONDS`, `AGENT_MAX_TURNS`,
+   `AGENT_MAX_COST_USD`, `AGENT_SESSION_TTL_MINUTES`) têm default no `.env.example`
+   e podem ser mudados **em runtime** via `/agente_config`, sem restart — os
+   overrides ficam em `data/agent_config.json` e sobrevivem a reinício.
+
+Limitações de desenho: a execução vive dentro da tarefa (processos longos,
+tipo um servidor web, morrem no fim/timeout; o compose não expõe portas) e o
+conteúdo web que o agente lê é não-confiável — por isso env limpo + workspace
+confinado + revisão humana dos artefatos.
 
 ### Google Maps
 
