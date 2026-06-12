@@ -106,7 +106,7 @@ async def cmd_arquivos(message: Message, command: CommandObject, user: User) -> 
                 f"Não achei uploads/{name} (veja /arquivos).", parse_mode=None,
             )
         return
-    if args.lower().startswith(("enviar ", "baixar ", "download ")):
+    if args.lower().startswith(("baixar ", "download ")):
         name = args.split(None, 1)[1].strip()
         path = resolve_file(name)
         if path is None:

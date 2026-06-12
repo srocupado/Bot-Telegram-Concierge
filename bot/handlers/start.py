@@ -141,7 +141,7 @@ AGENT_HELP_TEXT = (
     "• Anexos: mande um documento e ele é salvo em "
     "<code>workspace/uploads/</code> (caption <i>\"guarda como nome.ext\"</i> "
     "renomeia; PDF sem caption vai pra análise). <code>/arquivos</code> "
-    "lista, <code>/arquivos enviar &lt;nome&gt;</code> manda o arquivo de "
+    "lista, <code>/arquivos baixar &lt;nome&gt;</code> manda o arquivo de "
     "volta no chat, <code>/arquivos apagar &lt;nome&gt;</code> remove — ou "
     "pergunte <i>\"que arquivos você tem salvos?\"</i>. No agente: "
     "<i>/agente pega o uploads/X e…</i>\n"
