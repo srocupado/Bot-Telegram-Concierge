@@ -370,7 +370,23 @@ async def cmd_agente(message: Message, command: CommandObject, user: User) -> No
             "natural no chat (<i>\"constrói um app que…\"</i>).\n\n"
             "⏰ <b>Agendado</b>: peça no chat <i>\"todo dia útil às 7h, roda o "
             "agente pra…\"</i> (aceita padrão cron). Lista em /lembretes, "
-            "apaga com /apagar_lembrete.",
+            "apaga com /apagar_lembrete.\n\n"
+            "🔐 <b>SSH / rede local</b> (ex.: backup de pasta de outra "
+            "máquina) — setup único, no host do bot:\n"
+            "1. <code>mkdir -p workspace/.ssh && ssh-keygen -t ed25519 -f "
+            "workspace/.ssh/id_ed25519 -N \"\"</code>\n"
+            "2. Adicione o conteúdo do <code>.pub</code> no "
+            "<code>authorized_keys</code> de um user DEDICADO e sem sudo na "
+            "máquina remota (ideal: prefixe com <code>command=\"rrsync -ro "
+            "/pasta\"</code> pra travar a chave em rsync somente-leitura).\n"
+            "3. Peça: <i>/agente backup via rsync da pasta X da máquina "
+            "192.168.1.50, user backup, chave .ssh/id_ed25519, pra "
+            "backups/&lt;data&gt;</i>\n"
+            "A chave fica só no workspace (não é entregue no Telegram). NUNCA "
+            "mande senhas no chat: o prompt vai pro histórico e pra API, e os "
+            "comandos aparecem na mensagem de progresso. Lembre o limite de "
+            "50 MB por arquivo no Telegram — backups grandes ficam em "
+            "./workspace no host.",
             parse_mode="HTML",
         )
         return

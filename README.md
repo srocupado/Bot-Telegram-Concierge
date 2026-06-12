@@ -121,6 +121,35 @@ e, pra execuções agendadas, teto **diário** opcional
 Com `AGENT_GITHUB_TOKEN` (fine-grained PAT restrito aos repos permitidos) o
 agente também clona privados, commita, faz push e abre PRs via `git`/`gh`.
 
+#### SSH / rede local (ex.: backup de pasta de outra máquina)
+
+O container está na rede bridge do Docker com saída pra LAN, e a imagem traz
+`openssh-client` e `rsync`. Autenticação **somente por chave** (nunca mande
+senhas no chat: o prompt vai pro histórico do Telegram e pra API da
+Anthropic, e os comandos executados aparecem na mensagem de progresso).
+Setup único, no host do bot:
+
+```bash
+mkdir -p workspace/.ssh
+ssh-keygen -t ed25519 -f workspace/.ssh/id_ed25519 -N ""
+cat workspace/.ssh/id_ed25519.pub  # → authorized_keys do user remoto
+```
+
+Na máquina remota, use um user **dedicado e sem sudo**; ideal: prefixe a
+chave no `authorized_keys` com `command="rrsync -ro /pasta"` pra travá-la em
+rsync somente-leitura daquela pasta — via SSH o confinamento do workspace
+não se aplica, a chave define o alcance do agente lá. A chave fica em
+`./workspace/.ssh` (montada no container, visível pro agente, **não** é
+entregue no Telegram por já existir antes da tarefa). Aí é só pedir:
+
+> /agente backup via rsync da pasta /home/fulano/docs da máquina
+> 192.168.1.50, user backup, chave .ssh/id_ed25519, pra backups/\<data\>
+
+Backups ficam em `./workspace` no host; pro Telegram só vão arquivos
+≤ 50 MB. Recorrente sem custo de API: peça ao agente um `backup.sh` testado
+uma vez e agende como shell (*"todo dia 3h roda @silencioso bash
+/app/workspace/backup.sh"*).
+
 ### Agente proativo
 | Comando | Descrição |
 |---|---|
