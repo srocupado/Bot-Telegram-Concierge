@@ -137,8 +137,38 @@ async def _ensure_columns(conn) -> None:
         logger.info("migrated: added reminders.recurrence")
 
 
+async def _ensure_chat_fts(conn) -> None:
+    """Índice FTS5 do histórico de conversa (tool buscar_historico).
+
+    Tabela externa-content sincronizada por triggers (insert/delete em
+    chat_log). Se o SQLite não tiver FTS5 compilado, segue sem — a busca
+    cai pro fallback LIKE em services/memoria.py."""
+    try:
+        await conn.exec_driver_sql(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS chat_log_fts USING fts5("
+            "content, content='chat_log', content_rowid='id', "
+            "tokenize='unicode61 remove_diacritics 2')"
+        )
+        await conn.exec_driver_sql(
+            "CREATE TRIGGER IF NOT EXISTS chat_log_fts_ai "
+            "AFTER INSERT ON chat_log BEGIN "
+            "INSERT INTO chat_log_fts(rowid, content) VALUES (new.id, new.content); "
+            "END"
+        )
+        await conn.exec_driver_sql(
+            "CREATE TRIGGER IF NOT EXISTS chat_log_fts_ad "
+            "AFTER DELETE ON chat_log BEGIN "
+            "INSERT INTO chat_log_fts(chat_log_fts, rowid, content) "
+            "VALUES ('delete', old.id, old.content); "
+            "END"
+        )
+    except Exception:
+        logger.warning("FTS5 indisponível — busca de histórico usará LIKE", exc_info=True)
+
+
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await _ensure_columns(conn)
+        await _ensure_chat_fts(conn)
     logger.info("database initialized")

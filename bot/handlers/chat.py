@@ -40,7 +40,7 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "- criar_tarefa, listar_tarefas, concluir_tarefa, apagar_tarefa\n"
     "- criar_lembrete, criar_lembrete_pagamento, criar_lembrete_recorrente, listar_lembretes, apagar_lembrete, agendar_comando\n"
     "- consultar_clima, consultar_transito\n"
-    "- lembrar_fato, recuperar_fato, listar_fatos, esquecer_fato\n"
+    "- lembrar_fato, recuperar_fato, listar_fatos, esquecer_fato, buscar_historico\n"
     "- registrar_treino, apagar_treino_dia, consultar_treinos\n"
     "- lancar_movimento_banco, lancar_despesa_cartao, registrar_aporte_tesouro, registrar_operacao_ativo, consultar_lancamentos, consultar_saldo, apagar_lancamento\n"
     "- adicionar_lista_compras, listar_compras, marcar_comprado, desmarcar_compra, remover_lista_compras, limpar_comprados, zerar_lista_compras\n"
@@ -108,7 +108,11 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "- No INÍCIO de uma conversa nova (sem histórico recente), considere "
     "chamar listar_fatos uma vez pra contextualizar — só uma vez por sessão.\n"
     "- Use recuperar_fato quando precisar de algo específico que pode estar salvo "
-    "(ex: usuário pergunta 'qual o nome da minha esposa?' → recuperar_fato).\n\n"
+    "(ex: usuário pergunta 'qual o nome da minha esposa?' → recuperar_fato).\n"
+    "- Use buscar_historico quando ele referenciar CONVERSA passada que não "
+    "está no contexto atual nem nos fatos ('o que eu te falei sobre...', "
+    "'qual era o plano que combinamos...'). Cite a data dos trechos. Se a "
+    "seção MEMÓRIA DE CONVERSAS ANTERIORES já responder, use-a direto.\n\n"
     "Para tracker de academia:\n"
     "- Quando o usuário descrever treino feito ('hoje malhei X', 'fiz Y de "
     "cardio', 'treinei costas ontem', 'corri 20min'), chame registrar_treino. "
@@ -273,12 +277,19 @@ _SYSTEM_PROMPT_TEMPLATE = (
 )
 
 
-def _build_system_prompt(tz_name: str) -> str:
+def _build_system_prompt(tz_name: str, memory_context: str | None = None) -> str:
     now_local = datetime.now(ZoneInfo(tz_name))
-    return _SYSTEM_PROMPT_TEMPLATE.format(
+    prompt = _SYSTEM_PROMPT_TEMPLATE.format(
         now_local=now_local.strftime("%Y-%m-%d %H:%M %A"),
         tz=tz_name,
     )
+    if memory_context:
+        prompt += (
+            "\n\nMEMÓRIA DE CONVERSAS ANTERIORES (resumo automático; use como "
+            "contexto, corrija se o usuário disser diferente):\n"
+            + memory_context
+        )
+    return prompt
 
 
 @router.message(F.text & ~F.text.startswith("/"))
@@ -294,12 +305,15 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
     history = memory.get(chat_id)
     history.append({"role": "user", "content": user_text})
 
+    from bot.services.memoria import get_summary
+    summary = await get_summary(session, user.id)
+
     try:
         provider = get_provider(user.provider, gemini_model=user.gemini_model)
         ctx = ToolContext(user=user, session=session, tz=user.timezone)
         reply = await provider.chat_with_tools(
             history, tools=TOOLS, ctx=ctx,
-            system=_build_system_prompt(user.timezone),
+            system=_build_system_prompt(user.timezone, summary),
             max_tokens=800,
         )
     except Exception as e:

@@ -108,6 +108,37 @@ class UserFact(Base):
     )
 
 
+class ChatLog(Base):
+    """Histórico persistente da conversa livre (write-through do contexto em
+    RAM). Sobrevive a restart (re-hidrata o contexto dentro do TTL), alimenta
+    o resumo rolante e a busca FTS5 (tool buscar_historico). Purge automático
+    após MEMORY_RETENTION_DAYS (constante em services/memoria.py)."""
+
+    __tablename__ = "chat_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True, nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)  # user | assistant
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True, nullable=False
+    )
+
+
+class ChatSummary(Base):
+    """Resumo rolante (memória de longo prazo) por usuário. Atualizado em
+    background quando turnos saem do contexto em RAM (overflow/TTL); entra
+    no system prompt do chat livre. /reset_memoria zera."""
+
+    __tablename__ = "chat_summaries"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), primary_key=True)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+
+
 class TrafficSample(Base):
     __tablename__ = "traffic_samples"
 

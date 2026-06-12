@@ -113,6 +113,13 @@ async def main() -> None:
 
     await init_db()
 
+    # Memória persistente: liga write-through/resumo e re-hidrata o contexto
+    # de conversa que ainda está dentro do TTL (restart deixa de "esquecer").
+    from bot.services import memoria
+    from bot.services.chat_memory import memory
+    memoria.attach(SessionLocal)
+    await memoria.hydrate(SessionLocal, memory)
+
     bot = Bot(
         settings.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN),

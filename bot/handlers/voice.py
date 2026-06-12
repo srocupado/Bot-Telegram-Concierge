@@ -347,12 +347,15 @@ async def _dispatch_chat(
     history = memory.get(chat_id)  # já retorna cópia
     history.append({"role": "user", "content": text})
 
+    from bot.services.memoria import get_summary
+    summary = await get_summary(session, user.id)
+
     try:
         provider = get_provider(user.provider, gemini_model=user.gemini_model)
         ctx = ToolContext(user=user, session=session, tz=user.timezone)
         reply = await provider.chat_with_tools(
             history, tools=TOOLS, ctx=ctx,
-            system=_build_system_prompt(user.timezone),
+            system=_build_system_prompt(user.timezone, summary),
             max_tokens=600,
         )
     except Exception as e:

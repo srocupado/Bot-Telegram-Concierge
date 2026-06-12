@@ -356,6 +356,21 @@ async def _h_agendar_comando(args: dict, ctx: ToolContext) -> str:
         format_reminder_confirmation(rem, ctx.tz, verb="agendado")
 
 
+async def _h_buscar_historico(args: dict, ctx: ToolContext) -> str:
+    from bot.services.memoria import format_search_results, search_history
+
+    termo = (args.get("termo") or "").strip()
+    if not termo:
+        return "erro: 'termo' é obrigatório"
+    rows = await search_history(ctx.session, ctx.user.id, termo)
+    if not rows:
+        return f"nada encontrado no histórico de conversas para {termo!r}"
+    return (
+        "trechos do histórico (mais recentes primeiro; cite a data ao usar):\n"
+        + format_search_results(rows, ctx.tz)
+    )
+
+
 async def _h_lembrar_fato(args: dict, ctx: ToolContext) -> str:
     chave = (args.get("chave") or "").strip()
     valor = (args.get("valor") or "").strip()
@@ -1370,6 +1385,29 @@ TOOLS: list[Tool] = [
             "required": ["chave"],
         },
         handler=_h_esquecer_fato,
+    ),
+    Tool(
+        name="buscar_historico",
+        description=(
+            "Busca por palavra-chave nas conversas ANTIGAS com o usuário "
+            "(histórico persistente, além do contexto atual). Use quando ele "
+            "referenciar algo dito no passado que você não tem no contexto: "
+            "'o que eu te falei sobre X?', 'qual era o plano que montamos "
+            "semana passada?', 'quanto eu disse que custou Y?'. Retorna "
+            "trechos com data — cite a data ao responder. NÃO use pra fatos "
+            "estáveis (recuperar_fato) nem pro que já está na conversa atual."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "termo": {
+                    "type": "string",
+                    "description": "Palavras-chave (2-4 termos específicos funcionam melhor)",
+                },
+            },
+            "required": ["termo"],
+        },
+        handler=_h_buscar_historico,
     ),
     Tool(
         name="registrar_treino",

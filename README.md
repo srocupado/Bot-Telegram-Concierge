@@ -216,6 +216,32 @@ O LLM salva fatos automaticamente quando você conta algo sobre si, ou você ped
 
 Chaves são snake_case curto (ex: `esposa_nome`, `alergia`, `editor_preferido`). Um fato com a mesma chave sobrescreve o anterior.
 
+### Memória de conversa (contexto persistente)
+
+Três camadas, sem nenhuma config nova no `.env` (defaults fixos no código):
+
+1. **Contexto que sobrevive a restart** — toda mensagem do chat livre é
+   gravada em `chat_log` (write-through). No boot o bot re-hidrata o que
+   ainda está no TTL de 30 min: deploy/restart deixa de "apagar" a conversa.
+2. **Resumo rolante (longo prazo)** — quando turnos saem do contexto
+   (estouro de 10 turnos ou TTL), um modelo barato (Gemini Flash → OpenAI →
+   Anthropic, conforme as chaves existentes) compacta o que é duradouro num
+   resumo ≤ ~1.500 chars por usuário, injetado no system prompt. *"Aquele
+   plano que montamos ontem"* passa a funcionar dias depois.
+3. **Busca no histórico** — tool `buscar_historico` com FTS5 do SQLite
+   (fallback `LIKE`): *"o que eu te falei sobre o orçamento da reforma?"*
+   responde com trechos datados de conversas antigas.
+
+| Comando | Descrição |
+|---|---|
+| `/reset` | Limpa o contexto atual (RAM + janela re-hidratável) |
+| `/reset_memoria` | Apaga o resumo de longo prazo (se reconstrói depois) |
+| `/reset_memoria tudo` | Apaga resumo **e** todo o histórico pesquisável |
+
+Retenção do histórico: 90 dias (purge diário às 3h). Privacidade: as
+conversas ficam em texto puro no `concierge.db` local — o backup do banco
+passa a conter conversas.
+
 ### Tarefas e lembretes
 | Comando | Descrição |
 |---|---|
@@ -518,6 +544,11 @@ para `concierge.db` e colocar dentro de `./data/`.
 - **`user_facts`**: memória persistente entre sessões (`user_id`, `key`
   snake_case, `value` texto livre, `updated_at`). Chave única por usuário;
   upsert automático.
+- **`chat_log`**: histórico do chat livre (`user_id`, `role`, `content`,
+  `created_at`) — write-through do contexto em RAM; re-hidrata no boot,
+  alimenta a busca FTS5 (`chat_log_fts` + triggers). Purge >90 dias.
+- **`chat_summaries`**: resumo rolante de longo prazo por usuário
+  (`user_id` PK, `summary`, `updated_at`), injetado no system prompt.
 - **`travel_watches`**: monitors diários de preço (`kind` flight/hotel,
   `params` JSON com IATA/datas/classe, `max_price`, `min_price_seen`,
   `last_price`, `last_checked_at`, `last_alert_at`, `status`

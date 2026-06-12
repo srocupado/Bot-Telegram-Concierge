@@ -414,6 +414,11 @@ async def run_purge(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
         n = await purge_old_travel_data(session)
         if n:
             logger.info("purged %d old travel snapshots/alerts", n)
+    from bot.services.memoria import purge_old_messages
+    async with sessionmaker() as session:
+        n = await purge_old_messages(session)
+        if n:
+            logger.info("purged %d old chat_log messages", n)
 
 
 async def run_card_closing_summary(
