@@ -132,6 +132,11 @@ def _build_env() -> dict[str, str]:
     env = {
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "HOME": os.environ.get("HOME", "/root"),
+        # O container roda como root, e o Claude Code recusa
+        # bypassPermissions como root sem isto (sai com exit code 1 na
+        # largada). O container já é o sandbox: confinado ao workspace,
+        # mem_limit no compose, sem acesso ao host.
+        "IS_SANDBOX": "1",
     }
     if settings.anthropic_api_key:
         env["ANTHROPIC_API_KEY"] = settings.anthropic_api_key
@@ -282,7 +287,17 @@ class AgentRunner:
         before = _snapshot(workspace)
         t0 = time.monotonic()
 
+        # stderr do CLI: sem isso, um crash na largada vira só "exit code 1"
+        # e o diagnóstico fica impossível. Guarda as últimas linhas pro erro.
+        stderr_tail: list[str] = []
+
+        def _on_stderr(line: str) -> None:
+            logger.warning("agent cli stderr: %s", line.rstrip())
+            stderr_tail.append(line.rstrip())
+            del stderr_tail[:-5]
+
         options = ClaudeAgentOptions(
+            stderr=_on_stderr,
             model=agent_config.model,
             cwd=str(workspace),
             env=_build_env(),
@@ -332,12 +347,15 @@ class AgentRunner:
             logger.warning("agent: timeout após %ss", agent_config.timeout_seconds)
         except Exception as e:
             logger.exception("agent: falha na execução")
+            error = str(e)
+            if stderr_tail:
+                error += "\n" + "\n".join(stderr_tail)
             return AgentResult(
                 ok=False, final_text="\n\n".join(texts[-2:]),
                 session_id=None, num_turns=0, total_cost_usd=None,
                 duration_s=time.monotonic() - t0,
                 artifacts=_diff_artifacts(before, _snapshot(workspace)),
-                error=str(e),
+                error=error,
             )
 
         duration = time.monotonic() - t0
