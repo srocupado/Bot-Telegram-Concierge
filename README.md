@@ -12,8 +12,9 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
 
 - **Agente proativo (opt-in)**: roda em janelas do dia (default 7/13/19h BRT)
   e avisa por conta própria — vencimentos chegando (lembretes não recorrentes
-  + fatura do cartão), **briefing matinal** (consolida lembretes do dia,
-  trânsito casa→trabalho e MPs do dia anterior), **nudges** por inatividade
+  + fatura do cartão), **briefing matinal** (previsão do tempo do dia,
+  lembretes do dia, trânsito casa→trabalho e MPs do dia anterior), **nudges**
+  por inatividade
   (treino/finanças/lista parados) e **revisão da carteira** na última janela do
   dia (cotação de mercado dos ativos B3 via brapi.dev: investido vs mercado +
   P&L, atualizando o `currentPrice` no Firestore). Gatilhos 100% determinísticos; baixo ruído

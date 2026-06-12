@@ -224,6 +224,26 @@ async def collect_nudges(
     return facts
 
 
+async def collect_clima(user: User, now_brt: datetime) -> list[ProactiveFact]:
+    """Previsão do tempo do dia (Open-Meteo, HOME_COORDS) pro briefing
+    matinal. Roda todo dia (clima interessa também no fim de semana). Sem
+    dedup (leitura fresca a cada manhã); falha silenciosa não derruba o
+    briefing."""
+    if not settings.home_coords:
+        return []
+    import httpx
+    from bot.services.weather import fetch_today_weather, format_weather_line
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            w = await fetch_today_weather(
+                client, settings.home_coords, tz=settings.timezone,
+            )
+    except Exception:
+        logger.warning("proactive: previsão do tempo falhou", exc_info=True)
+        return []
+    return [ProactiveFact("clima", "clima_hoje", "", format_weather_line(w))]
+
+
 async def collect_transito(user: User, now_brt: datetime) -> list[ProactiveFact]:
     """Trânsito casa → trabalho pro briefing matinal (dias úteis). Reusa o
     fetch do digest de trânsito. Sem dedup (leitura fresca a cada manhã)."""
@@ -304,6 +324,7 @@ async def collect_carteira(
 # ──────────────────────── orquestrador ────────────────────────
 
 _CAT_HEADER = {
+    "clima": "🌦️ <b>Clima hoje</b>",
     "transito": "🚗 <b>Trânsito casa → trabalho</b>",
     "venc": "⏳ <b>Chegando</b>",
     "mp": "📜 <b>Diário Oficial</b>",
@@ -316,7 +337,7 @@ def _compose(facts: list[ProactiveFact], *, briefing: bool) -> str:
     blocks: list[str] = []
     if briefing:
         blocks.append("☀️ <b>Bom dia! Resumo de hoje</b>")
-    for cat in ("transito", "venc", "mp", "nudge", "carteira"):
+    for cat in ("clima", "transito", "venc", "mp", "nudge", "carteira"):
         lines = [f.text for f in facts if f.category == cat]
         if not lines:
             continue
@@ -379,6 +400,7 @@ async def run_for_user(
 
     facts: list[ProactiveFact] = []
     if briefing:
+        facts += await collect_clima(user, now_brt)
         facts += await collect_transito(user, now_brt)
     facts += await collect_vencimentos(session, user, now_brt, force=force)
     facts += await collect_mp(session, user, mp_dates, force=force)
@@ -407,9 +429,10 @@ async def run_for_user(
     logger.info("proactive: user %d window=%s %d fatos enviado=%s", user.id, window, len(facts), sent)
     if sent and not force:
         for f in facts:
-            # trânsito e vencimentos não têm dedup: repetem a cada janela
-            # (trânsito = leitura fresca; vencimento = lembrar até pagar).
-            if f.category in ("transito", "venc"):
+            # clima, trânsito e vencimentos não têm dedup: repetem a cada
+            # janela (clima/trânsito = leitura fresca; vencimento = lembrar
+            # até pagar).
+            if f.category in ("clima", "transito", "venc"):
                 continue
             await mark_notified(session, user.id, f.kind, f.key)
     return sent
