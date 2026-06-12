@@ -10,9 +10,8 @@
    Exposta ao LLM pela tool `buscar_historico`.
 
 Defaults fixos (de propósito — sem sobrecarregar o .env):
-retenção de 90 dias, resumo ≤ ~1500 chars, modelo do resumo escolhido
-automaticamente pelas chaves já configuradas (Gemini Flash → OpenAI →
-Anthropic).
+retenção de 90 dias, resumo ≤ ~1500 chars. O resumo é gerado pelo MESMO
+provider/modelo que o usuário escolheu no /provider (nada hardcoded).
 """
 from __future__ import annotations
 
@@ -24,8 +23,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from bot.config import settings
-from bot.db.models import ChatLog, ChatSummary
+from bot.db.models import ChatLog, ChatSummary, User
 from bot.services.chat_memory import ChatMemory, memory
 from bot.services.llm.base import ChatMessage
 
@@ -135,19 +133,6 @@ _SUMMARY_SYSTEM = (
 )
 
 
-def _summary_provider():
-    """Modelo mais barato disponível com as chaves já configuradas."""
-    from bot.services.llm.factory import get_provider
-
-    if settings.gemini_api_key:
-        return get_provider("gemini", gemini_model="gemini-2.5-flash")
-    if settings.openai_api_key:
-        return get_provider("openai")
-    if settings.anthropic_api_key:
-        return get_provider("anthropic")
-    return None
-
-
 def _transcript(msgs: list[ChatMessage]) -> str:
     lines: list[str] = []
     total = 0
@@ -165,15 +150,21 @@ def _transcript(msgs: list[ChatMessage]) -> str:
 
 
 async def _compact(user_id: int, msgs: list[ChatMessage]) -> None:
-    """Funde mensagens que saíram do contexto no resumo rolante do usuário."""
+    """Funde mensagens que saíram do contexto no resumo rolante do usuário.
+
+    Usa o MESMO provider/modelo que o usuário escolheu no /provider — nada
+    de modelo hardcoded. Se a chamada falhar, o resumo anterior fica."""
+    from bot.services.llm.factory import get_provider
+
     assert _sessionmaker is not None
-    provider = _summary_provider()
-    if provider is None:
-        return
     try:
         async with _sessionmaker() as session:
             row = await session.get(ChatSummary, user_id)
             old = row.summary if row else "(vazio)"
+            user = await session.get(User, user_id)
+        if user is None:
+            return
+        provider = get_provider(user.provider, gemini_model=user.gemini_model)
         today = datetime.now(timezone.utc).strftime("%d/%m/%Y")
         prompt = (
             f"RESUMO ATUAL:\n{old}\n\n"

@@ -224,9 +224,9 @@ Três camadas, sem nenhuma config nova no `.env` (defaults fixos no código):
    gravada em `chat_log` (write-through). No boot o bot re-hidrata o que
    ainda está no TTL de 30 min: deploy/restart deixa de "apagar" a conversa.
 2. **Resumo rolante (longo prazo)** — quando turnos saem do contexto
-   (estouro de 10 turnos ou TTL), um modelo barato (Gemini Flash → OpenAI →
-   Anthropic, conforme as chaves existentes) compacta o que é duradouro num
-   resumo ≤ ~1.500 chars por usuário, injetado no system prompt. *"Aquele
+   (estouro de 10 turnos ou TTL), o **mesmo provider/modelo do seu
+   `/provider`** compacta o que é duradouro num resumo ≤ ~1.500 chars por
+   usuário, injetado no system prompt (nenhum modelo hardcoded). *"Aquele
    plano que montamos ontem"* passa a funcionar dias depois.
 3. **Busca no histórico** — tool `buscar_historico` com FTS5 do SQLite
    (fallback `LIKE`): *"o que eu te falei sobre o orçamento da reforma?"*
