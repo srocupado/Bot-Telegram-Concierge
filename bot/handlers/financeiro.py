@@ -13,6 +13,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from aiogram import F, Router
+from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -119,18 +120,19 @@ def _is_json_doc(message: Message) -> bool:
 
 @router.message(F.document)
 async def on_document(message: Message, user: User, session: AsyncSession) -> None:
-    """Captura JSON enviado dentro da janela de awaiting. Se não for JSON
-    ou janela expirou, ignora (deixa o handler de PDF/etc cuidar)."""
+    """Captura JSON enviado dentro da janela de awaiting. Fora disso,
+    SkipHandler — `return` puro CONSUMIRIA o update no aiogram 3 e os
+    handlers seguintes (uploads, análise de PDF) nunca rodariam."""
     if not user.is_authorized:
-        return
+        raise SkipHandler
     if not _is_json_doc(message):
-        return
+        raise SkipHandler
 
     awaiting = as_utc(user.awaiting_firebase_json_until)
     if awaiting is None:
-        return
+        raise SkipHandler
     if datetime.now(timezone.utc) > awaiting:
-        return  # janela expirou — ignora silenciosamente
+        raise SkipHandler  # janela expirou — ignora silenciosamente
 
     doc = message.document
     if (doc.file_size or 0) > MAX_JSON_BYTES:

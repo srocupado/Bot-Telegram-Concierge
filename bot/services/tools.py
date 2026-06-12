@@ -109,6 +109,15 @@ async def _h_executar_agente(args: dict, ctx: ToolContext) -> str:
     return "ok: agente iniciado em background (não escreva nada)"
 
 
+async def _h_listar_arquivos(_args: dict, ctx: ToolContext) -> str:
+    # Owner-only: a pasta é o workspace do agente (recurso do dono).
+    if not settings.owner_telegram_id or ctx.user.id != settings.owner_telegram_id:
+        return "erro: recurso indisponível para este usuário"
+    from bot.services.uploads import format_listing
+
+    return "ok: " + format_listing()
+
+
 async def _h_criar_tarefa(args: dict, ctx: ToolContext) -> str:
     texto = (args.get("texto") or "").strip()
     if not texto:
@@ -2151,5 +2160,18 @@ TOOLS: list[Tool] = [
             "required": ["tarefa"],
         },
         handler=_h_executar_agente,
+    ),
+    Tool(
+        name="listar_arquivos",
+        description=(
+            "Lista os arquivos que o dono do bot salvou anexando documentos "
+            "no chat (pasta uploads/ do workspace do agente): nome, tamanho "
+            "e data. USE quando perguntarem 'que arquivos você tem "
+            "salvos/guardados?', 'lista os arquivos', 'cadê a planilha que "
+            "te mandei?'. Pra usar um arquivo em código, indique o caminho "
+            "uploads/<nome> numa tarefa do executar_agente."
+        ),
+        parameters={"type": "object", "properties": {}},
+        handler=_h_listar_arquivos,
     ),
 ]

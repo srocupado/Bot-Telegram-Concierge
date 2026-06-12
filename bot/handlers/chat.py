@@ -47,7 +47,7 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "- analisar_gastos, desfazer_ultima_acao\n"
     "- consultar_mp_dou, consultar_congresso\n"
     "- buscar_voo, buscar_hotel, criar_watch_voo, criar_watch_hotel, listar_watches_viagem, cancelar_watch_viagem\n"
-    "- executar_agente\n\n"
+    "- executar_agente, listar_arquivos\n\n"
     "Quando rodando no Anthropic, você tem busca web nativa (web_search). "
     "Use SEMPRE que o usuário pedir notícias, eventos atuais, cotações, "
     "resultados ou informação que dependa de dados recentes. Cite fontes "

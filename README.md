@@ -121,6 +121,17 @@ e, pra execuções agendadas, teto **diário** opcional
 Com `AGENT_GITHUB_TOKEN` (fine-grained PAT restrito aos repos permitidos) o
 agente também clona privados, commita, faz push e abre PRs via `git`/`gh`.
 
+#### Arquivos anexados (uploads)
+
+Owner-only: anexe um documento no chat e ele é salvo em
+`./workspace/uploads/` (persiste no host; máx 20 MB — limite de download da
+Bot API). Caption `guarda como <nome.ext>` renomeia; **PDF sem caption**
+continua indo pra análise multimodal (caption `guarda` força salvar).
+`/arquivos` lista, `/arquivos apagar <nome>` remove — em linguagem natural
+também: *"que arquivos você tem salvos?"* (tool `listar_arquivos`). Como a
+pasta fica no workspace do agente, o fluxo natural é anexar a planilha hoje
+e amanhã pedir */agente pega o uploads/planilha.xlsx e cruza com…*
+
 #### SSH / rede local (ex.: backup de pasta de outra máquina)
 
 O container está na rede bridge do Docker com saída pra LAN, e a imagem traz
