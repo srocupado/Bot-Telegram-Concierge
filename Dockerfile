@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         gnupg \
         git \
+        openssh-client \
+        rsync \
     && rm -rf /var/lib/apt/lists/*
 
 # Node 22 LTS (NodeSource, arm64 ok) + Claude Code CLI pinado + gh CLI —
