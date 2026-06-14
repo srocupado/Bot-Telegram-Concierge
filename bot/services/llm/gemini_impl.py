@@ -20,6 +20,25 @@ from bot.services.llm.base import ChatMessage, LLMProvider, Tool, ToolContext
 
 logger = logging.getLogger(__name__)
 
+
+def _log_usage(where: str, resp: Any) -> None:
+    """Loga uso de tokens incl. caching implícito do Gemini (ligado por padrão
+    em 2.5/3.x). cached > 0 = o prefixo estável (system+tools) foi cacheado —
+    é a métrica pra confirmar a economia. thoughts = tokens de 'thinking'."""
+    u = getattr(resp, "usage_metadata", None)
+    if u is None:
+        return
+    logger.info(
+        "gemini[%s] usage: prompt=%s cached=%s thoughts=%s output=%s total=%s",
+        where,
+        getattr(u, "prompt_token_count", "?"),
+        getattr(u, "cached_content_token_count", 0) or 0,
+        getattr(u, "thoughts_token_count", 0) or 0,
+        getattr(u, "candidates_token_count", "?"),
+        getattr(u, "total_token_count", "?"),
+    )
+
+
 # Modelos Gemini 2.5 "pensam" por padrão e o thinking consome max_output_tokens.
 # Garantimos um teto alto o bastante pra sobrar tokens pro texto final (senão a
 # resposta vem vazia — "(sem resposta)"). É só um teto; respostas curtas não gastam tudo.
@@ -98,6 +117,7 @@ class GeminiProvider(LLMProvider):
             resp = self.client.models.generate_content(
                 model=self.model_name, contents=contents, config=config,
             )
+            _log_usage("chat", resp)
             return (resp.text or "").strip()
 
         return await asyncio.to_thread(_call)
@@ -145,6 +165,7 @@ class GeminiProvider(LLMProvider):
                 )
 
             resp = await asyncio.to_thread(_call)
+            _log_usage("chat_with_tools", resp)
 
             # Extrai function_calls de qualquer parte da resposta.
             fcs: list[Any] = []

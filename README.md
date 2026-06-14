@@ -86,7 +86,11 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   pode acionar tools. Provider de visão configurável (`/provider_visao`).
 - **Multi-provider LLM**: Anthropic, OpenAI, Gemini (com modelos 2.5 e 3.x).
   Troca em runtime via `/provider`; preferência persistida por usuário.
-  Prompt caching no Anthropic pra reduzir custo.
+  Prompt caching no Anthropic pra reduzir custo; no Gemini o caching implícito
+  (2.5/3.x) aproveita o mesmo prefixo estável. Para isso o prefixo `system +
+  tools` é mantido fixo — data/hora e o resumo de memória entram na mensagem do
+  usuário (via `inject_context`), não no system prompt, pra não furar o cache a
+  cada minuto. O uso de tokens (incl. `cached`) é logado nos dois providers.
 - **Acesso restrito por senha** (`ACCESS_PASSWORD`); isolamento por
   `telegram_user_id`. **Multi-usuário** simultâneo (família, casal): SQLite
   configurado em modo WAL + `busy_timeout`, cada user tem seu próprio

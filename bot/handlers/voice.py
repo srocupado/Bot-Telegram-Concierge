@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db.models import User
-from bot.handlers.chat import _build_system_prompt
+from bot.handlers.chat import _build_system_prompt, inject_context
 from bot.handlers.congress import (
     cmd_congress_agora,
     cmd_congress_at,
@@ -354,8 +354,8 @@ async def _dispatch_chat(
         provider = get_provider(user.provider, gemini_model=user.gemini_model)
         ctx = ToolContext(user=user, session=session, tz=user.timezone)
         reply = await provider.chat_with_tools(
-            history, tools=TOOLS, ctx=ctx,
-            system=_build_system_prompt(user.timezone, summary),
+            inject_context(history, user.timezone, summary), tools=TOOLS, ctx=ctx,
+            system=_build_system_prompt(),
             max_tokens=600,
         )
     except Exception as e:

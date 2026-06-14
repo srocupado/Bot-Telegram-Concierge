@@ -34,7 +34,9 @@ async def answer_llm(message: Message, text: str, reply_markup=None) -> None:
 _SYSTEM_PROMPT_TEMPLATE = (
     "Você é o Concierge, um assistente pessoal em português brasileiro. "
     "Respostas curtas, diretas e amistosas.\n\n"
-    "Data/hora atual: {now_local} ({tz}).\n\n"
+    "A data/hora atual e o fuso são informados no início de cada mensagem do "
+    "usuário, no campo 'Data/hora atual:'. Use-os para qualquer cálculo de "
+    "data/hora.\n\n"
     "Você tem ferramentas (tools) para agir no sistema do usuário. "
     "Os nomes EXATOS das tools disponíveis são:\n"
     "- criar_tarefa, listar_tarefas, concluir_tarefa, apagar_tarefa\n"
@@ -68,7 +70,7 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "Para criar_lembrete:\n"
     "- 'texto' é o conteúdo do lembrete (ex: 'comprar morangos').\n"
     "- 'quando_iso' é a data/hora ABSOLUTA no formato ISO local "
-    "'YYYY-MM-DDTHH:MM', calculada a partir da Data/hora atual acima.\n"
+    "'YYYY-MM-DDTHH:MM', calculada a partir da Data/hora atual informada.\n"
     "- 'às 16h' / 'às 4 da tarde' / '16:00' = hora absoluta 16:00 do dia indicado.\n"
     "- 'em 2h' = relativo: some 2h à Data/hora atual.\n"
     "- Sempre confira mentalmente: 'às' vira hora absoluta, 'em' vira soma.\n"
@@ -277,19 +279,50 @@ _SYSTEM_PROMPT_TEMPLATE = (
 )
 
 
-def _build_system_prompt(tz_name: str, memory_context: str | None = None) -> str:
+def _build_system_prompt() -> str:
+    """System prompt ESTÁTICO (sem data/hora nem memória) — é o prefixo
+    cacheável. Os dados voláteis (timestamp + resumo de memória) entram na
+    última mensagem do usuário via inject_context(), pra não invalidar o
+    cache de prompt (Anthropic cache_control / caching implícito do Gemini),
+    que casa o prefixo system+tools e antes era furado pelo timestamp por
+    minuto."""
+    return _SYSTEM_PROMPT_TEMPLATE
+
+
+def _context_block(tz_name: str, memory_context: str | None = None) -> str:
+    """Bloco volátil (data/hora + memória) que vai prefixado na mensagem do
+    usuário, fora do system prompt cacheável."""
     now_local = datetime.now(ZoneInfo(tz_name))
-    prompt = _SYSTEM_PROMPT_TEMPLATE.format(
-        now_local=now_local.strftime("%Y-%m-%d %H:%M %A"),
-        tz=tz_name,
-    )
+    block = f"Data/hora atual: {now_local.strftime('%Y-%m-%d %H:%M %A')} ({tz_name})."
     if memory_context:
-        prompt += (
+        block += (
             "\n\nMEMÓRIA DE CONVERSAS ANTERIORES (resumo automático; use como "
             "contexto, corrija se o usuário disser diferente):\n"
             + memory_context
         )
-    return prompt
+    return block
+
+
+def inject_context(
+    messages: list, tz_name: str, memory_context: str | None = None,
+) -> list:
+    """Devolve uma cópia de `messages` com o contexto volátil prefixado na
+    ÚLTIMA mensagem (sempre a do usuário). Não muta a lista nem os dicts
+    originais (compartilhados com o store de memória)."""
+    if not messages:
+        return messages
+    block = _context_block(tz_name, memory_context)
+    out = list(messages)
+    last = dict(out[-1])
+    content = last.get("content")
+    if isinstance(content, str):
+        last["content"] = f"{block}\n\n{content}"
+    elif isinstance(content, list):
+        last["content"] = [{"type": "text", "text": block}, *content]
+    else:
+        last["content"] = block
+    out[-1] = last
+    return out
 
 
 @router.message(F.text & ~F.text.startswith("/"))
@@ -312,8 +345,8 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
         provider = get_provider(user.provider, gemini_model=user.gemini_model)
         ctx = ToolContext(user=user, session=session, tz=user.timezone)
         reply = await provider.chat_with_tools(
-            history, tools=TOOLS, ctx=ctx,
-            system=_build_system_prompt(user.timezone, summary),
+            inject_context(history, user.timezone, summary), tools=TOOLS, ctx=ctx,
+            system=_build_system_prompt(),
             max_tokens=800,
         )
     except Exception as e:

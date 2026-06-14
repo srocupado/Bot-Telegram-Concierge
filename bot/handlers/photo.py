@@ -15,7 +15,7 @@ from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.models import User
-from bot.handlers.chat import _build_system_prompt, answer_llm
+from bot.handlers.chat import _build_system_prompt, answer_llm, inject_context
 from bot.config import settings
 from bot.services.chat_memory import memory
 from bot.services.llm.base import ToolContext, make_image_message
@@ -95,8 +95,8 @@ async def cmd_photo(message: Message, user: User, session: AsyncSession) -> None
         )
         reply = await asyncio.wait_for(
             provider.chat_with_tools(
-                history, tools=TOOLS, ctx=ctx,
-                system=_build_system_prompt(user.timezone),
+                inject_context(history, user.timezone), tools=TOOLS, ctx=ctx,
+                system=_build_system_prompt(),
                 max_tokens=4000,
             ),
             timeout=120,

@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db.models import User
-from bot.handlers.chat import _build_system_prompt
+from bot.handlers.chat import _build_system_prompt, inject_context
 from bot.services.chat_memory import memory
 from bot.services.llm.base import ToolContext, make_document_message
 from bot.services.llm.factory import get_provider
@@ -63,8 +63,8 @@ async def cmd_pdf(message: Message, user: User, session: AsyncSession) -> None:
         provider = get_provider(vision_provider_name, gemini_model=user.gemini_model)
         ctx = ToolContext(user=user, session=session, tz=user.timezone)
         reply = await provider.chat_with_tools(
-            history, tools=TOOLS, ctx=ctx,
-            system=_build_system_prompt(user.timezone),
+            inject_context(history, user.timezone), tools=TOOLS, ctx=ctx,
+            system=_build_system_prompt(),
             max_tokens=4000,
         )
     except Exception as e:

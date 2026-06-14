@@ -130,7 +130,7 @@ async def _run_chat(
     if not prompt:
         await bot.send_message(chat_id, "⚠️ Prompt agendado vazio.")
         return
-    from bot.handlers.chat import _build_system_prompt
+    from bot.handlers.chat import _build_system_prompt, inject_context
     from bot.services.memoria import get_summary
 
     history = memory.get(chat_id)
@@ -140,8 +140,8 @@ async def _run_chat(
         provider = get_provider(user.provider, gemini_model=user.gemini_model)
         ctx = ToolContext(user=user, session=session, tz=user.timezone)
         reply = await provider.chat_with_tools(
-            history, tools=TOOLS, ctx=ctx,
-            system=_build_system_prompt(user.timezone, summary),
+            inject_context(history, user.timezone, summary), tools=TOOLS, ctx=ctx,
+            system=_build_system_prompt(),
             max_tokens=800,
         )
     except Exception:
