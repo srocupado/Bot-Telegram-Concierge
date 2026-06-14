@@ -529,6 +529,13 @@ async def _h_lancar_movimento_banco(args: dict, ctx: ToolContext) -> str:
         valor_f = float(valor)
     except (TypeError, ValueError):
         return "erro: 'valor' deve ser número (em reais)"
+    if valor_f <= 0:
+        return (
+            "erro: valor inválido (R$ %.2f). NÃO lance lançamento com valor "
+            "zero ou negativo — isso costuma ser transcrição/entendimento "
+            "errado (ex: 'cem' ouvido como 'sem'). Pergunte ao usuário qual o "
+            "valor correto antes de registrar." % valor_f
+        )
     data_iso = _resolve_data_iso(args, ctx.tz)
     if not data_iso:
         return f"erro: 'data_iso' inválido ({args.get('data_iso')!r}). Use 'YYYY-MM-DD'."
@@ -568,6 +575,13 @@ async def _h_lancar_despesa_cartao(args: dict, ctx: ToolContext) -> str:
         valor_f = float(valor)
     except (TypeError, ValueError):
         return "erro: 'valor' deve ser número (em reais)"
+    if valor_f <= 0:
+        return (
+            "erro: valor inválido (R$ %.2f). NÃO lance compra com valor zero "
+            "ou negativo — costuma ser transcrição/entendimento errado (ex: "
+            "'cem' ouvido como 'sem'). Pergunte ao usuário o valor correto "
+            "antes de registrar." % valor_f
+        )
     data_iso = _resolve_data_iso(args, ctx.tz)
     if not data_iso:
         return f"erro: 'data_iso' inválido ({args.get('data_iso')!r}). Use 'YYYY-MM-DD'."
@@ -608,6 +622,12 @@ async def _h_registrar_aporte_tesouro(args: dict, ctx: ToolContext) -> str:
         valor_f = float(valor)
     except (TypeError, ValueError):
         return "erro: 'valor' deve ser número"
+    if valor_f <= 0:
+        return (
+            "erro: valor inválido (R$ %.2f). NÃO registre aporte com valor "
+            "zero ou negativo — pergunte ao usuário o valor correto antes de "
+            "registrar." % valor_f
+        )
     data_iso = _resolve_data_iso(args, ctx.tz)
     if not data_iso:
         return f"erro: 'data_iso' inválido ({args.get('data_iso')!r}). Use 'YYYY-MM-DD'."
@@ -663,6 +683,11 @@ async def _h_registrar_operacao_ativo(args: dict, ctx: ToolContext) -> str:
         return "erro: 'qty' e 'price' devem ser números"
     if qty_f <= 0:
         return "erro: 'qty' deve ser > 0"
+    if price_f <= 0:
+        return (
+            "erro: 'price' deve ser > 0 (R$ %.2f). Pergunte ao usuário o preço "
+            "correto antes de registrar a operação." % price_f
+        )
 
     data_iso = _resolve_data_iso(args, ctx.tz)
     if not data_iso:
