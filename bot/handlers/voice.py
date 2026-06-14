@@ -10,6 +10,7 @@ import asyncio
 import html
 import io
 import logging
+import re
 
 from aiogram import F, Router
 from aiogram.filters import CommandObject
@@ -60,6 +61,16 @@ router = Router(name="voice")
 _TOO_LONG = "⚠️ Áudio muito longo (máx {max}s). Tenta um trecho menor."
 _EMPTY = "🤷 Não entendi nada no áudio. Tenta gravar de novo, mais perto do microfone."
 _STT_ERROR = "⚠️ Não consegui transcrever o áudio agora. Tenta de novo em alguns segundos."
+
+# "cem" e "sem" são HOMÓFONOS em PT-BR (ambos /sẽj̃/) — nenhum STT distingue
+# pelo som, é decisão de contexto. Num comando do bot "sem reais" é quase
+# sempre "cem reais" (ninguém compra "sem reais"). Corrige só nesse contexto
+# de moeda, preservando "sem" legítimo ("sem açúcar", "sem glúten").
+_SEM_REAIS_RE = re.compile(r"\bsem(\s+mil)?\s+(reais|real)\b", re.IGNORECASE)
+
+
+def _fix_currency_homophones(text: str) -> str:
+    return _SEM_REAIS_RE.sub(lambda m: "cem" + (m.group(1) or "") + " reais", text)
 
 
 def _cmd(name: str, args: str | None) -> CommandObject:
@@ -285,6 +296,11 @@ async def cmd_voice(message: Message, user: User, session: AsyncSession) -> None
     if not transcribed:
         await message.answer(_EMPTY)
         return
+
+    # Corrige o homófono cem→sem antes do eco e do dispatch (vale só fora de
+    # comando — slash não tem "sem reais").
+    if not transcribed.startswith("/"):
+        transcribed = _fix_currency_homophones(transcribed)
 
     is_command = transcribed.startswith("/")
     logger.info(
