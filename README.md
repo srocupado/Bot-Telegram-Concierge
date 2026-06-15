@@ -548,9 +548,16 @@ confinado + revisão humana dos artefatos.
 ### Google Maps
 
 A `GOOGLE_MAPS_API_KEY` é usada para **Directions API** (digest e
-`/transito_agora`) e **Geocoding API (New)** (`/rota <endereço>`, endpoint
-v4beta). Habilite ambas no Google Cloud. Sem Geocoding, os atalhos
-(`/rota casa`/`trabalho`) ainda funcionam.
+`/transito_agora`), **Geocoding API (New)** (`/rota <endereço>`, endpoint
+v4beta) e **Places API (New)** (tool `buscar_local`: telefone/endereço/horário
+de funcionamento oficial de estabelecimentos). Habilite as três no Google
+Cloud. Sem Geocoding, os atalhos (`/rota casa`/`trabalho`) ainda funcionam;
+sem a Places API (New), `buscar_local` retorna 403.
+
+> **Por que `buscar_local` e não `buscar_web` pra contato de lugar?** Telefone/
+> endereço/horário de estabelecimento mora no painel estruturado do Google; a
+> busca web (SearXNG/Firecrawl) cai em agregadores com dado secundário/errado.
+> O agente é instruído a usar `buscar_local` (Places API) pra essa categoria.
 
 ### Rota preferida (`ROUTE_GOOGLE_MAPS_URL`)
 

@@ -132,6 +132,18 @@ async def _h_buscar_web(args: dict, ctx: ToolContext) -> str:
         return f"erro na busca web: {e}"
 
 
+async def _h_buscar_local(args: dict, ctx: ToolContext) -> str:
+    from bot.services.places import PlacesError, buscar_local
+
+    query = (args.get("query") or "").strip()
+    if not query:
+        return "erro: precisa de 'query' (nome do lugar + cidade/bairro)"
+    try:
+        return await buscar_local(query)
+    except PlacesError as e:
+        return f"erro na consulta de local: {e}"
+
+
 async def _h_criar_tarefa(args: dict, ctx: ToolContext) -> str:
     texto = (args.get("texto") or "").strip()
     if not texto:
@@ -2104,6 +2116,32 @@ TOOLS: list[Tool] = [
             "required": ["query"],
         },
         handler=_h_buscar_web,
+    ),
+    Tool(
+        name="buscar_local",
+        description=(
+            "Dado OFICIAL do Google sobre um ESTABELECIMENTO/lugar: telefone, "
+            "endereço, horário de funcionamento, se está aberto agora, site e "
+            "status (aberto/fechado permanentemente). USE SEMPRE que perguntarem "
+            "'qual o telefone/endereço/horário de funcionamento de [lugar]?', "
+            "'que horas abre/fecha [loja/restaurante]?', '[lugar] está aberto "
+            "agora?', 'tem o contato d[o] [estabelecimento]?'. É a fonte CERTA "
+            "pra contato de lugar — NÃO use buscar_web pra isso (cai em "
+            "agregador com telefone errado). Passe em 'query' o nome do lugar + "
+            "cidade/bairro (ex: 'Perfilago Varjão Brasília'). Resposta já vem "
+            "com os dados — repasse o que foi pedido."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Nome do estabelecimento + cidade/bairro (ex: 'Cinemark Iguatemi Brasília')",
+                },
+            },
+            "required": ["query"],
+        },
+        handler=_h_buscar_local,
     ),
     Tool(
         name="buscar_voo",
