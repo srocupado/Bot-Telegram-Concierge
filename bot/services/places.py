@@ -98,8 +98,9 @@ def _format_place(p: dict, idx: int) -> str:
 
     # Monospace (crases): no Telegram, tocar em texto monospace COPIA ele
     # ("Copiado") → cola no discador. É o "toque captura o número" confiável
-    # (a auto-detecção de telefone do Telegram é furada). Formato internacional.
-    phone = p.get("internationalPhoneNumber") or p.get("nationalPhoneNumber")
+    # (a auto-detecção de telefone do Telegram é furada). Formato nacional
+    # (sem +55) — basta pra ligar localmente.
+    phone = p.get("nationalPhoneNumber") or p.get("internationalPhoneNumber")
     if phone:
         lines.append(f"📞 `{phone}`")
 
