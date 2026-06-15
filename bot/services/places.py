@@ -76,7 +76,15 @@ async def buscar_local(query: str) -> str:
         return f"(nenhum estabelecimento encontrado para: {query})"
 
     logger.info("buscar_local: %d resultado(s) para %r", len(places), query)
-    return "\n\n".join(_format_place(p, i) for i, p in enumerate(places, 1))
+    body = "\n\n".join(_format_place(p, i) for i, p in enumerate(places, 1))
+    # Places API não expõe WhatsApp (vem do Perfil da Empresa, fora da API).
+    # Nota pro agente: se o usuário pedir WhatsApp, ofereça procurar no site.
+    body += (
+        "\n\nNota: o WhatsApp do estabelecimento NÃO consta na Places API. Se o "
+        "usuário pediu o WhatsApp e há site acima, você pode ler o site com "
+        "buscar_web pra achar um link wa.me — ou avise que não está disponível."
+    )
+    return body
 
 
 def _format_place(p: dict, idx: int) -> str:
