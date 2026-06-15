@@ -329,9 +329,15 @@ async def find_best_hotel_in_window(
     return best
 
 
-def extract_shopping_results(raw: dict[str, Any], limit: int = 5) -> list[dict[str, Any]]:
-    """Normaliza shopping_results do Google Shopping → lista enxuta ordenada
-    por preço (itens com preço primeiro, mais barato no topo)."""
+def extract_shopping_results(raw: dict[str, Any], limit: int = 7) -> list[dict[str, Any]]:
+    """Normaliza shopping_results do Google Shopping → lista enxuta na ORDEM DE
+    RELEVÂNCIA do Google (item 1 = melhor match do produto).
+
+    NÃO reordena por preço de propósito: o Google já rankeia o produto
+    principal no topo, enquanto acessórios baratos (baterias, hubs, capas) que
+    casam o nome ficam abaixo. Ordenar por preço crescente jogava esses
+    acessórios pro topo e confundia o agente ('só tem acessório'). Cada item
+    leva o preço — o LLM compara; a ORDEM preserva a relevância."""
     items = raw.get("shopping_results") or []
     out: list[dict[str, Any]] = []
     for it in items:
@@ -348,14 +354,16 @@ def extract_shopping_results(raw: dict[str, Any], limit: int = 5) -> list[dict[s
                 "reviews": it.get("reviews"),
             }
         )
-    # Preço asc; itens sem preço vão pro fim.
-    out.sort(key=lambda x: x["price"] if isinstance(x["price"], (int, float)) else float("inf"))
     return out[:limit]
 
 
 def format_shopping(query: str, items: list[dict[str, Any]]) -> str:
     """Texto plano pro LLM sintetizar (não HTML) — preço, loja e link por item."""
-    lines = [f'Preços para "{query}" (fonte: Google Shopping):']
+    lines = [
+        f'Preços para "{query}" (Google Shopping, ordem de RELEVÂNCIA — item 1 é '
+        "o melhor match do produto; itens abaixo podem ser acessórios/variações, "
+        "confira o título antes de citar o preço):"
+    ]
     for i, it in enumerate(items, 1):
         title = (it.get("title") or "(sem título)").strip()
         price = it.get("price_str") or (
