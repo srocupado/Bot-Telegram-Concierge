@@ -75,6 +75,12 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   sem você precisar lembrar slash commands.
 - **Busca web nativa** no Anthropic (`web_search`) e Gemini (`google_search`),
   citando fontes. (OpenAI não tem busca nativa nessa versão.)
+- **Busca web com leitura de página** (tool `buscar_web` + `/buscar`): busca
+  **e lê o corpo renderizado** da página — funciona pra dados que só existem
+  dentro da página e mudam com o tempo (horários de sessão de cinema,
+  funcionamento de loja, preços, cardápios). Backend **SearXNG+Jina**
+  (self-hosted, custo zero) como primário e **Firecrawl** como fallback.
+  Ver [Busca web](#busca-web-buscar_web--buscar).
 - **Voz (STT)**: áudio transcrito via **Gemini multimodal** (default
   `gemini-3.5-flash`) ou **OpenAI Whisper/gpt-4o-transcribe** — selecionável por
   usuário com `/voice gemini|openai`. Aceita OGG/Opus nativo sem ffmpeg. Quando
@@ -406,6 +412,58 @@ TRAVELS_ALERT_HOUR=8     # hora BRT em que os watches diários são verificados 
 
 Sem `SERPAPI_KEY` as tools de viagem ficam desabilitadas mas não causam erro.
 
+A **mesma** `SERPAPI_KEY` alimenta a tool **`buscar_preco`** (preço de produto
+via Google Shopping: preço + loja + link direto do anúncio — `buscar_web` não
+serve aqui porque o marketplace bloqueia e o link sai genérico). A cota é
+**compartilhada** com voo/hotel. Se o SerpAPI ficar sem cota ou fora do ar,
+`buscar_preco` **cai automaticamente** pra busca web (`search_and_read`),
+devolvendo preço aproximado — nunca erro duro.
+
+### Busca web (`buscar_web` / `/buscar`)
+
+Busca **e lê** o corpo das páginas (markdown renderizado, com JS) — permite
+responder perguntas cujo dado só existe dentro da página e muda com o tempo:
+*"que horas tem sessão do filme X no Cinemark do shopping Y?"*, horário de
+funcionamento, preços, cardápios. A busca web **nativa** (snippets) acha a
+página certa mas não traz esses dados; só lendo a página eles aparecem.
+
+Dois caminhos usam isso:
+- **Chat livre / voz** → o agente aciona a tool `buscar_web` quando faz sentido.
+- **Comando `/buscar <termo>`** (e por voz: *"busca X"*, *"pesquisa X"*,
+  *"procura X"*, *"google X"*) → lê página + síntese curta, e **cai pra busca
+  nativa** (Anthropic `web_search` / Gemini `google_search`) só se nenhum
+  backend de leitura estiver configurado ou todos falharem.
+
+#### Backends (primário → fallback)
+
+```bash
+WEBSEARCH_BACKEND=searxng     # primário: "searxng" (padrão) ou "firecrawl"
+WEBSEARCH_FALLBACK=true       # se o primário falhar, tenta o outro
+
+# SearXNG (self-hosted, custo ZERO) — primário recomendado
+SEARXNG_URL=http://192.168.1.50:8080
+JINA_API_KEY=                 # opcional (Jina Reader lê os links); sobe o rate limit
+
+# Firecrawl (turnkey, gasta créditos) — fallback por padrão
+FIRECRAWL_API_KEY=...         # https://www.firecrawl.dev → Dashboard → API Keys (free tier)
+```
+
+Como funciona o `search_and_read` (`bot/services/websearch.py`):
+
+1. Tenta o backend de `WEBSEARCH_BACKEND`. Um backend **sem credencial é
+   pulado** (não conta como falha) — dá pra rodar só com um dos dois.
+2. **SearXNG**: `GET {SEARXNG_URL}/search?q=...&format=json` pega os links →
+   **Jina Reader** (`https://r.jina.ai/<url>`) lê cada um. Resultado vazio
+   (ex.: engines em 429) conta como falha → aciona o fallback.
+3. **Firecrawl**: `search + scrape` num call só.
+4. Se o primário falhar e `WEBSEARCH_FALLBACK=true`, o outro é tentado.
+
+O contrato é o mesmo pros dois backends, então a escolha é só de configuração —
+o agente e a tool `buscar_web` não mudam.
+
+> **Instalar o SearXNG:** passo a passo em
+> [Setup de serviços externos → SearXNG](#searxng-backend-primário-de-busca-web).
+
 ### Voz (STT)
 
 ```bash
@@ -492,15 +550,127 @@ confinado + revisão humana dos artefatos.
 ### Google Maps
 
 A `GOOGLE_MAPS_API_KEY` é usada para **Directions API** (digest e
-`/transito_agora`) e **Geocoding API (New)** (`/rota <endereço>`, endpoint
-v4beta). Habilite ambas no Google Cloud. Sem Geocoding, os atalhos
-(`/rota casa`/`trabalho`) ainda funcionam.
+`/transito_agora`), **Geocoding API (New)** (`/rota <endereço>`, endpoint
+v4beta) e **Places API (New)** (tool `buscar_local`: telefone/endereço/horário
+de funcionamento oficial de estabelecimentos). Habilite as três no Google
+Cloud. Sem Geocoding, os atalhos (`/rota casa`/`trabalho`) ainda funcionam;
+sem a Places API (New), `buscar_local` retorna 403.
+
+> **Por que `buscar_local` e não `buscar_web` pra contato de lugar?** Telefone/
+> endereço/horário de estabelecimento mora no painel estruturado do Google; a
+> busca web (SearXNG/Firecrawl) cai em agregadores com dado secundário/errado.
+> O agente é instruído a usar `buscar_local` (Places API) pra essa categoria.
 
 ### Rota preferida (`ROUTE_GOOGLE_MAPS_URL`)
 
 Trace a rota habitual no Google Maps **com paradas intermediárias** →
 Compartilhar → Copiar link → cole em `ROUTE_GOOGLE_MAPS_URL`. O bot extrai os
 waypoints e compara com a melhor alternativa do Google em tempo real.
+
+## Setup de serviços externos
+
+Tutoriais de instalação dos requisitos auto-hospedados. (APIs gerenciadas —
+Anthropic, Gemini, SerpAPI, Firecrawl, Google Maps — são só uma chave no
+`.env`; ver [Configuração](#configuração).)
+
+### SearXNG (backend primário de busca web)
+
+O `buscar_web` usa **SearXNG** (metabusca self-hosted, custo zero) como
+primário e Firecrawl como fallback. O SearXNG roda em qualquer máquina da sua
+rede (inclusive um Orange Pi/Raspberry antigo) — só precisa de Docker e ser
+alcançável pelo bot na LAN. Aponte `SEARXNG_URL` pro IP:porta dele.
+
+**1. Pré-checagem**
+```bash
+uname -m            # aarch64 (ok) | armv7l (32-bit, ver nota no fim)
+docker --version    # sem docker:  curl -fsSL https://get.docker.com | sh
+sudo systemctl enable --now docker
+```
+
+**2. Estrutura + `docker-compose.yml`**
+```bash
+sudo mkdir -p /opt/searxng/config && cd /opt/searxng
+sudo tee docker-compose.yml >/dev/null <<'YAML'
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    ports:
+      - "8080:8080"                 # exposto na LAN (ver firewall no passo 6)
+    volumes:
+      - ./config:/etc/searxng
+    environment:
+      - SEARXNG_BASE_URL=http://0.0.0.0:8080/
+      - SEARXNG_PORT=8080
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID, DAC_OVERRIDE]
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+YAML
+```
+> Sem Valkey/Redis de propósito: instância **privada** consumida só pelo bot →
+> o limiter (anti-abuso de instância pública) fica off (passo 4), então Redis
+> não é necessário. Menos um container = mais leve em hardware fraco.
+
+**3. Primeiro boot** (gera o `config/settings.yml`)
+```bash
+sudo docker compose up -d && sleep 10 && ls config/
+```
+> Imagens recentes usam **granian** (não uwsgi) — só `settings.yml` é gerado,
+> sem `uwsgi.ini`. É o esperado.
+
+**4. Endurecer o `settings.yml`**
+```bash
+# secret aleatório (troca o placeholder)
+sudo sed -i "s|ultrasecretkey|$(openssl rand -hex 32)|g" config/settings.yml
+sudo nano config/settings.yml
+```
+Garanta estes blocos (`server.limiter: false` p/ instância privada; e
+`json` em `search.formats` é **essencial** pra API):
+```yaml
+server:
+  limiter: false
+  public_instance: false
+search:
+  formats:
+    - html
+    - json
+```
+
+**5. Reinicia e valida o JSON**
+```bash
+sudo docker compose restart && sleep 5
+curl -s 'http://localhost:8080/search?q=teste&format=json' | python3 -m json.tool | head -20
+```
+Esperado: JSON com `results: [...]`. Se vier HTML/`403`, o `json` em
+`search.formats` não pegou ou o limiter ainda está on.
+
+**6. Firewall (LAN-only)** — não exponha à internet:
+```bash
+sudo ufw allow from 192.168.0.0/16 to any port 8080 proto tcp
+```
+
+**7. No bot** (`.env` na máquina do Concierge):
+```bash
+WEBSEARCH_BACKEND=searxng
+SEARXNG_URL=http://IP_DA_INSTANCIA:8080
+```
+
+**Operação / troubleshooting**
+- Saúde dos engines: `http://IP:8080/stats/errors`. Se um engine der 429 (ex.:
+  Brave, comum), desligue só ele — em `engines:` do `settings.yml`:
+  ```yaml
+  engines:
+    - name: brave
+      disabled: true
+  ```
+- Logs/uso: `sudo docker compose logs -f` · `sudo docker stats searxng --no-stream`
+- Atualizar: `sudo docker compose pull && sudo docker compose up -d`
+- **ARM 32-bit (`armv7l`)**: a imagem publica `linux/arm/v7`; se o `up` reclamar
+  de *"no matching manifest"*, é hardware sem imagem oficial — use outra máquina.
 
 ## Rodar localmente
 

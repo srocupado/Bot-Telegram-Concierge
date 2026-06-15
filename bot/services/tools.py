@@ -118,6 +118,41 @@ async def _h_listar_arquivos(_args: dict, ctx: ToolContext) -> str:
     return "ok: " + format_listing()
 
 
+async def _h_buscar_web(args: dict, ctx: ToolContext) -> str:
+    from bot.services.websearch import WebSearchError, search_and_read
+
+    query = (args.get("query") or "").strip()
+    if not query:
+        return "erro: precisa de 'query'"
+    rc = args.get("read_content")
+    read_content = True if rc is None else bool(rc)
+    try:
+        return await search_and_read(query, read_content=read_content)
+    except WebSearchError as e:
+        return f"erro na busca web: {e}"
+
+
+async def _h_buscar_local(args: dict, ctx: ToolContext) -> str:
+    from bot.services.places import PlacesError, buscar_local
+
+    query = (args.get("query") or "").strip()
+    if not query:
+        return "erro: precisa de 'query' (nome do lugar + cidade/bairro)"
+    try:
+        return await buscar_local(query)
+    except PlacesError as e:
+        return f"erro na consulta de local: {e}"
+
+
+async def _h_buscar_preco(args: dict, ctx: ToolContext) -> str:
+    from bot.services.precos import buscar_preco
+
+    query = (args.get("query") or "").strip()
+    if not query:
+        return "erro: precisa de 'query' (nome do produto)"
+    return await buscar_preco(query)
+
+
 async def _h_criar_tarefa(args: dict, ctx: ToolContext) -> str:
     texto = (args.get("texto") or "").strip()
     if not texto:
@@ -2055,6 +2090,92 @@ TOOLS: list[Tool] = [
         ),
         parameters={"type": "object", "properties": {}},
         handler=_h_consultar_congresso,
+    ),
+    Tool(
+        name="buscar_web",
+        description=(
+            "Busca na web E LÊ o conteúdo das páginas — devolve o texto "
+            "renderizado, não só snippets. USE quando a resposta exige "
+            "dados que só estão DENTRO da página e variam com o tempo: horários "
+            "de sessão de cinema, horário de funcionamento de loja/restaurante, "
+            "preços atuais, cardápio, tabelas, status de algo agora. Também serve "
+            "pra notícias e fatos recentes. Passe em 'query' a consulta completa "
+            "em linguagem natural (INCLUA cidade/local quando fizer diferença, "
+            "ex: 'horários Mestres do Universo Cinemark Iguatemi Brasília'). Você "
+            "recebe trechos das páginas com as fontes — sintetize resposta curta "
+            "e cite os links. NÃO use pra CONSTRUIR/programar algo (executar_agente) "
+            "nem pra voo/hotel (buscar_voo/buscar_hotel)."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Consulta em linguagem natural (inclua local/cidade se relevante)",
+                },
+                "read_content": {
+                    "type": "boolean",
+                    "description": (
+                        "Ler o corpo das páginas (default true). false = só "
+                        "títulos/links/descrição: mais rápido e barato, mas não "
+                        "traz dados de dentro da página (ex: horários)."
+                    ),
+                },
+            },
+            "required": ["query"],
+        },
+        handler=_h_buscar_web,
+    ),
+    Tool(
+        name="buscar_local",
+        description=(
+            "Dado OFICIAL do Google sobre um ESTABELECIMENTO/lugar: telefone, "
+            "endereço, horário de funcionamento, se está aberto agora, site e "
+            "status (aberto/fechado permanentemente). USE SEMPRE que perguntarem "
+            "'qual o telefone/endereço/horário de funcionamento de [lugar]?', "
+            "'que horas abre/fecha [loja/restaurante]?', '[lugar] está aberto "
+            "agora?', 'tem o contato d[o] [estabelecimento]?'. É a fonte CERTA "
+            "pra contato de lugar — NÃO use buscar_web pra isso (cai em "
+            "agregador com telefone errado). Passe em 'query' o nome do lugar + "
+            "cidade/bairro (ex: 'Perfilago Varjão Brasília'). Resposta já vem "
+            "com os dados — repasse o que foi pedido."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Nome do estabelecimento + cidade/bairro (ex: 'Cinemark Iguatemi Brasília')",
+                },
+            },
+            "required": ["query"],
+        },
+        handler=_h_buscar_local,
+    ),
+    Tool(
+        name="buscar_preco",
+        description=(
+            "Preço de PRODUTO no Brasil (Google Shopping): compara ofertas com "
+            "preço, LOJA e link DIRETO do anúncio. USE quando perguntarem "
+            "'quanto custa [produto]?', 'preço do [produto]', 'tem o link?', "
+            "'onde comprar [produto] mais barato?'. É a fonte CERTA pra preço/"
+            "link de produto — NÃO use buscar_web (marketplace bloqueia e o link "
+            "sai genérico). Passe em 'query' o nome do produto (ex: 'DJI Avata 2 "
+            "Fly More Combo'). Se o Google Shopping estiver fora/sem cota, a tool "
+            "cai automaticamente pra busca web (preço aproximado). Resposta já "
+            "vem com preços/lojas/links — repasse os relevantes."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Nome do produto (inclua modelo/kit, ex: 'iPhone 15 128GB')",
+                },
+            },
+            "required": ["query"],
+        },
+        handler=_h_buscar_preco,
     ),
     Tool(
         name="buscar_voo",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -19,12 +20,35 @@ router = Router(name=__name__)
 logger = logging.getLogger(__name__)
 
 
+# Negrito GitHub-style (**x** / __x__) → negrito do Markdown legado do
+# Telegram (*x*). Não-guloso e na mesma linha pra não atravessar parágrafos.
+_RE_BOLD_STAR = re.compile(r"\*\*(.+?)\*\*")
+_RE_BOLD_UNDER = re.compile(r"__(.+?)__")
+# Bullet GitHub (* / - / + no início da linha, seguido de espaço) → '•'. No
+# legado do Telegram '*' é negrito, então um bullet '* item' quebra o parse.
+_RE_BULLET = re.compile(r"(?m)^([ \t]*)[*+\-]\s+")
+# Cabeçalho markdown (# .. ###### ) → negrito (Telegram não tem heading).
+_RE_HEADING = re.compile(r"(?m)^#{1,6}[ \t]+(.*)$")
+
+
+def _to_telegram_markdown(text: str) -> str:
+    """Converte markdown estilo GitHub (gerado pelo LLM) pro subset que o
+    Telegram legado entende: '**x**'→'*x*', bullets '*/-/+'→'•', heading→negrito.
+    Reduz drasticamente as quebras que jogavam a resposta no fallback de texto
+    puro (asteriscos crus). O fallback continua como rede de segurança."""
+    text = _RE_BOLD_STAR.sub(r"*\1*", text)
+    text = _RE_BOLD_UNDER.sub(r"*\1*", text)
+    text = _RE_HEADING.sub(r"*\1*", text)
+    text = _RE_BULLET.sub(r"\1• ", text)
+    return text
+
+
 async def answer_llm(message: Message, text: str, reply_markup=None) -> None:
     """Envia resposta do LLM com fallback. O bot usa parse_mode=Markdown por
     padrão, mas texto livre do LLM pode ter markdown quebrado (ex.: '*' ou '`'
     sem fechar) → Telegram rejeita a mensagem inteira (BadRequest). Nesse caso
     reenvia em texto puro pra mensagem não sumir."""
-    text = text or "(sem resposta)"
+    text = _to_telegram_markdown(text or "(sem resposta)")
     try:
         await message.answer(text, reply_markup=reply_markup)
     except TelegramBadRequest:
@@ -48,14 +72,29 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "- adicionar_lista_compras, listar_compras, marcar_comprado, desmarcar_compra, remover_lista_compras, limpar_comprados, zerar_lista_compras\n"
     "- analisar_gastos, desfazer_ultima_acao\n"
     "- consultar_mp_dou, consultar_congresso\n"
-    "- buscar_voo, buscar_hotel, criar_watch_voo, criar_watch_hotel, listar_watches_viagem, cancelar_watch_viagem\n"
+    "- buscar_web, buscar_local, buscar_preco, buscar_voo, buscar_hotel, criar_watch_voo, criar_watch_hotel, listar_watches_viagem, cancelar_watch_viagem\n"
     "- executar_agente, listar_arquivos\n\n"
-    "Quando rodando no Anthropic, você tem busca web nativa (web_search). "
-    "Use SEMPRE que o usuário pedir notícias, eventos atuais, cotações, "
-    "resultados ou informação que dependa de dados recentes. Cite fontes "
-    "brevemente. (Nos providers Gemini/OpenAI essa capacidade não está "
-    "disponível nessa versão — Gemini não permite combinar busca com tools; "
-    "responda com o que sabe e avise se precisar de dado fresco.)\n\n"
+    "Busca na web — você tem DUAS opções, escolha pela necessidade:\n"
+    "1) buscar_web: BUSCA e LÊ o corpo das páginas. Use quando a "
+    "resposta exige dados que só estão DENTRO da página e mudam com o tempo — "
+    "horários de cinema/sessão, horário de funcionamento, preços atuais, "
+    "cardápios, tabelas. Funciona em qualquer provider. Cite os links.\n"
+    "2) web_search nativa (só no Anthropic): síntese a partir de snippets, "
+    "boa pra notícias/eventos/cotações gerais. Nos providers Gemini/OpenAI "
+    "essa nativa não está disponível — pra dado fresco use buscar_web.\n"
+    "Regra prática: se precisar do CONTEÚDO de uma página específica "
+    "(horário de cinema, preço, tabela), prefira buscar_web. Cite fontes.\n"
+    "3) buscar_local: telefone/endereço/horário de funcionamento/se está "
+    "aberto de um ESTABELECIMENTO (loja, restaurante, clínica, cinema...). "
+    "É a fonte OFICIAL do Google — use SEMPRE pra contato/horário de lugar e "
+    "NUNCA buscar_web pra isso (traz telefone errado de agregador).\n"
+    "4) buscar_preco: preço/onde comprar/link de um PRODUTO. Use SEMPRE pra "
+    "'quanto custa X', 'preço do X', 'tem o link?' — NUNCA buscar_web (o "
+    "marketplace bloqueia e o link sai genérico).\n\n"
+    "FORMATAÇÃO (Telegram, Markdown legado): negrito é UM asterisco *assim* "
+    "(NUNCA **dois**); itálico _assim_. NÃO use '#'/'##' (heading) nem listas "
+    "com '*'/'-' no início da linha — pra itens use '•' ou '–'. Links no "
+    "formato [texto](url). Mantenha curto.\n\n"
     "Quando a mensagem contém imagem ou PDF, analise-a (OCR, identificação, "
     "extração de dados). Se a imagem implicar ação concreta, invoque a tool:\n"
     "- Boleto, conta de luz/água/internet, fatura → IMEDIATAMENTE extraia "
