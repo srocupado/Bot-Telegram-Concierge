@@ -49,14 +49,34 @@ def _normalize(s: str) -> str:
     )
 
 
-def _resolve_shortcut(arg: str) -> tuple[str, str | None]:
-    """Para atalhos conhecidos retorna (label, coords). Senão retorna (arg, None)."""
-    norm = _normalize(arg)
-    if norm == "casa":
-        return "casa", settings.home_coords
-    if norm in ("trabalho", "o trabalho"):
-        return "trabalho", settings.work_coords
-    return arg, None
+# Preposições/artigos/possessivos iniciais comuns na fala ("rota PARA casa",
+# "de volta PRA casa", "PRO trabalho") — removidos só pra DETECTAR o atalho.
+_LEADING_TOKENS = {
+    "para", "pra", "pro", "ao", "a", "o", "de", "da", "do", "volta",
+    "minha", "meu", "em", "rumo", "ate", "la",
+}
+_HOME_WORDS = {"casa"}
+_WORK_WORDS = {"trabalho", "servico", "escritorio"}
+
+
+def _strip_leading(norm: str) -> str:
+    tokens = norm.split()
+    while tokens and tokens[0] in _LEADING_TOKENS:
+        tokens.pop(0)
+    return " ".join(tokens)
+
+
+def _resolve_shortcut(arg: str) -> tuple[str, str | None, bool]:
+    """Retorna (label, coords, is_shortcut). is_shortcut=True quando arg é o
+    atalho casa/trabalho (mesmo se a coord não estiver no .env). Tolera
+    preposições da fala ('para casa', 'pro trabalho'). Geocoding (quando NÃO é
+    atalho) segue usando o arg original."""
+    core = _strip_leading(_normalize(arg))
+    if core in _HOME_WORDS:
+        return "casa", settings.home_coords, True
+    if core in _WORK_WORDS:
+        return "trabalho", settings.work_coords, True
+    return arg, None, False
 
 
 def _build_keyboard() -> ReplyKeyboardMarkup:
@@ -84,10 +104,10 @@ async def cmd_rota(
         await message.answer(_MISSING_CONFIG)
         return
 
-    label, resolved = _resolve_shortcut(arg)
+    label, resolved, is_shortcut = _resolve_shortcut(arg)
 
     # Se é atalho mas a coord correspondente não está configurada, falha cedo.
-    if resolved is None and _normalize(arg) in ("casa", "trabalho", "o trabalho"):
+    if is_shortcut and resolved is None:
         await message.answer(
             f"⚠️ {label.upper()}_COORDS não configurado no .env."
         )
