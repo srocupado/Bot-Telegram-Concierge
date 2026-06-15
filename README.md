@@ -461,13 +461,8 @@ Como funciona o `search_and_read` (`bot/services/websearch.py`):
 O contrato é o mesmo pros dois backends, então a escolha é só de configuração —
 o agente e a tool `buscar_web` não mudam.
 
-##### Subir a instância SearXNG (resumo)
-
-`searxng/searxng` (multi-arch, roda em ARM/Orange Pi). No `settings.yml` da
-instância: gere um `secret_key`, deixe `server.limiter: false` (instância
-privada) e adicione `json` em `search.formats` (essencial pra API). Aponte
-`SEARXNG_URL` pro IP:porta. Se algum engine der 429 (ex.: Brave), desligue só
-ele com `disabled: true` — confira em `http://IP:8080/stats/errors`.
+> **Instalar o SearXNG:** passo a passo em
+> [Setup de serviços externos → SearXNG](#searxng-backend-primário-de-busca-web).
 
 ### Voz (STT)
 
@@ -571,6 +566,111 @@ sem a Places API (New), `buscar_local` retorna 403.
 Trace a rota habitual no Google Maps **com paradas intermediárias** →
 Compartilhar → Copiar link → cole em `ROUTE_GOOGLE_MAPS_URL`. O bot extrai os
 waypoints e compara com a melhor alternativa do Google em tempo real.
+
+## Setup de serviços externos
+
+Tutoriais de instalação dos requisitos auto-hospedados. (APIs gerenciadas —
+Anthropic, Gemini, SerpAPI, Firecrawl, Google Maps — são só uma chave no
+`.env`; ver [Configuração](#configuração).)
+
+### SearXNG (backend primário de busca web)
+
+O `buscar_web` usa **SearXNG** (metabusca self-hosted, custo zero) como
+primário e Firecrawl como fallback. O SearXNG roda em qualquer máquina da sua
+rede (inclusive um Orange Pi/Raspberry antigo) — só precisa de Docker e ser
+alcançável pelo bot na LAN. Aponte `SEARXNG_URL` pro IP:porta dele.
+
+**1. Pré-checagem**
+```bash
+uname -m            # aarch64 (ok) | armv7l (32-bit, ver nota no fim)
+docker --version    # sem docker:  curl -fsSL https://get.docker.com | sh
+sudo systemctl enable --now docker
+```
+
+**2. Estrutura + `docker-compose.yml`**
+```bash
+sudo mkdir -p /opt/searxng/config && cd /opt/searxng
+sudo tee docker-compose.yml >/dev/null <<'YAML'
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    ports:
+      - "8080:8080"                 # exposto na LAN (ver firewall no passo 6)
+    volumes:
+      - ./config:/etc/searxng
+    environment:
+      - SEARXNG_BASE_URL=http://0.0.0.0:8080/
+      - SEARXNG_PORT=8080
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID, DAC_OVERRIDE]
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+YAML
+```
+> Sem Valkey/Redis de propósito: instância **privada** consumida só pelo bot →
+> o limiter (anti-abuso de instância pública) fica off (passo 4), então Redis
+> não é necessário. Menos um container = mais leve em hardware fraco.
+
+**3. Primeiro boot** (gera o `config/settings.yml`)
+```bash
+sudo docker compose up -d && sleep 10 && ls config/
+```
+> Imagens recentes usam **granian** (não uwsgi) — só `settings.yml` é gerado,
+> sem `uwsgi.ini`. É o esperado.
+
+**4. Endurecer o `settings.yml`**
+```bash
+# secret aleatório (troca o placeholder)
+sudo sed -i "s|ultrasecretkey|$(openssl rand -hex 32)|g" config/settings.yml
+sudo nano config/settings.yml
+```
+Garanta estes blocos (`server.limiter: false` p/ instância privada; e
+`json` em `search.formats` é **essencial** pra API):
+```yaml
+server:
+  limiter: false
+  public_instance: false
+search:
+  formats:
+    - html
+    - json
+```
+
+**5. Reinicia e valida o JSON**
+```bash
+sudo docker compose restart && sleep 5
+curl -s 'http://localhost:8080/search?q=teste&format=json' | python3 -m json.tool | head -20
+```
+Esperado: JSON com `results: [...]`. Se vier HTML/`403`, o `json` em
+`search.formats` não pegou ou o limiter ainda está on.
+
+**6. Firewall (LAN-only)** — não exponha à internet:
+```bash
+sudo ufw allow from 192.168.0.0/16 to any port 8080 proto tcp
+```
+
+**7. No bot** (`.env` na máquina do Concierge):
+```bash
+WEBSEARCH_BACKEND=searxng
+SEARXNG_URL=http://IP_DA_INSTANCIA:8080
+```
+
+**Operação / troubleshooting**
+- Saúde dos engines: `http://IP:8080/stats/errors`. Se um engine der 429 (ex.:
+  Brave, comum), desligue só ele — em `engines:` do `settings.yml`:
+  ```yaml
+  engines:
+    - name: brave
+      disabled: true
+  ```
+- Logs/uso: `sudo docker compose logs -f` · `sudo docker stats searxng --no-stream`
+- Atualizar: `sudo docker compose pull && sudo docker compose up -d`
+- **ARM 32-bit (`armv7l`)**: a imagem publica `linux/arm/v7`; se o `up` reclamar
+  de *"no matching manifest"*, é hardware sem imagem oficial — use outra máquina.
 
 ## Rodar localmente
 
