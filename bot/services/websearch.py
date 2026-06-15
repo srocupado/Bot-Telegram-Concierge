@@ -33,8 +33,11 @@ logger = logging.getLogger(__name__)
 FIRECRAWL_SEARCH_ENDPOINT = "https://api.firecrawl.dev/v1/search"
 JINA_READER_PREFIX = "https://r.jina.ai/"
 
-# Tetos pra controlar custo/tokens e o tamanho enviado ao LLM.
-_DEFAULT_LIMIT = 5
+# Tetos pra controlar custo/tokens, latência e o tamanho enviado ao LLM.
+# _DEFAULT_LIMIT = nº de páginas buscadas E lidas por consulta. Lê via Jina é o
+# passo mais lento (render de JS por página), então menos páginas = mais rápido.
+# 3 costuma bastar pra dados objetivos (horário/preço); suba se a qualidade cair.
+_DEFAULT_LIMIT = 3
 _MAX_RESULTS = 10
 _MAX_CHARS_PER_PAGE = 3500
 _TIMEOUT_S = 60.0  # scrape/leitura com render de JS pode demorar.
