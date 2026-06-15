@@ -96,11 +96,11 @@ def _format_place(p: dict, idx: int) -> str:
     if addr:
         lines.append(f"📍 {addr}")
 
-    phone = p.get("nationalPhoneNumber") or p.get("internationalPhoneNumber")
+    # Formato internacional (+55 61 ...): o Telegram auto-detecta e o torna
+    # clicável (menu Ligar/Copiar) — bem mais confiável que o nacional.
+    phone = p.get("internationalPhoneNumber") or p.get("nationalPhoneNumber")
     if phone:
-        intl = p.get("internationalPhoneNumber")
-        extra = f" ({intl})" if intl and intl != phone else ""
-        lines.append(f"📞 {phone}{extra}")
+        lines.append(f"📞 {phone}")
 
     open_now = (p.get("currentOpeningHours") or {}).get("openNow")
     if open_now is not None:
