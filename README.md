@@ -675,15 +675,27 @@ SEARXNG_URL=http://IP_DA_INSTANCIA:8080
 ## Rodar localmente
 
 ```bash
-pip install -r requirements.txt
-python -m bot
+git clone https://github.com/srocupado/Bot-Telegram-Concierge.git && cd Bot-Telegram-Concierge
+cp .env.example .env && nano .env          # preencha BOT_TOKEN, ACCESS_PASSWORD e as chaves
+pip install -r requirements.txt && python -m bot
+```
+
+Atualizar depois:
+```bash
+git pull origin main && pip install -r requirements.txt && python -m bot
 ```
 
 ## Rodar com Docker
 
 ```bash
-docker compose up -d --build
-docker compose logs -f
+git clone https://github.com/srocupado/Bot-Telegram-Concierge.git && cd Bot-Telegram-Concierge
+cp .env.example .env && nano .env          # preencha as chaves
+docker compose up -d --build && docker compose logs -f --tail=40
+```
+
+Atualizar depois:
+```bash
+git pull origin main && docker compose up -d --build && docker compose logs -f --tail=40
 ```
 
 O SQLite é persistido em `./data/concierge.db` (volume).
@@ -695,20 +707,6 @@ O SQLite é persistido em `./data/concierge.db` (volume).
 | Código (`bot/`, `requirements.txt`) | `docker compose up -d --build` |
 | Só `.env` | `docker compose up -d --force-recreate` |
 | Nada (só restart) | `docker compose restart` |
-
-## Deploy em VM Google Cloud (free tier)
-
-1. Criar **e2-micro** em `us-west1`/`us-central1`/`us-east1`,
-   **Standard provisioning**, Debian 12, 30 GB pd-standard.
-2. Instalar Docker:
-   ```bash
-   curl -fsSL https://get.docker.com | sudo sh
-   sudo usermod -aG docker $USER
-   ```
-   Reabra o SSH.
-3. Ativar swap (recomendado em 1 GB RAM): `sudo ./scripts/setup-swap.sh`.
-4. Clonar o repo → `cp .env.example .env` → preencher.
-5. `docker compose up -d --build`.
 
 ### Swap de memória
 
