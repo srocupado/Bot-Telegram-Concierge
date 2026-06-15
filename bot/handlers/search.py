@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import unicodedata
 
 import anthropic
 from aiogram import Router
@@ -55,15 +56,47 @@ _SYNTH_PROMPT = (
 )
 
 
-async def _read_and_synth(query: str, user: User) -> str:
-    """Backend de leitura de página (SearXNG+Jina ou Firecrawl, conforme
-    WEBSEARCH_BACKEND + fallback) lê as páginas; o provider do usuário sintetiza."""
-    from bot.services.websearch import search_and_read
-
-    context = await search_and_read(query, read_content=True)
+async def _synth(query: str, context: str, user: User) -> str:
+    """Sintetiza a resposta curta a partir do contexto (páginas lidas ou
+    resultados do Google Shopping) com o provider do usuário."""
     provider = get_provider(user.provider)
     messages = [{"role": "user", "content": _SYNTH_PROMPT.format(query=query, context=context)}]
     return await provider.chat(messages, system=_SEARCH_SYSTEM, max_tokens=2000)
+
+
+# Detecção de intenção de PREÇO de produto → roteia pro buscar_preco (Google
+# Shopping: preço + loja + link do anúncio), em vez da busca web genérica.
+_PRICE_INTENT = {
+    "preco", "precos", "valor", "valores", "quanto", "custa", "custo",
+    "onde", "comprar", "qual", "menor", "mais", "barato", "baratos", "qto",
+}
+_PRICE_CONNECTORS = {"o", "a", "os", "as", "do", "da", "de", "dos", "das", "e", "um", "uma"}
+
+
+def _norm(s: str) -> str:
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", s.casefold())
+        if not unicodedata.combining(c)
+    )
+
+
+def _is_price_query(q: str) -> bool:
+    n = _norm(q)
+    return (
+        any(k in n for k in ("preco", "quanto custa", "onde comprar",
+                             "mais barato", "menor preco", "qto custa"))
+        or n.startswith("valor d")
+    )
+
+
+def _strip_price_words(q: str) -> str:
+    """Remove o prefixo de intenção de preço pra sobrar só o produto.
+    'preço do sérum X' → 'sérum X'; 'quanto custa o Y' → 'Y'."""
+    toks = q.split()
+    i = 0
+    while i < len(toks) and _norm(toks[i]) in (_PRICE_INTENT | _PRICE_CONNECTORS):
+        i += 1
+    return " ".join(toks[i:]).strip() or q
 
 
 def _anthropic_search(query: str) -> str:
@@ -123,7 +156,10 @@ async def cmd_buscar(message: Message, command: CommandObject, user: User) -> No
 
     from bot.services.websearch import backend_available
 
-    has_rich = backend_available()  # SearXNG (URL) e/ou Firecrawl (key)
+    is_price = _is_price_query(query)
+    # "rich" = consegue resposta com leitura/estruturada: backend web, ou (preço
+    # + SerpAPI). O buscar_preco tem fallback web próprio.
+    has_rich = backend_available() or (is_price and settings.serpapi_key is not None)
     has_native = (
         (user.provider == "anthropic" and bool(settings.anthropic_api_key))
         or bool(settings.gemini_api_key)
@@ -141,13 +177,21 @@ async def cmd_buscar(message: Message, command: CommandObject, user: User) -> No
 
     engine = ""
     result = ""
-    # 1) Leitura de página (SearXNG→Firecrawl) — preferida. 2) Fallback nativo.
+    # 1) Preço de produto → buscar_preco (Google Shopping). 2) Senão, leitura de
+    # página (SearXNG→Firecrawl). 3) Fallback nativo.
     if has_rich:
         try:
-            engine = settings.websearch_backend
-            result = await _read_and_synth(query, user)
+            if is_price:
+                from bot.services.precos import buscar_preco
+                engine = "preco"
+                context = await buscar_preco(_strip_price_words(query))
+            else:
+                engine = settings.websearch_backend
+                from bot.services.websearch import search_and_read
+                context = await search_and_read(query, read_content=True)
+            result = await _synth(query, context, user)
         except Exception as e:
-            logger.warning("/buscar leitura de página falhou (%s) — tentando nativo", e)
+            logger.warning("/buscar (%s) falhou (%s) — tentando nativo", engine or "rich", e)
             engine, result = "", ""
 
     if not result:
