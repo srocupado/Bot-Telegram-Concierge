@@ -96,11 +96,12 @@ def _format_place(p: dict, idx: int) -> str:
     if addr:
         lines.append(f"📍 {addr}")
 
-    # Formato internacional (+55 61 ...): o Telegram auto-detecta e o torna
-    # clicável (menu Ligar/Copiar) — bem mais confiável que o nacional.
+    # Monospace (crases): no Telegram, tocar em texto monospace COPIA ele
+    # ("Copiado") → cola no discador. É o "toque captura o número" confiável
+    # (a auto-detecção de telefone do Telegram é furada). Formato internacional.
     phone = p.get("internationalPhoneNumber") or p.get("nationalPhoneNumber")
     if phone:
-        lines.append(f"📞 {phone}")
+        lines.append(f"📞 `{phone}`")
 
     open_now = (p.get("currentOpeningHours") or {}).get("openNow")
     if open_now is not None:
