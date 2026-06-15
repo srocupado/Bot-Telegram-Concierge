@@ -420,6 +420,13 @@ filme X no Cinemark do shopping Y?"*, horário de funcionamento, preços,
 cardápios. A busca web **nativa** (snippets) acha a página certa mas não traz
 esses dados; só lendo a página eles aparecem.
 
+Dois caminhos usam o Firecrawl:
+- **Chat livre / voz** → o agente aciona a tool `buscar_web` quando faz sentido.
+- **Comando `/buscar <termo>`** (e por voz: *"busca X"*, *"pesquisa X"*,
+  *"procura X"*, *"google X"*) → usa o Firecrawl (lê página + síntese curta) e
+  **cai pra busca nativa** (Anthropic `web_search` / Gemini `google_search`) se
+  não houver `FIRECRAWL_API_KEY` ou se o Firecrawl falhar.
+
 ```bash
 FIRECRAWL_API_KEY=...     # crie em https://www.firecrawl.dev → Dashboard → API Keys (free tier)
 ```

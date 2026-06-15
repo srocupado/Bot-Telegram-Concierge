@@ -1,10 +1,14 @@
 """/buscar <termo> — busca web one-shot.
 
-Escolha de provider automática:
-- user.provider == 'anthropic' → Anthropic com web_search (server-side tool)
-- caso contrário → Gemini com google_search nativa
+Backend preferido: **Firecrawl** (search + scrape → LÊ o corpo das páginas),
+com síntese curta pelo provider do usuário. Cobre o caso de voz: a
+transcrição mapeia "busca X / pesquisa X / procura X / google X" → /buscar,
+então fazer o /buscar ler página dá leitura de página também por voz.
 
-A chamada é one-shot (sem tool use customizado), então não compete com a
+Fallback (sem FIRECRAWL_API_KEY, ou se o Firecrawl falhar):
+- user.provider == 'anthropic' → Anthropic com web_search (server-side)
+- senão → Gemini com google_search nativa
+A chamada nativa é one-shot (sem tool use customizado), então não esbarra na
 limitação do Gemini que impede combinar busca com function calling.
 """
 from __future__ import annotations
@@ -21,6 +25,7 @@ from google.genai import types
 
 from bot.config import settings
 from bot.db.models import User
+from bot.services.llm.factory import get_provider
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +38,28 @@ _SEARCH_SYSTEM = (
     "e com fontes (titulos/links breves no final). Se for sobre notícias, "
     "traga 3-5 manchetes com fonte."
 )
+
+# Prompt de síntese pro caminho Firecrawl: o conteúdo das páginas já vem
+# pronto; o LLM só destila a resposta. Pede pra usar SÓ o material fornecido
+# (reduz alucinação) e citar os links.
+_SYNTH_PROMPT = (
+    "Consulta do usuário: {query}\n\n"
+    "Abaixo, resultados de busca já COM o conteúdo das páginas lido. "
+    "Responda a consulta usando SOMENTE esses dados, de forma curta e "
+    "objetiva. Se a resposta exige dado específico (horário, preço, etc.), "
+    "extraia-o do conteúdo. Cite os links usados no final. Se o material não "
+    "responder, diga isso.\n\n{context}"
+)
+
+
+async def _firecrawl_search(query: str, user: User) -> str:
+    """Firecrawl lê as páginas; o provider do usuário sintetiza a resposta."""
+    from bot.services.websearch import search_and_read
+
+    context = await search_and_read(query, read_content=True)
+    provider = get_provider(user.provider)
+    messages = [{"role": "user", "content": _SYNTH_PROMPT.format(query=query, context=context)}]
+    return await provider.chat(messages, system=_SEARCH_SYSTEM, max_tokens=2000)
 
 
 def _anthropic_search(query: str) -> str:
@@ -67,6 +94,16 @@ def _gemini_search(query: str) -> str:
     return (resp.text or "").strip()
 
 
+async def _native_search(query: str, user: User) -> tuple[str, str]:
+    """Busca nativa (fallback). Retorna (engine, resultado)."""
+    use_anthropic = user.provider == "anthropic" and bool(settings.anthropic_api_key)
+    if use_anthropic:
+        return "anthropic", await asyncio.to_thread(_anthropic_search, query)
+    if settings.gemini_api_key:
+        return "gemini", await asyncio.to_thread(_gemini_search, query)
+    raise RuntimeError("nenhum motor de busca nativo disponível")
+
+
 @router.message(Command("buscar"))
 async def cmd_buscar(message: Message, command: CommandObject, user: User) -> None:
     if not user.is_authorized:
@@ -80,31 +117,39 @@ async def cmd_buscar(message: Message, command: CommandObject, user: User) -> No
         )
         return
 
-    # Escolha de motor: Anthropic se ativo + key disponível, senão Gemini.
-    use_anthropic = user.provider == "anthropic" and bool(settings.anthropic_api_key)
-    use_gemini = bool(settings.gemini_api_key)
-
-    if not use_anthropic and not use_gemini:
+    has_firecrawl = settings.firecrawl_api_key is not None
+    has_native = (
+        (user.provider == "anthropic" and bool(settings.anthropic_api_key))
+        or bool(settings.gemini_api_key)
+    )
+    if not has_firecrawl and not has_native:
         await message.answer(
-            "⚠️ Nem ANTHROPIC_API_KEY nem GEMINI_API_KEY configurados — "
-            "/buscar precisa de pelo menos um.",
+            "⚠️ Busca indisponível: configure FIRECRAWL_API_KEY (lê páginas) "
+            "ou ANTHROPIC_API_KEY/GEMINI_API_KEY (busca nativa).",
             parse_mode=None,
         )
         return
 
     await message.bot.send_chat_action(message.chat.id, "typing")
 
-    try:
-        if use_anthropic:
-            engine = "anthropic"
-            result = await asyncio.to_thread(_anthropic_search, query)
-        else:
-            engine = "gemini"
-            result = await asyncio.to_thread(_gemini_search, query)
-    except Exception as e:
-        logger.exception("/buscar failed via %s", "anthropic" if use_anthropic else "gemini")
-        await message.answer(f"❌ erro na busca: {e}", parse_mode=None)
-        return
+    engine = ""
+    result = ""
+    # 1) Firecrawl (lê página) — preferido. 2) Fallback nativo se faltar/falhar.
+    if has_firecrawl:
+        try:
+            engine = "firecrawl"
+            result = await _firecrawl_search(query, user)
+        except Exception as e:
+            logger.warning("/buscar firecrawl falhou (%s) — tentando nativo", e)
+            engine, result = "", ""
+
+    if not result:
+        try:
+            engine, result = await _native_search(query, user)
+        except Exception as e:
+            logger.exception("/buscar falhou (firecrawl+nativo)")
+            await message.answer(f"❌ erro na busca: {e}", parse_mode=None)
+            return
 
     if not result:
         await message.answer("(sem resposta)", parse_mode=None)
