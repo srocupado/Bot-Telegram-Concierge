@@ -81,6 +81,12 @@ class Settings(BaseSettings):
     proactive_nudge_cooldown_days: int = Field(3, alias="PROACTIVE_NUDGE_COOLDOWN_DAYS")
     proactive_use_llm: bool = Field(False, alias="PROACTIVE_USE_LLM")
 
+    # Busca web com leitura de página (tool buscar_web) via Firecrawl
+    # (search + scrape: lê o corpo da página, não só snippets). Sem a key, a
+    # tool retorna erro orientando a configurá-la. Alternativa self-hosted de
+    # custo zero (SearXNG + Jina) documentada em bot/services/websearch.py.
+    firecrawl_api_key: SecretStr | None = Field(None, alias="FIRECRAWL_API_KEY")
+
     # Travels (busca de voos/hotéis via SerpAPI — porte do Telegram-Travels)
     serpapi_key: SecretStr | None = Field(None, alias="SERPAPI_KEY")
     travels_alert_hour: int = Field(8, alias="TRAVELS_ALERT_HOUR")

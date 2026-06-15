@@ -118,6 +118,20 @@ async def _h_listar_arquivos(_args: dict, ctx: ToolContext) -> str:
     return "ok: " + format_listing()
 
 
+async def _h_buscar_web(args: dict, ctx: ToolContext) -> str:
+    from bot.services.websearch import WebSearchError, search_and_read
+
+    query = (args.get("query") or "").strip()
+    if not query:
+        return "erro: precisa de 'query'"
+    rc = args.get("read_content")
+    read_content = True if rc is None else bool(rc)
+    try:
+        return await search_and_read(query, read_content=read_content)
+    except WebSearchError as e:
+        return f"erro na busca web: {e}"
+
+
 async def _h_criar_tarefa(args: dict, ctx: ToolContext) -> str:
     texto = (args.get("texto") or "").strip()
     if not texto:
@@ -2055,6 +2069,41 @@ TOOLS: list[Tool] = [
         ),
         parameters={"type": "object", "properties": {}},
         handler=_h_consultar_congresso,
+    ),
+    Tool(
+        name="buscar_web",
+        description=(
+            "Busca na web E LÊ o conteúdo das páginas (via Firecrawl) — devolve "
+            "o texto renderizado, não só snippets. USE quando a resposta exige "
+            "dados que só estão DENTRO da página e variam com o tempo: horários "
+            "de sessão de cinema, horário de funcionamento de loja/restaurante, "
+            "preços atuais, cardápio, tabelas, status de algo agora. Também serve "
+            "pra notícias e fatos recentes. Passe em 'query' a consulta completa "
+            "em linguagem natural (INCLUA cidade/local quando fizer diferença, "
+            "ex: 'horários Mestres do Universo Cinemark Iguatemi Brasília'). Você "
+            "recebe trechos das páginas com as fontes — sintetize resposta curta "
+            "e cite os links. NÃO use pra CONSTRUIR/programar algo (executar_agente) "
+            "nem pra voo/hotel (buscar_voo/buscar_hotel)."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Consulta em linguagem natural (inclua local/cidade se relevante)",
+                },
+                "read_content": {
+                    "type": "boolean",
+                    "description": (
+                        "Ler o corpo das páginas (default true). false = só "
+                        "títulos/links/descrição: mais rápido e barato, mas não "
+                        "traz dados de dentro da página (ex: horários)."
+                    ),
+                },
+            },
+            "required": ["query"],
+        },
+        handler=_h_buscar_web,
     ),
     Tool(
         name="buscar_voo",

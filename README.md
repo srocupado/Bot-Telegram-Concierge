@@ -75,6 +75,11 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   sem você precisar lembrar slash commands.
 - **Busca web nativa** no Anthropic (`web_search`) e Gemini (`google_search`),
   citando fontes. (OpenAI não tem busca nativa nessa versão.)
+- **Busca web com leitura de página** (tool `buscar_web`, via **Firecrawl**):
+  busca **e lê o corpo renderizado** da página — funciona pra dados que só
+  existem dentro da página e mudam com o tempo (horários de sessão de cinema,
+  funcionamento de loja, preços, cardápios). Requer `FIRECRAWL_API_KEY`.
+  Ver [Busca web](#busca-web-buscar_web).
 - **Voz (STT)**: áudio transcrito via **Gemini multimodal** (default
   `gemini-3.5-flash`) ou **OpenAI Whisper/gpt-4o-transcribe** — selecionável por
   usuário com `/voice gemini|openai`. Aceita OGG/Opus nativo sem ffmpeg. Quando
@@ -405,6 +410,39 @@ TRAVELS_ALERT_HOUR=8     # hora BRT em que os watches diários são verificados 
 ```
 
 Sem `SERPAPI_KEY` as tools de viagem ficam desabilitadas mas não causam erro.
+
+### Busca web (`buscar_web`)
+
+A tool `buscar_web` busca **e lê** o corpo das páginas (via **Firecrawl**:
+search + scrape com render de JS). É o que permite responder perguntas cujo
+dado só existe dentro da página e muda com o tempo — *"que horas tem sessão do
+filme X no Cinemark do shopping Y?"*, horário de funcionamento, preços,
+cardápios. A busca web **nativa** (snippets) acha a página certa mas não traz
+esses dados; só lendo a página eles aparecem.
+
+```bash
+FIRECRAWL_API_KEY=...     # crie em https://www.firecrawl.dev → Dashboard → API Keys (free tier)
+```
+
+Sem `FIRECRAWL_API_KEY` a tool fica indisponível (retorna erro orientando a
+configurá-la) — o `web_search` nativo do Anthropic segue funcionando pra
+notícias gerais.
+
+**Alternativa self-hosted de custo zero** — se o Firecrawl não satisfizer
+(qualidade) ou o custo subir (o free tier tem teto de créditos), dá pra trocar
+o backend por **SearXNG + Jina Reader**, com o mesmo mecanismo (busca + leitura
+com render de JS):
+
+1. **SearXNG** (metabusca self-hosted, imagem `searxng/searxng`) — suba junto no
+   `docker-compose`, habilite o formato JSON no `settings.yml` e consulte
+   `GET /search?q=...&format=json` pra obter os links.
+2. **Jina Reader** (`https://r.jina.ai/<url>`) — lê cada link e devolve markdown
+   já renderizado. Tier gratuito generoso; com `JINA_API_KEY` o limite sobe.
+
+O contrato de `bot/services/websearch.py` (`search_and_read` → texto pronto pro
+LLM) foi mantido fino de propósito: trocar de backend é só reescrever o corpo
+desse módulo, sem mexer na tool `buscar_web` nem no agente. A nota no topo do
+arquivo tem o detalhamento.
 
 ### Voz (STT)
 
