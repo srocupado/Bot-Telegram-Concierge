@@ -144,6 +144,15 @@ async def _h_buscar_local(args: dict, ctx: ToolContext) -> str:
         return f"erro na consulta de local: {e}"
 
 
+async def _h_buscar_preco(args: dict, ctx: ToolContext) -> str:
+    from bot.services.precos import buscar_preco
+
+    query = (args.get("query") or "").strip()
+    if not query:
+        return "erro: precisa de 'query' (nome do produto)"
+    return await buscar_preco(query)
+
+
 async def _h_criar_tarefa(args: dict, ctx: ToolContext) -> str:
     texto = (args.get("texto") or "").strip()
     if not texto:
@@ -2142,6 +2151,31 @@ TOOLS: list[Tool] = [
             "required": ["query"],
         },
         handler=_h_buscar_local,
+    ),
+    Tool(
+        name="buscar_preco",
+        description=(
+            "Preço de PRODUTO no Brasil (Google Shopping): compara ofertas com "
+            "preço, LOJA e link DIRETO do anúncio. USE quando perguntarem "
+            "'quanto custa [produto]?', 'preço do [produto]', 'tem o link?', "
+            "'onde comprar [produto] mais barato?'. É a fonte CERTA pra preço/"
+            "link de produto — NÃO use buscar_web (marketplace bloqueia e o link "
+            "sai genérico). Passe em 'query' o nome do produto (ex: 'DJI Avata 2 "
+            "Fly More Combo'). Se o Google Shopping estiver fora/sem cota, a tool "
+            "cai automaticamente pra busca web (preço aproximado). Resposta já "
+            "vem com preços/lojas/links — repasse os relevantes."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Nome do produto (inclua modelo/kit, ex: 'iPhone 15 128GB')",
+                },
+            },
+            "required": ["query"],
+        },
+        handler=_h_buscar_preco,
     ),
     Tool(
         name="buscar_voo",

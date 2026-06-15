@@ -412,6 +412,13 @@ TRAVELS_ALERT_HOUR=8     # hora BRT em que os watches diários são verificados 
 
 Sem `SERPAPI_KEY` as tools de viagem ficam desabilitadas mas não causam erro.
 
+A **mesma** `SERPAPI_KEY` alimenta a tool **`buscar_preco`** (preço de produto
+via Google Shopping: preço + loja + link direto do anúncio — `buscar_web` não
+serve aqui porque o marketplace bloqueia e o link sai genérico). A cota é
+**compartilhada** com voo/hotel. Se o SerpAPI ficar sem cota ou fora do ar,
+`buscar_preco` **cai automaticamente** pra busca web (`search_and_read`),
+devolvendo preço aproximado — nunca erro duro.
+
 ### Busca web (`buscar_web` / `/buscar`)
 
 Busca **e lê** o corpo das páginas (markdown renderizado, com JS) — permite

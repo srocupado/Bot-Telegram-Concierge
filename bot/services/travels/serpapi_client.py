@@ -100,6 +100,16 @@ class SerpAPIClient:
         }
         return await self._get(params)
 
+    async def search_shopping(self, query: str, currency: str = "BRL") -> dict[str, Any]:
+        params = {
+            "engine": "google_shopping",
+            "q": query,
+            "currency": currency,
+            "hl": "pt-br",
+            "gl": "br",
+        }
+        return await self._get(params)
+
 
 def extract_price_insights(raw: dict[str, Any]) -> dict[str, Any] | None:
     pi = raw.get("price_insights")
@@ -317,6 +327,51 @@ async def find_best_hotel_in_window(
         if best is None or price < best[0]:
             best = (price, payload, ci, co)
     return best
+
+
+def extract_shopping_results(raw: dict[str, Any], limit: int = 5) -> list[dict[str, Any]]:
+    """Normaliza shopping_results do Google Shopping → lista enxuta ordenada
+    por preço (itens com preço primeiro, mais barato no topo)."""
+    items = raw.get("shopping_results") or []
+    out: list[dict[str, Any]] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        out.append(
+            {
+                "title": it.get("title"),
+                "price": it.get("extracted_price"),  # float | None
+                "price_str": it.get("price"),
+                "source": it.get("source"),  # loja
+                "link": it.get("link") or it.get("product_link"),
+                "rating": it.get("rating"),
+                "reviews": it.get("reviews"),
+            }
+        )
+    # Preço asc; itens sem preço vão pro fim.
+    out.sort(key=lambda x: x["price"] if isinstance(x["price"], (int, float)) else float("inf"))
+    return out[:limit]
+
+
+def format_shopping(query: str, items: list[dict[str, Any]]) -> str:
+    """Texto plano pro LLM sintetizar (não HTML) — preço, loja e link por item."""
+    lines = [f'Preços para "{query}" (fonte: Google Shopping):']
+    for i, it in enumerate(items, 1):
+        title = (it.get("title") or "(sem título)").strip()
+        price = it.get("price_str") or (
+            f"R$ {it['price']:.2f}" if isinstance(it.get("price"), (int, float)) else "preço n/d"
+        )
+        source = it.get("source") or "loja n/d"
+        parts = [f"{i}. {title} — {price} — {source}"]
+        if it.get("rating"):
+            r = f"⭐ {it['rating']}"
+            if it.get("reviews"):
+                r += f" ({it['reviews']})"
+            parts.append(r)
+        if it.get("link"):
+            parts.append(f"🔗 {it['link']}")
+        lines.append("\n   ".join(parts))
+    return "\n".join(lines)
 
 
 def _fmt_duration(mins: Any) -> str:
