@@ -27,6 +27,7 @@ from google.genai import types
 
 from bot.config import settings
 from bot.db.models import User
+from bot.services.chat_memory import memory
 from bot.services.llm.factory import get_provider
 
 logger = logging.getLogger(__name__)
@@ -162,4 +163,10 @@ async def cmd_buscar(message: Message, command: CommandObject, user: User) -> No
         return
 
     logger.info("/buscar served via %s, %d chars", engine, len(result))
+    # Grava na MESMA memória do chat livre: o /buscar é handler separado, mas o
+    # usuário trata como conversa ('tem link?', 'e o preço?'). Sem isto, o
+    # follow-up no chat não enxerga o que foi buscado aqui e responde sobre um
+    # produto antigo do contexto.
+    memory.append(message.chat.id, "user", query)
+    memory.append(message.chat.id, "assistant", result)
     await message.answer(result, parse_mode=None, disable_web_page_preview=True)
