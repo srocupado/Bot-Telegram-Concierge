@@ -81,10 +81,24 @@ class Settings(BaseSettings):
     proactive_nudge_cooldown_days: int = Field(3, alias="PROACTIVE_NUDGE_COOLDOWN_DAYS")
     proactive_use_llm: bool = Field(False, alias="PROACTIVE_USE_LLM")
 
-    # Busca web com leitura de página (tool buscar_web) via Firecrawl
-    # (search + scrape: lê o corpo da página, não só snippets). Sem a key, a
-    # tool retorna erro orientando a configurá-la. Alternativa self-hosted de
-    # custo zero (SearXNG + Jina) documentada em bot/services/websearch.py.
+    # Busca web com leitura de página (tool buscar_web + /buscar). Backend
+    # PRIMÁRIO em WEBSEARCH_BACKEND; se falhar e WEBSEARCH_FALLBACK=true, tenta
+    # o outro automaticamente. Backends (mesmo contrato search_and_read):
+    #  - "searxng":  SearXNG self-hosted (metabusca) + Jina Reader (leitura);
+    #                custo zero, exige SEARXNG_URL. (padrão = primário)
+    #  - "firecrawl": turnkey (search + scrape num call); gasta créditos.
+    # Um backend sem credencial é PULADO (não conta como falha) — então dá pra
+    # rodar só com um dos dois configurado.
+    websearch_backend: Literal["searxng", "firecrawl"] = Field(
+        "searxng", alias="WEBSEARCH_BACKEND"
+    )
+    websearch_fallback: bool = Field(True, alias="WEBSEARCH_FALLBACK")
+    # SearXNG: URL base da instância (ex: http://192.168.1.50:8080).
+    searxng_url: str | None = Field(None, alias="SEARXNG_URL")
+    # Jina Reader (https://r.jina.ai) lê cada link no backend searxng. Opcional:
+    # sem a key funciona no tier gratuito; com ela o rate limit sobe.
+    jina_api_key: SecretStr | None = Field(None, alias="JINA_API_KEY")
+    # Firecrawl (search + scrape). Sem a key, este backend é pulado.
     firecrawl_api_key: SecretStr | None = Field(None, alias="FIRECRAWL_API_KEY")
 
     # Travels (busca de voos/hotéis via SerpAPI — porte do Telegram-Travels)

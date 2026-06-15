@@ -2073,8 +2073,8 @@ TOOLS: list[Tool] = [
     Tool(
         name="buscar_web",
         description=(
-            "Busca na web E LÊ o conteúdo das páginas (via Firecrawl) — devolve "
-            "o texto renderizado, não só snippets. USE quando a resposta exige "
+            "Busca na web E LÊ o conteúdo das páginas — devolve o texto "
+            "renderizado, não só snippets. USE quando a resposta exige "
             "dados que só estão DENTRO da página e variam com o tempo: horários "
             "de sessão de cinema, horário de funcionamento de loja/restaurante, "
             "preços atuais, cardápio, tabelas, status de algo agora. Também serve "

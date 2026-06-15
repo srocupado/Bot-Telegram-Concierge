@@ -1,11 +1,13 @@
 """/buscar <termo> — busca web one-shot.
 
-Backend preferido: **Firecrawl** (search + scrape → LÊ o corpo das páginas),
-com síntese curta pelo provider do usuário. Cobre o caso de voz: a
-transcrição mapeia "busca X / pesquisa X / procura X / google X" → /buscar,
-então fazer o /buscar ler página dá leitura de página também por voz.
+Backend de leitura de página (search_and_read): SearXNG+Jina como primário e
+Firecrawl como fallback (conforme WEBSEARCH_BACKEND), com síntese curta pelo
+provider do usuário. Cobre o caso de voz: a transcrição mapeia "busca X /
+pesquisa X / procura X / google X" → /buscar, então fazer o /buscar ler página
+dá leitura de página também por voz.
 
-Fallback (sem FIRECRAWL_API_KEY, ou se o Firecrawl falhar):
+Último recurso (se nenhum backend de leitura estiver configurado, ou todos
+falharem) → busca NATIVA one-shot:
 - user.provider == 'anthropic' → Anthropic com web_search (server-side)
 - senão → Gemini com google_search nativa
 A chamada nativa é one-shot (sem tool use customizado), então não esbarra na
@@ -39,9 +41,9 @@ _SEARCH_SYSTEM = (
     "traga 3-5 manchetes com fonte."
 )
 
-# Prompt de síntese pro caminho Firecrawl: o conteúdo das páginas já vem
-# pronto; o LLM só destila a resposta. Pede pra usar SÓ o material fornecido
-# (reduz alucinação) e citar os links.
+# Prompt de síntese: o conteúdo das páginas já vem pronto (search_and_read);
+# o LLM só destila a resposta. Pede pra usar SÓ o material fornecido (reduz
+# alucinação) e citar os links.
 _SYNTH_PROMPT = (
     "Consulta do usuário: {query}\n\n"
     "Abaixo, resultados de busca já COM o conteúdo das páginas lido. "
@@ -52,8 +54,9 @@ _SYNTH_PROMPT = (
 )
 
 
-async def _firecrawl_search(query: str, user: User) -> str:
-    """Firecrawl lê as páginas; o provider do usuário sintetiza a resposta."""
+async def _read_and_synth(query: str, user: User) -> str:
+    """Backend de leitura de página (SearXNG+Jina ou Firecrawl, conforme
+    WEBSEARCH_BACKEND + fallback) lê as páginas; o provider do usuário sintetiza."""
     from bot.services.websearch import search_and_read
 
     context = await search_and_read(query, read_content=True)
@@ -117,15 +120,18 @@ async def cmd_buscar(message: Message, command: CommandObject, user: User) -> No
         )
         return
 
-    has_firecrawl = settings.firecrawl_api_key is not None
+    from bot.services.websearch import backend_available
+
+    has_rich = backend_available()  # SearXNG (URL) e/ou Firecrawl (key)
     has_native = (
         (user.provider == "anthropic" and bool(settings.anthropic_api_key))
         or bool(settings.gemini_api_key)
     )
-    if not has_firecrawl and not has_native:
+    if not has_rich and not has_native:
         await message.answer(
-            "⚠️ Busca indisponível: configure FIRECRAWL_API_KEY (lê páginas) "
-            "ou ANTHROPIC_API_KEY/GEMINI_API_KEY (busca nativa).",
+            "⚠️ Busca indisponível: configure o backend de leitura de página "
+            "(SEARXNG_URL e/ou FIRECRAWL_API_KEY) ou ANTHROPIC_API_KEY/"
+            "GEMINI_API_KEY (busca nativa).",
             parse_mode=None,
         )
         return
@@ -134,13 +140,13 @@ async def cmd_buscar(message: Message, command: CommandObject, user: User) -> No
 
     engine = ""
     result = ""
-    # 1) Firecrawl (lê página) — preferido. 2) Fallback nativo se faltar/falhar.
-    if has_firecrawl:
+    # 1) Leitura de página (SearXNG→Firecrawl) — preferida. 2) Fallback nativo.
+    if has_rich:
         try:
-            engine = "firecrawl"
-            result = await _firecrawl_search(query, user)
+            engine = settings.websearch_backend
+            result = await _read_and_synth(query, user)
         except Exception as e:
-            logger.warning("/buscar firecrawl falhou (%s) — tentando nativo", e)
+            logger.warning("/buscar leitura de página falhou (%s) — tentando nativo", e)
             engine, result = "", ""
 
     if not result:

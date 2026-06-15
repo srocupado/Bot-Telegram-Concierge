@@ -75,11 +75,12 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   sem você precisar lembrar slash commands.
 - **Busca web nativa** no Anthropic (`web_search`) e Gemini (`google_search`),
   citando fontes. (OpenAI não tem busca nativa nessa versão.)
-- **Busca web com leitura de página** (tool `buscar_web`, via **Firecrawl**):
-  busca **e lê o corpo renderizado** da página — funciona pra dados que só
-  existem dentro da página e mudam com o tempo (horários de sessão de cinema,
-  funcionamento de loja, preços, cardápios). Requer `FIRECRAWL_API_KEY`.
-  Ver [Busca web](#busca-web-buscar_web).
+- **Busca web com leitura de página** (tool `buscar_web` + `/buscar`): busca
+  **e lê o corpo renderizado** da página — funciona pra dados que só existem
+  dentro da página e mudam com o tempo (horários de sessão de cinema,
+  funcionamento de loja, preços, cardápios). Backend **SearXNG+Jina**
+  (self-hosted, custo zero) como primário e **Firecrawl** como fallback.
+  Ver [Busca web](#busca-web-buscar_web--buscar).
 - **Voz (STT)**: áudio transcrito via **Gemini multimodal** (default
   `gemini-3.5-flash`) ou **OpenAI Whisper/gpt-4o-transcribe** — selecionável por
   usuário com `/voice gemini|openai`. Aceita OGG/Opus nativo sem ffmpeg. Quando
@@ -411,45 +412,55 @@ TRAVELS_ALERT_HOUR=8     # hora BRT em que os watches diários são verificados 
 
 Sem `SERPAPI_KEY` as tools de viagem ficam desabilitadas mas não causam erro.
 
-### Busca web (`buscar_web`)
+### Busca web (`buscar_web` / `/buscar`)
 
-A tool `buscar_web` busca **e lê** o corpo das páginas (via **Firecrawl**:
-search + scrape com render de JS). É o que permite responder perguntas cujo
-dado só existe dentro da página e muda com o tempo — *"que horas tem sessão do
-filme X no Cinemark do shopping Y?"*, horário de funcionamento, preços,
-cardápios. A busca web **nativa** (snippets) acha a página certa mas não traz
-esses dados; só lendo a página eles aparecem.
+Busca **e lê** o corpo das páginas (markdown renderizado, com JS) — permite
+responder perguntas cujo dado só existe dentro da página e muda com o tempo:
+*"que horas tem sessão do filme X no Cinemark do shopping Y?"*, horário de
+funcionamento, preços, cardápios. A busca web **nativa** (snippets) acha a
+página certa mas não traz esses dados; só lendo a página eles aparecem.
 
-Dois caminhos usam o Firecrawl:
+Dois caminhos usam isso:
 - **Chat livre / voz** → o agente aciona a tool `buscar_web` quando faz sentido.
 - **Comando `/buscar <termo>`** (e por voz: *"busca X"*, *"pesquisa X"*,
-  *"procura X"*, *"google X"*) → usa o Firecrawl (lê página + síntese curta) e
-  **cai pra busca nativa** (Anthropic `web_search` / Gemini `google_search`) se
-  não houver `FIRECRAWL_API_KEY` ou se o Firecrawl falhar.
+  *"procura X"*, *"google X"*) → lê página + síntese curta, e **cai pra busca
+  nativa** (Anthropic `web_search` / Gemini `google_search`) só se nenhum
+  backend de leitura estiver configurado ou todos falharem.
+
+#### Backends (primário → fallback)
 
 ```bash
-FIRECRAWL_API_KEY=...     # crie em https://www.firecrawl.dev → Dashboard → API Keys (free tier)
+WEBSEARCH_BACKEND=searxng     # primário: "searxng" (padrão) ou "firecrawl"
+WEBSEARCH_FALLBACK=true       # se o primário falhar, tenta o outro
+
+# SearXNG (self-hosted, custo ZERO) — primário recomendado
+SEARXNG_URL=http://192.168.1.50:8080
+JINA_API_KEY=                 # opcional (Jina Reader lê os links); sobe o rate limit
+
+# Firecrawl (turnkey, gasta créditos) — fallback por padrão
+FIRECRAWL_API_KEY=...         # https://www.firecrawl.dev → Dashboard → API Keys (free tier)
 ```
 
-Sem `FIRECRAWL_API_KEY` a tool fica indisponível (retorna erro orientando a
-configurá-la) — o `web_search` nativo do Anthropic segue funcionando pra
-notícias gerais.
+Como funciona o `search_and_read` (`bot/services/websearch.py`):
 
-**Alternativa self-hosted de custo zero** — se o Firecrawl não satisfizer
-(qualidade) ou o custo subir (o free tier tem teto de créditos), dá pra trocar
-o backend por **SearXNG + Jina Reader**, com o mesmo mecanismo (busca + leitura
-com render de JS):
+1. Tenta o backend de `WEBSEARCH_BACKEND`. Um backend **sem credencial é
+   pulado** (não conta como falha) — dá pra rodar só com um dos dois.
+2. **SearXNG**: `GET {SEARXNG_URL}/search?q=...&format=json` pega os links →
+   **Jina Reader** (`https://r.jina.ai/<url>`) lê cada um. Resultado vazio
+   (ex.: engines em 429) conta como falha → aciona o fallback.
+3. **Firecrawl**: `search + scrape` num call só.
+4. Se o primário falhar e `WEBSEARCH_FALLBACK=true`, o outro é tentado.
 
-1. **SearXNG** (metabusca self-hosted, imagem `searxng/searxng`) — suba junto no
-   `docker-compose`, habilite o formato JSON no `settings.yml` e consulte
-   `GET /search?q=...&format=json` pra obter os links.
-2. **Jina Reader** (`https://r.jina.ai/<url>`) — lê cada link e devolve markdown
-   já renderizado. Tier gratuito generoso; com `JINA_API_KEY` o limite sobe.
+O contrato é o mesmo pros dois backends, então a escolha é só de configuração —
+o agente e a tool `buscar_web` não mudam.
 
-O contrato de `bot/services/websearch.py` (`search_and_read` → texto pronto pro
-LLM) foi mantido fino de propósito: trocar de backend é só reescrever o corpo
-desse módulo, sem mexer na tool `buscar_web` nem no agente. A nota no topo do
-arquivo tem o detalhamento.
+##### Subir a instância SearXNG (resumo)
+
+`searxng/searxng` (multi-arch, roda em ARM/Orange Pi). No `settings.yml` da
+instância: gere um `secret_key`, deixe `server.limiter: false` (instância
+privada) e adicione `json` em `search.formats` (essencial pra API). Aponte
+`SEARXNG_URL` pro IP:porta. Se algum engine der 429 (ex.: Brave), desligue só
+ele com `disabled: true` — confira em `http://IP:8080/stats/errors`.
 
 ### Voz (STT)
 

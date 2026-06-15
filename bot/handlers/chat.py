@@ -75,7 +75,7 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "- buscar_web, buscar_voo, buscar_hotel, criar_watch_voo, criar_watch_hotel, listar_watches_viagem, cancelar_watch_viagem\n"
     "- executar_agente, listar_arquivos\n\n"
     "Busca na web — você tem DUAS opções, escolha pela necessidade:\n"
-    "1) buscar_web (Firecrawl): BUSCA e LÊ o corpo das páginas. Use quando a "
+    "1) buscar_web: BUSCA e LÊ o corpo das páginas. Use quando a "
     "resposta exige dados que só estão DENTRO da página e mudam com o tempo — "
     "horários de cinema/sessão, horário de funcionamento, preços atuais, "
     "cardápios, tabelas. Funciona em qualquer provider. Cite os links.\n"
