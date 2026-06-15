@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -19,12 +20,35 @@ router = Router(name=__name__)
 logger = logging.getLogger(__name__)
 
 
+# Negrito GitHub-style (**x** / __x__) → negrito do Markdown legado do
+# Telegram (*x*). Não-guloso e na mesma linha pra não atravessar parágrafos.
+_RE_BOLD_STAR = re.compile(r"\*\*(.+?)\*\*")
+_RE_BOLD_UNDER = re.compile(r"__(.+?)__")
+# Bullet GitHub (* / - / + no início da linha, seguido de espaço) → '•'. No
+# legado do Telegram '*' é negrito, então um bullet '* item' quebra o parse.
+_RE_BULLET = re.compile(r"(?m)^([ \t]*)[*+\-]\s+")
+# Cabeçalho markdown (# .. ###### ) → negrito (Telegram não tem heading).
+_RE_HEADING = re.compile(r"(?m)^#{1,6}[ \t]+(.*)$")
+
+
+def _to_telegram_markdown(text: str) -> str:
+    """Converte markdown estilo GitHub (gerado pelo LLM) pro subset que o
+    Telegram legado entende: '**x**'→'*x*', bullets '*/-/+'→'•', heading→negrito.
+    Reduz drasticamente as quebras que jogavam a resposta no fallback de texto
+    puro (asteriscos crus). O fallback continua como rede de segurança."""
+    text = _RE_BOLD_STAR.sub(r"*\1*", text)
+    text = _RE_BOLD_UNDER.sub(r"*\1*", text)
+    text = _RE_HEADING.sub(r"*\1*", text)
+    text = _RE_BULLET.sub(r"\1• ", text)
+    return text
+
+
 async def answer_llm(message: Message, text: str, reply_markup=None) -> None:
     """Envia resposta do LLM com fallback. O bot usa parse_mode=Markdown por
     padrão, mas texto livre do LLM pode ter markdown quebrado (ex.: '*' ou '`'
     sem fechar) → Telegram rejeita a mensagem inteira (BadRequest). Nesse caso
     reenvia em texto puro pra mensagem não sumir."""
-    text = text or "(sem resposta)"
+    text = _to_telegram_markdown(text or "(sem resposta)")
     try:
         await message.answer(text, reply_markup=reply_markup)
     except TelegramBadRequest:
@@ -60,6 +84,10 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "essa nativa não está disponível — pra dado fresco use buscar_web.\n"
     "Regra prática: se precisar do CONTEÚDO de uma página específica "
     "(horário, preço, tabela), prefira buscar_web. Cite fontes brevemente.\n\n"
+    "FORMATAÇÃO (Telegram, Markdown legado): negrito é UM asterisco *assim* "
+    "(NUNCA **dois**); itálico _assim_. NÃO use '#'/'##' (heading) nem listas "
+    "com '*'/'-' no início da linha — pra itens use '•' ou '–'. Links no "
+    "formato [texto](url). Mantenha curto.\n\n"
     "Quando a mensagem contém imagem ou PDF, analise-a (OCR, identificação, "
     "extração de dados). Se a imagem implicar ação concreta, invoque a tool:\n"
     "- Boleto, conta de luz/água/internet, fatura → IMEDIATAMENTE extraia "
