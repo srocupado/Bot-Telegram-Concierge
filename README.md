@@ -81,6 +81,9 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   funcionamento de loja, preços, cardápios). Backend **SearXNG+Jina**
   (self-hosted, custo zero) como primário e **Firecrawl** como fallback.
   Ver [Busca web](#busca-web-buscar_web--buscar).
+- **Casa inteligente (Home Assistant)**: tools `ha_*` (owner-only) pra consultar
+  e controlar a casa pelo chat/voz (*"acende a luz", "qual a temperatura?",
+  "tranca a porta"*), via Assist + REST do HA. Ver [Casa](#casa-home-assistant).
 - **Voz (STT)**: áudio transcrito via **Gemini multimodal** (default
   `gemini-3.5-flash`) ou **OpenAI Whisper/gpt-4o-transcribe** — selecionável por
   usuário com `/voice gemini|openai`. Aceita OGG/Opus nativo sem ffmpeg. Quando
@@ -463,6 +466,35 @@ o agente e a tool `buscar_web` não mudam.
 
 > **Instalar o SearXNG:** passo a passo em
 > [Setup de serviços externos → SearXNG](#searxng-backend-primário-de-busca-web).
+
+### Casa (Home Assistant)
+
+Tools `ha_*` (owner-only) pra **consultar e controlar** a casa pelo chat/voz:
+*"acende a luz da sala"*, *"qual a temperatura do quarto?"*, *"tranca a porta"*.
+
+```bash
+HOMEASSISTANT_URL=http://192.168.1.10:8123   # IP:porta da HA na sua LAN
+HOMEASSISTANT_TOKEN=...                       # token long-lived (ver abaixo)
+```
+
+Como obter o token: HA → seu **Perfil** (canto inferior esquerdo) → aba
+**"Tokens de acesso de longa duração"** → **Criar token** (copie na hora,
+aparece só uma vez).
+
+Três tools, e o agente escolhe sozinho:
+- **`ha_assist`** — manda a frase pro **Assist** do HA (`/api/conversation/process`);
+  o HA resolve nome/área/apelido. É a primeira tentativa.
+- **`ha_estado`** — lê `/api/states` (consulta + descoberta de `entity_id`).
+- **`ha_controlar`** — aciona `/api/services/<domínio>/<serviço>`.
+
+Se o Assist não estiver configurado, o agente cai pra `ha_estado` + `ha_controlar`
+automaticamente. Em ações sensíveis (fechadura, alarme, garagem) o agente
+**confirma antes**. Requer `OWNER_TELEGRAM_ID` setado (é recurso só do dono).
+
+> **Segurança:** o token dá controle total da casa. Rode o bot na **mesma LAN**
+> da HA (sem expor a porta à internet); o token entra como `SecretStr` e nunca
+> é logado. Se um dia o bot rodar fora da rede, use VPN (Tailscale) ou Nabu Casa
+> em vez de abrir a porta.
 
 ### Voz (STT)
 
