@@ -5,6 +5,8 @@ o que vigiar nem inventa dados.
 
 Categorias:
 - vencimentos: lembretes chegando (não recorrentes) + vencimento da fatura.
+- tarefas: tarefas abertas (/tarefas) no briefing matinal e no resumo do fim
+  do dia — lembrete até concluir (sem dedup).
 - mp: Medidas Provisórias novas no DOU (substitui o digest fixo das 18h).
 - nudges: inatividade (treino, lançamentos financeiros, lista de compras).
 
@@ -27,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.config import settings
 from bot.db.models import ProactiveNotice, Reminder, User, WorkoutLog
 from bot.services import shopping
+from bot.services import tasks as tasks_svc
 from bot.services.reminders import as_utc, format_reminder_line
 
 logger = logging.getLogger(__name__)
@@ -224,6 +227,32 @@ async def collect_nudges(
     return facts
 
 
+_TASKS_LIMIT = 12  # teto de tarefas na mensagem (evita briefing gigante)
+
+
+async def collect_tarefas(
+    session: AsyncSession, user: User, now_brt: datetime,
+) -> list[ProactiveFact]:
+    """Tarefas abertas (/tarefas) pro briefing matinal e o resumo do fim do
+    dia — lembrete pra não esquecer. Sem dedup: repete até o usuário concluir.
+    Mostra idade em dias pra dar relevo às que estão paradas; corta no teto."""
+    tarefas = await tasks_svc.list_open_tasks(session, user.id)
+    if not tarefas:
+        return []
+    tz = ZoneInfo(user.timezone)
+    today = now_brt.date()
+    facts: list[ProactiveFact] = []
+    for t in tarefas[:_TASKS_LIMIT]:
+        dias = (today - as_utc(t.created_at).astimezone(tz).date()).days
+        idade = f"  <i>(há {dias}d)</i>" if dias >= 1 else ""
+        facts.append(ProactiveFact("tarefas", "tarefa", str(t.id), f"• {t.text}{idade}"))
+    extra = len(tarefas) - _TASKS_LIMIT
+    if extra > 0:
+        facts.append(ProactiveFact("tarefas", "tarefa_more", "more",
+                                   f"… e mais {extra} tarefa(s) — veja em /tarefas"))
+    return facts
+
+
 async def collect_clima(user: User, now_brt: datetime) -> list[ProactiveFact]:
     """Previsão do tempo do dia (Open-Meteo, HOME_COORDS) pro briefing
     matinal. Roda todo dia (clima interessa também no fim de semana). Sem
@@ -327,6 +356,7 @@ _CAT_HEADER = {
     "clima": "🌦️ <b>Clima hoje</b>",
     "transito": "🚗 <b>Trânsito casa → trabalho</b>",
     "venc": "⏳ <b>Chegando</b>",
+    "tarefas": "📋 <b>Tarefas abertas</b>",
     "mp": "📜 <b>Diário Oficial</b>",
     "nudge": "💡 <b>Hábitos</b>",
     "carteira": "📈 <b>Carteira hoje</b>",
@@ -337,7 +367,7 @@ def _compose(facts: list[ProactiveFact], *, briefing: bool) -> str:
     blocks: list[str] = []
     if briefing:
         blocks.append("☀️ <b>Bom dia! Resumo de hoje</b>")
-    for cat in ("clima", "transito", "venc", "mp", "nudge", "carteira"):
+    for cat in ("clima", "transito", "venc", "tarefas", "mp", "nudge", "carteira"):
         lines = [f.text for f in facts if f.category == cat]
         if not lines:
             continue
@@ -398,11 +428,18 @@ async def run_for_user(
             return False
         await mark_notified(session, user.id, "proactive_run", run_key)
 
+    # Resumo do fim do dia = última janela proativa (mesma régua da carteira).
+    last_hour = max(parse_proactive_hours(settings.proactive_hours))
+    end_of_day = (not briefing) and (force or now_brt.hour == last_hour)
+
     facts: list[ProactiveFact] = []
     if briefing:
         facts += await collect_clima(user, now_brt)
         facts += await collect_transito(user, now_brt)
     facts += await collect_vencimentos(session, user, now_brt, force=force)
+    # Tarefas abertas no briefing matinal e no resumo do fim do dia.
+    if briefing or end_of_day:
+        facts += await collect_tarefas(session, user, now_brt)
     facts += await collect_mp(session, user, mp_dates, force=force)
     facts += await collect_nudges(session, user, now_brt, force=force)
     if not briefing:
@@ -432,7 +469,7 @@ async def run_for_user(
             # clima, trânsito e vencimentos não têm dedup: repetem a cada
             # janela (clima/trânsito = leitura fresca; vencimento = lembrar
             # até pagar).
-            if f.category in ("clima", "transito", "venc"):
+            if f.category in ("clima", "transito", "venc", "tarefas"):
                 continue
             await mark_notified(session, user.id, f.kind, f.key)
     return sent
