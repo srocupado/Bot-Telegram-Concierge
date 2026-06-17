@@ -105,6 +105,13 @@ class Settings(BaseSettings):
     serpapi_key: SecretStr | None = Field(None, alias="SERPAPI_KEY")
     travels_alert_hour: int = Field(8, alias="TRAVELS_ALERT_HOUR")
 
+    # Home Assistant (tools ha_* — consultar/controlar a casa). Owner-only.
+    # URL da instância na LAN (ex: http://192.168.1.10:8123) e token long-lived
+    # (HA → Perfil → Tokens de acesso de longa duração). Sem ambos, as tools
+    # ficam indisponíveis. NUNCA logar o token (controle total da casa).
+    homeassistant_url: str | None = Field(None, alias="HOMEASSISTANT_URL")
+    homeassistant_token: SecretStr | None = Field(None, alias="HOMEASSISTANT_TOKEN")
+
     # Scheduler
     scheduler_tick_seconds: int = Field(60, alias="SCHEDULER_TICK_SECONDS")
     timezone: str = Field("America/Sao_Paulo", alias="TIMEZONE")
