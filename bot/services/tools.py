@@ -153,65 +153,6 @@ async def _h_buscar_preco(args: dict, ctx: ToolContext) -> str:
     return await buscar_preco(query)
 
 
-def _ha_owner_guard(ctx: ToolContext) -> str | None:
-    """Home Assistant é owner-only (controle da casa)."""
-    if not settings.owner_telegram_id or ctx.user.id != settings.owner_telegram_id:
-        return "erro: recurso indisponível para este usuário"
-    return None
-
-
-async def _h_ha_assist(args: dict, ctx: ToolContext) -> str:
-    err = _ha_owner_guard(ctx)
-    if err:
-        return err
-    from bot.services.homeassistant import HAError, assist
-
-    comando = (args.get("comando") or "").strip()
-    if not comando:
-        return "erro: precisa de 'comando'"
-    try:
-        return "Assist: " + await assist(comando)
-    except HAError as e:
-        return (
-            f"ha_assist indisponível ({e}). Use ha_estado pra achar a entidade "
-            "e ha_controlar pra acionar."
-        )
-
-
-async def _h_ha_estado(args: dict, ctx: ToolContext) -> str:
-    err = _ha_owner_guard(ctx)
-    if err:
-        return err
-    from bot.services.homeassistant import HAError, consultar_estados
-
-    busca = (args.get("busca") or "").strip() or None
-    try:
-        return await consultar_estados(busca)
-    except HAError as e:
-        return f"erro consultando Home Assistant: {e}"
-
-
-async def _h_ha_controlar(args: dict, ctx: ToolContext) -> str:
-    err = _ha_owner_guard(ctx)
-    if err:
-        return err
-    from bot.services.homeassistant import SENSITIVE_DOMAINS, HAError, chamar_servico
-
-    domain = (args.get("domain") or "").strip()
-    service = (args.get("service") or "").strip()
-    entity_id = (args.get("entity_id") or "").strip() or None
-    dados = args.get("dados") if isinstance(args.get("dados"), dict) else None
-    if not domain or not service:
-        return "erro: precisa de domain e service (ex: light / turn_on)"
-    try:
-        result = await chamar_servico(domain, service, entity_id, dados)
-    except HAError as e:
-        return f"erro controlando Home Assistant: {e}"
-    if domain in SENSITIVE_DOMAINS:
-        result += " ⚠️ (ação sensível — confirme com o usuário antes se não confirmou)"
-    return result
-
-
 async def _h_criar_tarefa(args: dict, ctx: ToolContext) -> str:
     texto = (args.get("texto") or "").strip()
     if not texto:
@@ -2235,69 +2176,6 @@ TOOLS: list[Tool] = [
             "required": ["query"],
         },
         handler=_h_buscar_preco,
-    ),
-    Tool(
-        name="ha_assist",
-        description=(
-            "Home Assistant (casa inteligente) via Assist: manda um COMANDO ou "
-            "PERGUNTA em linguagem natural e o HA resolve a entidade/área sozinho. "
-            "TENTE ESTA PRIMEIRO pra controlar/consultar a casa: 'acende a luz da "
-            "sala', 'qual a temperatura do quarto?', 'tranca a porta da frente'. "
-            "Se retornar indisponível, use ha_estado + ha_controlar. Owner-only."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "comando": {
-                    "type": "string",
-                    "description": "Comando/pergunta em PT-BR (ex: 'acende a luz da cozinha')",
-                },
-            },
-            "required": ["comando"],
-        },
-        handler=_h_ha_assist,
-    ),
-    Tool(
-        name="ha_estado",
-        description=(
-            "Home Assistant: lê o ESTADO das entidades (consulta e descoberta de "
-            "entity_id). Passe 'busca' pra filtrar por nome/entity_id (ex: 'sala', "
-            "'temperatura', 'porta', 'light'). USE pra responder 'tá alguém em "
-            "casa?', 'qual a temperatura?', 'a porta está trancada?', ou pra achar "
-            "o entity_id antes de chamar ha_controlar. Owner-only."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "busca": {
-                    "type": "string",
-                    "description": "Filtro por nome/entity_id/domínio (opcional, mas recomendado)",
-                },
-            },
-        },
-        handler=_h_ha_estado,
-    ),
-    Tool(
-        name="ha_controlar",
-        description=(
-            "Home Assistant: aciona um SERVIÇO (controle explícito) quando o "
-            "ha_assist não resolveu. Ex: domain='light' service='turn_on' "
-            "entity_id='light.sala'; ou domain='climate' service='set_temperature' "
-            "dados={'temperature':22}. Descubra o entity_id antes com ha_estado. "
-            "Para domínios SENSÍVEIS (lock, alarm_control_panel, cover/garagem) "
-            "CONFIRME com o usuário antes de acionar. Owner-only."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "domain": {"type": "string", "description": "Domínio do serviço (ex: light, switch, climate, lock)"},
-                "service": {"type": "string", "description": "Serviço (ex: turn_on, turn_off, lock, set_temperature)"},
-                "entity_id": {"type": "string", "description": "Entidade alvo (ex: light.sala). Opcional p/ alguns serviços."},
-                "dados": {"type": "object", "description": "Parâmetros extras (ex: {'brightness_pct':50}, {'temperature':22})"},
-            },
-            "required": ["domain", "service"],
-        },
-        handler=_h_ha_controlar,
     ),
     Tool(
         name="buscar_voo",
