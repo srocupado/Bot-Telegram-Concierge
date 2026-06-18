@@ -29,13 +29,23 @@ _RE_BOLD_UNDER = re.compile(r"__(.+?)__")
 _RE_BULLET = re.compile(r"(?m)^([ \t]*)[*+\-]\s+")
 # Cabeçalho markdown (# .. ###### ) → negrito (Telegram não tem heading).
 _RE_HEADING = re.compile(r"(?m)^#{1,6}[ \t]+(.*)$")
+# Citações estilo rodapé que o LLM às vezes gera e quebram o Markdown legado:
+#  - [[1]](#r1): link de ÂNCORA interna — Telegram não navega e o '#r1' como URL
+#    derruba a mensagem inteira pro fallback de texto puro. Vira só '[1]'.
+#  - [[1]](http...): colchete duplo no texto do link quebra o parse — vira link
+#    válido de colchete simples '[1](http...)'.
+_RE_ANCHOR_CITE = re.compile(r"\[\[(\d+)\]\]\(#[^)]*\)")
+_RE_FOOTNOTE_LINK = re.compile(r"\[\[(\d+)\]\]\((https?://[^)]+)\)")
 
 
 def _to_telegram_markdown(text: str) -> str:
     """Converte markdown estilo GitHub (gerado pelo LLM) pro subset que o
-    Telegram legado entende: '**x**'→'*x*', bullets '*/-/+'→'•', heading→negrito.
-    Reduz drasticamente as quebras que jogavam a resposta no fallback de texto
-    puro (asteriscos crus). O fallback continua como rede de segurança."""
+    Telegram legado entende: '**x**'→'*x*', bullets '*/-/+'→'•', heading→negrito,
+    e neutraliza citações [[n]](...) que quebram o parse. Reduz drasticamente as
+    quebras que jogavam a resposta no fallback de texto puro (asteriscos crus).
+    O fallback continua como rede de segurança."""
+    text = _RE_ANCHOR_CITE.sub(r"[\1]", text)
+    text = _RE_FOOTNOTE_LINK.sub(r"[\1](\2)", text)
     text = _RE_BOLD_STAR.sub(r"*\1*", text)
     text = _RE_BOLD_UNDER.sub(r"*\1*", text)
     text = _RE_HEADING.sub(r"*\1*", text)
@@ -43,16 +53,21 @@ def _to_telegram_markdown(text: str) -> str:
     return text
 
 
-async def answer_llm(message: Message, text: str, reply_markup=None) -> None:
+async def answer_llm(
+    message: Message, text: str, reply_markup=None, *,
+    disable_web_page_preview: bool = False,
+) -> None:
     """Envia resposta do LLM com fallback. O bot usa parse_mode=Markdown por
     padrão, mas texto livre do LLM pode ter markdown quebrado (ex.: '*' ou '`'
     sem fechar) → Telegram rejeita a mensagem inteira (BadRequest). Nesse caso
     reenvia em texto puro pra mensagem não sumir."""
     text = _to_telegram_markdown(text or "(sem resposta)")
     try:
-        await message.answer(text, reply_markup=reply_markup)
+        await message.answer(text, reply_markup=reply_markup,
+                             disable_web_page_preview=disable_web_page_preview)
     except TelegramBadRequest:
-        await message.answer(text, parse_mode=None, reply_markup=reply_markup)
+        await message.answer(text, parse_mode=None, reply_markup=reply_markup,
+                             disable_web_page_preview=disable_web_page_preview)
 
 
 _SYSTEM_PROMPT_TEMPLATE = (

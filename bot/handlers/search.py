@@ -28,6 +28,7 @@ from google.genai import types
 
 from bot.config import settings
 from bot.db.models import User
+from bot.handlers.chat import answer_llm
 from bot.services.chat_memory import memory
 from bot.services.llm.factory import get_provider
 
@@ -39,8 +40,11 @@ router = Router(name="search")
 _SEARCH_SYSTEM = (
     "Você é um assistente de pesquisa web em português brasileiro. "
     "Use a busca pra responder a consulta do usuário de forma curta, objetiva "
-    "e com fontes (titulos/links breves no final). Se for sobre notícias, "
-    "traga 3-5 manchetes com fonte."
+    "e com fontes no final. Se for sobre notícias, traga 3-5 manchetes com fonte.\n"
+    "FORMATAÇÃO (Telegram): para destaque use *um asterisco* (NUNCA **dois**); "
+    "NÃO use títulos '#'. Itens de lista começam com '- '. As fontes vão no "
+    "final como links inline no formato [Título](URL) — NÃO use notas de rodapé "
+    "tipo [[1]] nem âncoras (#r1); cada fonte numa linha começando com '- '."
 )
 
 # Prompt de síntese: o conteúdo das páginas já vem pronto (search_and_read);
@@ -51,8 +55,9 @@ _SYNTH_PROMPT = (
     "Abaixo, resultados de busca já COM o conteúdo das páginas lido. "
     "Responda a consulta usando SOMENTE esses dados, de forma curta e "
     "objetiva. Se a resposta exige dado específico (horário, preço, etc.), "
-    "extraia-o do conteúdo. Cite os links usados no final. Se o material não "
-    "responder, diga isso.\n\n{context}"
+    "extraia-o do conteúdo. No final, liste as fontes usadas como links inline "
+    "[Título](URL), uma por linha começando com '- ' — sem notas de rodapé "
+    "[[1]] nem âncoras (#). Se o material não responder, diga isso.\n\n{context}"
 )
 
 
@@ -213,4 +218,7 @@ async def cmd_buscar(message: Message, command: CommandObject, user: User) -> No
     # produto antigo do contexto.
     memory.append(message.chat.id, "user", query)
     memory.append(message.chat.id, "assistant", result)
-    await message.answer(result, parse_mode=None, disable_web_page_preview=True)
+    # Mesma renderização do chat livre: converte o markdown do LLM (**negrito**,
+    # bullets, citações) pro subset do Telegram, com fallback pra texto puro.
+    # Sem isso o /buscar mostrava os asteriscos crus (enviava parse_mode=None).
+    await answer_llm(message, result, disable_web_page_preview=True)
