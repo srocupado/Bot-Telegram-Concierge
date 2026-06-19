@@ -34,10 +34,20 @@ _ANTHROPIC_VARIANTS = {
 }
 
 
-def nota_keyboard(date_iso: str) -> InlineKeyboardMarkup:
-    """Botões Sim/Não pra oferecer a nota técnica das MPs de uma data."""
+def nota_keyboard(date_iso: str, numeros: list[str] | None = None) -> InlineKeyboardMarkup:
+    """Botões Sim/Não pra oferecer a nota técnica das MPs de uma data.
+
+    Se `numeros` for dado, a nota cobre SOMENTE essas MPs (os números detectados
+    naquela notificação) — evita regerar todas as MPs do dia quando uma janela
+    posterior avisa de uma MP nova. callback_data tem teto de 64 bytes; se a
+    lista não couber, cai pro modo data (todas as MPs do dia)."""
+    cb = f"doump:y:{date_iso}"
+    if numeros:
+        candidate = f"{cb}:{','.join(numeros)}"
+        if len(candidate.encode()) <= 64:
+            cb = candidate
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="📄 Sim, gerar nota", callback_data=f"doump:y:{date_iso}"),
+        InlineKeyboardButton(text="📄 Sim, gerar nota", callback_data=cb),
         InlineKeyboardButton(text="Não", callback_data="doump:n"),
     ]])
 
@@ -53,13 +63,17 @@ async def cb_nota_nao(query: CallbackQuery, user: User) -> None:
 
 @router.callback_query(F.data.startswith("doump:y:"))
 async def cb_nota_sim(query: CallbackQuery, user: User, session: AsyncSession) -> None:
-    """callback_data = 'doump:y:<AAAA-MM-DD>'"""
+    """callback_data = 'doump:y:<AAAA-MM-DD>' (todas as MPs do dia) ou
+    'doump:y:<AAAA-MM-DD>:<num1,num2,...>' (só essas MPs — vindo do proativo,
+    que avisa de um subconjunto e não deve regerar o dia todo)."""
     if not user.is_authorized:
         await query.answer()
         return
     try:
-        date_iso = query.data.split(":", 2)[2]
-        target = date.fromisoformat(date_iso)
+        payload = query.data.split(":", 2)[2]  # "<data>" ou "<data>:<nums>"
+        date_part, _, nums_part = payload.partition(":")
+        target = date.fromisoformat(date_part)
+        only_numeros = [n for n in nums_part.split(",") if n] or None
     except (ValueError, IndexError):
         await query.answer("⚠️ data inválida", show_alert=True)
         return
@@ -69,7 +83,8 @@ async def cb_nota_sim(query: CallbackQuery, user: User, session: AsyncSession) -
     except Exception:
         pass
     try:
-        n = await deliver_to_user(query.bot, session, user, target, force=True)
+        n = await deliver_to_user(query.bot, session, user, target,
+                                  force=True, only_numeros=only_numeros)
     except DouError as e:
         await query.message.answer(f"⚠️ {e}", parse_mode=None)
         return

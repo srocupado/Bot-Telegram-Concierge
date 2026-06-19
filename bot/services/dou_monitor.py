@@ -792,14 +792,20 @@ async def mark_seen(session: AsyncSession, user_id: int, mp: dict) -> None:
 
 async def deliver_to_user(
     bot, session: AsyncSession, user, target_date: date, *, force: bool = False,
+    only_numeros: list[str] | None = None,
 ) -> int:
     """Busca MPs da data, gera nota + DOCX e entrega no Telegram. Por padrão
     pula as já notificadas (dedup); com force=True entrega tudo que achar
-    (usado pelo comando manual). Retorna quantas MPs foram entregues.
+    (usado pelo comando manual). only_numeros restringe a entrega a essas MPs
+    (números) — usado pelo botão do proativo, que avisa de um subconjunto do dia
+    e não deve regerar todas. Retorna quantas MPs foram entregues.
     Levanta DouError se o fetch falhar (credencial, rede)."""
     from aiogram.types import BufferedInputFile
 
     mps = await fetch_mps(target_date)
+    if only_numeros:
+        alvo = set(only_numeros)
+        mps = [mp for mp in mps if mp["numero"] in alvo]
     if force:
         novas = mps
     else:

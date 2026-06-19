@@ -454,13 +454,16 @@ async def run_for_user(
     # Botão de nota técnica quando houver MP nos facts. Usa a data da MP
     # (não o `today` da execução), pra cobrir briefing que junta ontem+hoje.
     # Se houver MPs de mais de uma data, usa a mais recente — o usuário ainda
-    # pode chamar /mp_dou_agora <data> pras outras.
+    # pode chamar /mp_dou_agora <data> pras outras. Passa os NÚMEROS detectados
+    # nesta notificação (key = "numero/ano") pra nota cobrir só essas MPs — sem
+    # isso o botão regerava todas as MPs do dia (ex.: 19h refazia as das 13h).
     reply_markup = None
     mp_facts = [f for f in facts if f.category == "mp" and f.date_iso]
     if mp_facts:
         from bot.handlers.dou_mp import nota_keyboard
         latest_date = max(f.date_iso for f in mp_facts)
-        reply_markup = nota_keyboard(latest_date)
+        numeros = [f.key.split("/")[0] for f in mp_facts if f.date_iso == latest_date]
+        reply_markup = nota_keyboard(latest_date, numeros)
 
     sent = await _send(bot, user.id, text, reply_markup=reply_markup)
     logger.info("proactive: user %d window=%s %d fatos enviado=%s", user.id, window, len(facts), sent)
