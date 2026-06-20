@@ -1186,6 +1186,38 @@ def _card_due_date(due_day: int, today: date) -> date:
     return cand
 
 
+def _closed_bill_to_pay(
+    today: date, closing: int | None, due_day: int | None,
+) -> tuple[int, int, date] | None:
+    """Fatura FECHADA aguardando pagamento: (ano, mês da fatura, data_vencimento).
+
+    É a fatura cujo fechamento (dia `closing`) já passou e cujo vencimento
+    (dia `due_day` do mês seguinte ao fechamento) ainda não passou — ou seja,
+    o que o usuário tem a pagar no próximo dia 1º. None quando não há fatura
+    fechada pendente (ex.: já paga e a próxima ainda não fechou).
+    """
+    from calendar import monthrange
+
+    if closing is None or due_day is None:
+        return None
+    # Fechamento mais recente <= hoje → mês da fatura fechada.
+    if today.day >= closing:
+        cy, cm = today.year, today.month
+    elif today.month == 1:
+        cy, cm = today.year - 1, 12
+    else:
+        cy, cm = today.year, today.month - 1
+    # Vencimento = due_day do mês SEGUINTE ao fechamento (clamp de fim de mês).
+    if cm == 12:
+        dy, dm = cy + 1, 1
+    else:
+        dy, dm = cy, cm + 1
+    due = date(dy, dm, min(due_day, monthrange(dy, dm)[1]))
+    if due < today:
+        return None  # já venceu/foi paga; nada pendente
+    return cy, cm, due
+
+
 async def card_due_soon(session: AsyncSession, user, today: date, lookahead_days: int) -> dict | None:
     """{'due_date', 'month_key'} se o vencimento da fatura cai em até
     lookahead_days; senão None. Defensivo: None sem uid/SA/cardDueDay."""
@@ -1291,9 +1323,10 @@ def _open_invoice_range(state: dict, today: date) -> tuple[date, date, str]:
     Compras com date no intervalo fazem parte da fatura corrente.
 
     Com closing day D:
-      - se today.day > D: fatura em aberto vai de (D+1 do mês atual) até
+      - se today.day >= D: a fatura do ciclo atual JÁ FECHOU (no dia D deste
+        mês), então a fatura em aberto vai de (D+1 do mês atual) até
         (D do mês seguinte). today está dentro.
-      - se today.day <= D: ainda dentro da fatura aberta do mês anterior,
+      - se today.day < D: ainda dentro da fatura aberta do mês anterior,
         que vai de (D+1 do mês anterior) até (D do mês atual).
     Sem closing day configurado: mês calendário (dia 1 → último dia).
     """
@@ -1306,8 +1339,9 @@ def _open_invoice_range(state: dict, today: date) -> tuple[date, date, str]:
         last = today.replace(day=last_day)
         return first, last, f"fatura em aberto ({first.strftime('%d/%m')} → {last.strftime('%d/%m')}, mês calendário)"
 
-    if today.day > closing:
-        # fatura abriu neste mês, fecha no próximo
+    if today.day >= closing:
+        # ciclo deste mês fechou (dia D) → a fatura em aberto abre agora e
+        # fecha no próximo mês
         start_year, start_month = today.year, today.month
     else:
         # fatura abriu no mês passado, fecha neste
@@ -1455,6 +1489,23 @@ async def consultar_lancamentos(
         all_card = state.get("cardEntries") or []
         closing = _get_card_closing_day(state)
 
+        def _card_line(it: dict, info: dict) -> str:
+            kind = info.get("kind")
+            if kind == "parcela":
+                par_label = f" ({info['num']}/{info['total']})"
+            elif kind == "recorrente":
+                par_label = " (recorrente)"
+            else:
+                par_label = ""
+            if it.get("source") == "bot":
+                internal.append(
+                    f"cartao · {it.get('desc', '?')} ({_fmt_date_br(it.get('date', ''))}) → #{it.get('id', '?')}"
+                )
+            return (
+                f"• {_fmt_date_br(it.get('date', ''))} — {it.get('desc', '?')}{par_label} · "
+                f"{_fmt_brl(float(info.get('value') or 0))} · {it.get('category', '?')}"
+            )
+
         if escopo_cartao == "ultimos_dias":
             card_items: list[tuple[dict, dict]] = []
             for it in _filter_by_days(all_card, dias, today_iso):
@@ -1466,40 +1517,63 @@ async def consultar_lancamentos(
                 )
                 card_items.append((it, {"kind": kind, "value": value}))
             header = f"💳 Cartão (últimos {dias}d, por data de compra)"
+            if not card_items:
+                parts.append(f"{header}: sem compras")
+            else:
+                lines = [header + ":"]
+                for it, info in card_items[-30:]:
+                    lines.append(_card_line(it, info))
+                total = sum(float(i.get("value") or 0) for _, i in card_items)
+                lines.append(f"Total: {_fmt_brl(total)} ({len(card_items)} itens)")
+                parts.append("\n".join(lines))
         else:
-            # Fatura em aberto = a que está acumulando (fechará na próxima data
-            # de fechamento). Replica getCardBillForMonth do frontend.
-            target_year, target_month = _bill_month_for_date(today_d, closing)
-            _, _, range_label = _open_invoice_range(state, today_d)
-            card_items = []
+            # CABEÇALHO: fatura FECHADA a pagar no próximo vencimento (dia 1º).
+            # CORPO: gastos da fatura EM ABERTO (a que está acumulando agora).
+            start, end, _ = _open_invoice_range(state, today_d)
+            open_y, open_m = end.year, end.month  # bill-key da fatura aberta
+            open_items: list[tuple[dict, dict]] = []
             for it in all_card:
-                info = _entry_in_bill(it, target_year, target_month, closing)
+                info = _entry_in_bill(it, open_y, open_m, closing)
                 if info is not None:
-                    card_items.append((it, info))
-            header = f"💳 Cartão — {range_label}"
+                    open_items.append((it, info))
 
-        if not card_items:
-            parts.append(f"{header}: sem compras")
-        else:
-            lines = [header + ":"]
-            total = 0.0
-            for it, info in card_items[-30:]:
-                value = float(info.get("value") or 0)
-                kind = info.get("kind")
-                if kind == "parcela":
-                    par_label = f" ({info['num']}/{info['total']})"
-                elif kind == "recorrente":
-                    par_label = " (recorrente)"
-                else:
-                    par_label = ""
-                total += value
-                lines.append(
-                    f"• {_fmt_date_br(it.get('date', ''))} — {it.get('desc', '?')}{par_label} · "
-                    f"{_fmt_brl(value)} · {it.get('category', '?')}"
+            due_day = _get_card_due_day(state)
+            closed = _closed_bill_to_pay(today_d, closing, due_day)
+            if closed:
+                cy, cm, due = closed
+                closed_total = sum(
+                    float(info.get("value") or 0)
+                    for it in all_card
+                    if (info := _entry_in_bill(it, cy, cm, closing)) is not None
                 )
-                if it.get("source") == "bot":
-                    internal.append(f"cartao · {it.get('desc', '?')} ({_fmt_date_br(it.get('date', ''))}) → #{it.get('id', '?')}")
-            lines.append(f"Total da fatura: {_fmt_brl(total)} ({len(card_items)} itens)")
+                head = (
+                    f"💳 Cartão — a pagar em {due.strftime('%d/%m')}: "
+                    f"{_fmt_brl(closed_total)} (fatura fechada)"
+                )
+            else:
+                head = "💳 Cartão — sem fatura fechada a pagar no momento"
+
+            if closing is not None:
+                body_label = (
+                    f"Fatura em aberto ({start.strftime('%d/%m')} → "
+                    f"{end.strftime('%d/%m')}, fecha dia {closing}):"
+                )
+            else:
+                body_label = (
+                    f"Fatura em aberto ({start.strftime('%d/%m')} → "
+                    f"{end.strftime('%d/%m')}):"
+                )
+
+            lines = [head, "", body_label]
+            if not open_items:
+                lines.append("• (sem gastos ainda nesta fatura)")
+            else:
+                for it, info in open_items[-30:]:
+                    lines.append(_card_line(it, info))
+                open_total = sum(float(i.get("value") or 0) for _, i in open_items)
+                lines.append(
+                    f"Total em aberto: {_fmt_brl(open_total)} ({len(open_items)} itens)"
+                )
             parts.append("\n".join(lines))
 
     if mod in ("tesouro", "tudo", "investimentos", "investimento", "ativos"):
