@@ -115,34 +115,6 @@ def _is_cinema_query(q: str) -> bool:
             and any(k in n for k in ("cinema", "cinemark", "filme")))
 
 
-_CINEMA_EXTRACT_SYS = (
-    "Você extrai parâmetros de um pedido de horários de cinema. Responda SOMENTE "
-    "um JSON compacto, sem markdown nem texto extra: "
-    '{"filme": "<nome do filme>", "cinema": "<nome do cinema/shopping + cidade>"}'
-)
-
-
-async def _extract_cinema(query: str, user: User) -> tuple[str, str] | None:
-    """Extrai (filme, cinema) do pedido via LLM. None se falhar."""
-    import json
-    try:
-        provider = get_provider(user.provider)
-        out = (await provider.chat(
-            [{"role": "user", "content": query}],
-            system=_CINEMA_EXTRACT_SYS, max_tokens=200,
-        ) or "").strip()
-        if "{" in out and "}" in out:
-            out = out[out.find("{"):out.rfind("}") + 1]
-        d = json.loads(out)
-        filme = (d.get("filme") or "").strip()
-        cinema = (d.get("cinema") or "").strip()
-        if filme and cinema:
-            return filme, cinema
-    except Exception:
-        logger.warning("/buscar: extração de cinema falhou", exc_info=True)
-    return None
-
-
 def _anthropic_search(query: str) -> str:
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
     resp = client.messages.create(
@@ -199,23 +171,22 @@ async def cmd_buscar(message: Message, command: CommandObject, user: User) -> No
         return
 
     # Horários de cinema (Cinemark) → tool dedicada; a busca web não lê a SPA.
-    # Se não for Cinemark (cinema fora do diretório), cai pra busca web normal.
+    # Casa cinema+filme do texto cru (sem LLM). Se não for Cinemark (cinema fora
+    # do diretório), cai pra busca web normal.
     if _is_cinema_query(query):
         await message.bot.send_chat_action(message.chat.id, "typing")
-        extracted = await _extract_cinema(query, user)
-        if extracted:
-            from bot.services.cinema import CinemaError, consultar_sessoes
-            tz = getattr(user, "timezone", None) or settings.timezone
-            try:
-                ans = await consultar_sessoes(extracted[0], extracted[1], None, tz=tz)
-            except CinemaError as e:
-                logger.warning("/buscar cinema falhou: %s", e)
-                ans = ""
-            if ans and not ans.startswith(("Não achei o cinema", "erro")):
-                memory.append(message.chat.id, "user", query)
-                memory.append(message.chat.id, "assistant", ans)
-                await answer_llm(message, ans, disable_web_page_preview=True)
-                return
+        from bot.services.cinema import CinemaError, consultar_sessoes_texto
+        tz = getattr(user, "timezone", None) or settings.timezone
+        try:
+            ans = await consultar_sessoes_texto(query, tz=tz)
+        except CinemaError as e:
+            logger.warning("/buscar cinema falhou: %s", e)
+            ans = ""
+        if ans and not ans.startswith(("Não achei o cinema", "erro")):
+            memory.append(message.chat.id, "user", query)
+            memory.append(message.chat.id, "assistant", ans)
+            await answer_llm(message, ans, disable_web_page_preview=True)
+            return
 
     from bot.services.websearch import backend_available
 
