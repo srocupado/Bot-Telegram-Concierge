@@ -434,12 +434,16 @@ async def run_card_closing_summary(
     None pra pular silenciosamente.
     """
     from bot.services.financeiro import build_card_closing_summary
+    from bot.services.proactive import already_notified, mark_notified
 
     now_brt = datetime.now(BRT)
-    # 09:00-09:01 BRT (janela de 1min pra não duplicar a cada tick).
+    # 09:00-09:01 BRT (janela de ~2min). Com tick de ~20s isso são ~6 passagens,
+    # então o dedup abaixo (ProactiveNotice, 1x por dia) é o que evita o envio
+    # repetido — a janela sozinha NÃO basta.
     if now_brt.hour != 9 or now_brt.minute > 1:
         return
 
+    today_key = now_brt.date().isoformat()
     async with sessionmaker() as session:
         users = list((await session.scalars(
             select(User).where(
@@ -449,6 +453,11 @@ async def run_card_closing_summary(
         )).all())
 
         for u in users:
+            # Idempotência: 1 resumo por usuário por dia. Marca só após enviar OK
+            # (se o envio falhar, um tick seguinte na janela tenta de novo). Os
+            # ticks são sequenciais, então não há corrida entre checar e marcar.
+            if await already_notified(session, u.id, "card_closing", today_key):
+                continue
             try:
                 msg = await build_card_closing_summary(session, u, now_brt.date())
             except Exception:
@@ -457,7 +466,9 @@ async def run_card_closing_summary(
             if not msg:
                 continue
             try:
-                if not await _send_html_with_fallback(bot, u.id, msg):
+                if await _send_html_with_fallback(bot, u.id, msg):
+                    await mark_notified(session, u.id, "card_closing", today_key)
+                else:
                     logger.warning("card summary send failed for user %d", u.id)
             except Exception:
                 logger.exception("card summary send crashed for user %d", u.id)
