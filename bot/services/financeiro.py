@@ -1151,10 +1151,15 @@ def _get_card_closing_day(state: dict) -> int | None:
 
 def _bill_month_for_date(purchase_date: date, closing_day: int | None) -> tuple[int, int]:
     """Retorna (ano, mês) da fatura que contém uma compra nessa data.
-    Sem closing_day: usa mês calendário (mês da própria data)."""
+    Sem closing_day: usa mês calendário (mês da própria data).
+
+    Espelha billingMonthOf() do app gerenciador-financeiro: a compra no DIA do
+    fechamento (day >= closing) já entra na fatura SEGUINTE — não na que fecha
+    nesse dia. (Antes usávamos '>', o que jogava a compra do dia 20 pra fatura
+    que fechava no 20; o app usa '>=' e mandava pra próxima → divergência.)"""
     if closing_day is None:
         return purchase_date.year, purchase_date.month
-    if purchase_date.day > closing_day:
+    if purchase_date.day >= closing_day:
         if purchase_date.month == 12:
             return purchase_date.year + 1, 1
         return purchase_date.year, purchase_date.month + 1
