@@ -153,6 +153,20 @@ async def _h_buscar_preco(args: dict, ctx: ToolContext) -> str:
     return await buscar_preco(query)
 
 
+async def _h_consultar_sessoes_cinema(args: dict, ctx: ToolContext) -> str:
+    from bot.services.cinema import CinemaError, consultar_sessoes
+
+    filme = (args.get("filme") or "").strip()
+    cinema = (args.get("cinema") or "").strip()
+    data_iso = (args.get("data_iso") or "").strip() or None
+    if not filme or not cinema:
+        return "erro: precisa de 'filme' e 'cinema'"
+    try:
+        return await consultar_sessoes(filme, cinema, data_iso, tz=ctx.tz)
+    except CinemaError as e:
+        return f"erro ao consultar a Cinemark: {e}"
+
+
 async def _h_criar_tarefa(args: dict, ctx: ToolContext) -> str:
     texto = (args.get("texto") or "").strip()
     if not texto:
@@ -2176,6 +2190,28 @@ TOOLS: list[Tool] = [
             "required": ["query"],
         },
         handler=_h_buscar_preco,
+    ),
+    Tool(
+        name="consultar_sessoes_cinema",
+        description=(
+            "Horários de sessões de cinema na rede CINEMARK (Brasil) — fonte "
+            "oficial (API da Cinemark). USE SEMPRE pra 'que horas passa o filme "
+            "X no cinema Y', 'sessões de X no Iguatemi Brasília', 'horários do "
+            "cinema'. NUNCA use buscar_web pra isso (o site carrega via JS e a "
+            "leitura falha). Retorna os horários agrupados por 2D/3D e dublado/"
+            "legendado. Só funciona pra Cinemark; pra outras redes, aí sim "
+            "buscar_web."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "filme": {"type": "string", "description": "Nome do filme (ex: 'Mestres do Universo')"},
+                "cinema": {"type": "string", "description": "Cinema/shopping + cidade (ex: 'Iguatemi Brasília', 'Pier 21')"},
+                "data_iso": {"type": "string", "description": "Data AAAA-MM-DD (opcional; default hoje)"},
+            },
+            "required": ["filme", "cinema"],
+        },
+        handler=_h_consultar_sessoes_cinema,
     ),
     Tool(
         name="buscar_voo",
