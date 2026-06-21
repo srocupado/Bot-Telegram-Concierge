@@ -17,8 +17,8 @@ _GEMINI_VARIANTS = {
     "3.5": "gemini-3.5-flash",
     "3.5-flash": "gemini-3.5-flash",
     "flash-novo": "gemini-3.5-flash",
-    "3.1-pro": "gemini-3.1-pro",
-    "pro-novo": "gemini-3.1-pro",
+    "3.1-pro": "gemini-3.1-pro-preview",
+    "pro-novo": "gemini-3.1-pro-preview",
     "3.1-lite": "gemini-3.1-flash-lite",
     # Geração 2.5.
     "pro": "gemini-2.5-pro",
@@ -112,7 +112,7 @@ async def cmd_voice_provider(
             "<code>/voice padrao</code> · reseta tudo (volta ao .env)\n\n"
             "<b>Aliases do Gemini:</b>\n"
             "<code>3.5</code> · <code>3.5-flash</code> → gemini-3.5-flash\n"
-            "<code>3.1-pro</code> → gemini-3.1-pro\n"
+            "<code>3.1-pro</code> → gemini-3.1-pro-preview (tier pago)\n"
             "<code>3.1-lite</code> → gemini-3.1-flash-lite\n"
             "<code>pro</code> → gemini-2.5-pro\n"
             "<code>flash</code> → gemini-2.5-flash\n"

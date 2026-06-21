@@ -83,7 +83,7 @@ agir). Exemplos do que NÃO virar comando:
 # users") e 2.5-flash divide capacidade com o 3.5 (mesmos picos de 503).
 # Quando TODA a cadeia Gemini falha, transcribe() ainda tenta OpenAI como
 # último recurso (se OPENAI_API_KEY estiver configurada).
-_STT_FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-3.1-pro"]
+_STT_FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-3.1-pro-preview"]
 
 
 def _is_transient(exc: Exception) -> bool:
