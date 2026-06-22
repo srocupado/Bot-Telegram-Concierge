@@ -116,6 +116,18 @@ def _is_price_query(q: str) -> bool:
     )
 
 
+# Intenção de HORÁRIO DE CINEMA → tool da Cinemark (API), porque a busca web só
+# enxerga a aba de HOJE da página e erra data futura. A resolução fina (cidade +
+# cinema da rede) fica no consultar_sessoes_texto, que cai pra web se não casar.
+_CINEMA_SHOWTIME = ("horario", "horarios", "sessao", "sessoes", "que horas", "programacao")
+
+
+def _is_cinema_query(q: str) -> bool:
+    n = _norm(q)
+    return (any(k in n for k in _CINEMA_SHOWTIME)
+            and any(k in n for k in ("cinema", "cinemark", "filme")))
+
+
 def _strip_price_words(q: str) -> str:
     """Remove o prefixo de intenção de preço pra sobrar só o produto.
     'preço do sérum X' → 'sérum X'; 'quanto custa o Y' → 'Y'."""
@@ -180,6 +192,23 @@ async def cmd_buscar(message: Message, command: CommandObject, user: User) -> No
             parse_mode=None,
         )
         return
+
+    # Horário de cinema → API da Cinemark (cobre data futura, que a web erra).
+    # Retorna None se não for cinema da rede ou a API falhar → segue pra web.
+    if _is_cinema_query(query):
+        await message.bot.send_chat_action(message.chat.id, "typing")
+        from bot.services.cinema import consultar_sessoes_texto
+        tz = getattr(user, "timezone", None) or settings.timezone
+        try:
+            ans = await consultar_sessoes_texto(query, tz=tz)
+        except Exception as e:
+            logger.warning("/buscar cinema falhou: %s", e)
+            ans = None
+        if ans:
+            memory.append(message.chat.id, "user", query)
+            memory.append(message.chat.id, "assistant", ans)
+            await answer_llm(message, ans, disable_web_page_preview=True)
+            return
 
     from bot.services.websearch import backend_available
 
