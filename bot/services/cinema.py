@@ -119,39 +119,38 @@ _MOVIE_STOP = _STOP | {
 }
 
 
-def _match_movie(em_cartaz: list[dict], texto: str) -> dict | None:
+def _match_movie(em_cartaz: list[dict], texto: str, extra_stop=frozenset()) -> dict | None:
     """Melhor filme em cartaz que casa com o texto (match por tokens, ignorando
-    conectores/ruído). None se nada bate."""
-    q = {t for t in _norm(texto).split() if t and t not in _MOVIE_STOP}
-    melhor, melhor_score = None, 0
+    conectores/ruído e os tokens do próprio cinema em `extra_stop`). Retorna None
+    se nada casa OU se há empate no topo (ambíguo) — evita escolher o filme
+    errado por causa de 1 token solto."""
+    stop = _MOVIE_STOP | extra_stop
+    q = {t for t in _norm(texto).split() if t and t not in stop}
+    melhor = None
+    best = second = 0
     for m in em_cartaz:
-        mt = {t for t in _norm(m.get("name") or "").split() if t not in _MOVIE_STOP}
+        mt = {t for t in _norm(m.get("name") or "").split() if t not in stop}
         sc = len(q & mt)
-        if sc > melhor_score:
-            melhor, melhor_score = m, sc
+        if sc > best:
+            best, second, melhor = sc, best, m
+        elif sc > second:
+            second = sc
+    if best == 0 or best == second:
+        return None
     return melhor
-
-
-def _pick_theater(texto: str):
-    """Teatro resolvido a partir do texto, ou string de erro/desambiguação."""
-    cands = resolver_cinema(texto)
-    if not cands:
-        return ("Não achei o cinema no diretório Cinemark. "
-                "Tente pelo nome do shopping + cidade (ex: 'Iguatemi Brasília').")
-    if len(cands) > 1:
-        nomes = "; ".join(f"{c['name']} ({c['city']})" for c in cands[:6])
-        return f"Tem mais de um cinema parecido — qual? {nomes}"
-    return cands[0]
 
 
 async def _sessions_for(th: dict, filme_text: str, data_iso: str | None, tz: str) -> str:
     """Casa o filme (de `filme_text`) em cartaz no cinema `th`, busca as sessões
-    da data e formata."""
+    da data e formata. Levanta CinemaError se a API não devolver a programação
+    (o caller decide o fallback)."""
     try:
         d = date.fromisoformat(data_iso) if data_iso else datetime.now(ZoneInfo(tz)).date()
     except ValueError:
         return f"erro: data inválida ({data_iso!r}). Use AAAA-MM-DD."
     hoje = datetime.now(ZoneInfo(tz)).date()
+    # tokens do próprio cinema (nome/cidade/UF) não podem casar como filme
+    th_stop = frozenset(t for t in _norm(f"{th['name']} {th['city']} {th['state']}").split() if t)
 
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         # 1) filmes em cartaz no cinema → casa o título → movieId
@@ -159,8 +158,8 @@ async def _sessions_for(th: dict, filme_text: str, data_iso: str | None, tz: str
                                {"theaterId": th["id"], "pageNumber": 1, "pageSize": 40})
         em_cartaz = em_cartaz if isinstance(em_cartaz, list) else []
         if not em_cartaz:
-            return f"Não consegui a programação do {th['name']} agora. Tente mais tarde."
-        melhor = _match_movie(em_cartaz, filme_text)
+            raise CinemaError(f"sem programação retornada para {th['name']}")
+        melhor = _match_movie(em_cartaz, filme_text, extra_stop=th_stop)
         if not melhor:
             lista = ", ".join(m.get("name", "?") for m in em_cartaz[:10])
             return f"Não identifiquei o filme no {th['name']}. Em cartaz: {lista}."
@@ -203,25 +202,40 @@ async def consultar_sessoes(
     cinema = (cinema or "").strip()
     if not filme or not cinema:
         return "erro: informe o filme e o cinema (ex: 'Mestres do Universo no Iguatemi Brasília')"
-    th = _pick_theater(cinema)
-    if isinstance(th, str):
-        return th
-    return await _sessions_for(th, filme, data_iso, tz)
+    cands = resolver_cinema(cinema)
+    if not cands:
+        return ("Não achei o cinema no diretório Cinemark. "
+                "Tente pelo nome do shopping + cidade (ex: 'Iguatemi Brasília').")
+    if len(cands) > 1:
+        nomes = "; ".join(f"{c['name']} ({c['city']})" for c in cands[:6])
+        return f"Tem mais de um cinema parecido — qual? {nomes}"
+    return await _sessions_for(cands[0], filme, data_iso, tz)
 
 
 async def consultar_sessoes_texto(
     query: str, data_iso: str | None = None, tz: str = "America/Sao_Paulo",
-) -> str:
+) -> str | None:
     """Igual à consultar_sessoes, mas extrai cinema E filme do texto cru por
     tokens, sem LLM — pro /buscar e voz (ex: 'horário da sessão do filme Mestres
-    do Universo no Cinemark do Iguatemi Shopping em Brasília')."""
+    do Universo no Cinemark do Iguatemi Shopping em Brasília').
+
+    Retorna None quando NÃO dá pra atender pela Cinemark — cinema fora do
+    diretório, ou a API falhou — sinalizando ao caller pra cair na busca web.
+    Retorna texto quando há resposta Cinemark útil (sessões, desambiguação de
+    cinema, ou filme não identificado no cinema)."""
     query = (query or "").strip()
     if not query:
-        return "erro: pedido vazio"
-    th = _pick_theater(query)
-    if isinstance(th, str):
-        return th
-    return await _sessions_for(th, query, data_iso, tz)
+        return None
+    cands = resolver_cinema(query)
+    if not cands:
+        return None  # não é cinema do diretório Cinemark → deixa a web tentar
+    if len(cands) > 1:
+        nomes = "; ".join(f"{c['name']} ({c['city']})" for c in cands[:6])
+        return f"Tem mais de um cinema parecido — qual? {nomes}"
+    try:
+        return await _sessions_for(cands[0], query, data_iso, tz)
+    except CinemaError:
+        return None  # API da Cinemark falhou → a web pode resolver
 
 
 # UF a partir do nome do estado (pro cabeçalho ficar curto).

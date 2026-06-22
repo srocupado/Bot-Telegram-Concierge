@@ -175,14 +175,15 @@ async def cmd_buscar(message: Message, command: CommandObject, user: User) -> No
     # do diretório), cai pra busca web normal.
     if _is_cinema_query(query):
         await message.bot.send_chat_action(message.chat.id, "typing")
-        from bot.services.cinema import CinemaError, consultar_sessoes_texto
+        from bot.services.cinema import consultar_sessoes_texto
         tz = getattr(user, "timezone", None) or settings.timezone
+        # None = não é Cinemark do diretório ou a API falhou → cai pra busca web.
         try:
             ans = await consultar_sessoes_texto(query, tz=tz)
-        except CinemaError as e:
+        except Exception as e:
             logger.warning("/buscar cinema falhou: %s", e)
-            ans = ""
-        if ans and not ans.startswith(("Não achei o cinema", "erro")):
+            ans = None
+        if ans:
             memory.append(message.chat.id, "user", query)
             memory.append(message.chat.id, "assistant", ans)
             await answer_llm(message, ans, disable_web_page_preview=True)

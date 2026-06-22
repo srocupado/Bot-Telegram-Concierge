@@ -195,7 +195,9 @@ async def run_traffic_digest(
                 )
             else:
                 weather_line = format_weather_line(weather_result)
-    except TrafficError:
+    except Exception:
+        # Qualquer falha do fetch de trânsito (TrafficError, httpx, JSON cru…)
+        # degrada o digest graciosamente em vez de abortar o tick inteiro.
         logger.exception("traffic digest fetch failed")
         return
 

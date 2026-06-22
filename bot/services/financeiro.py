@@ -1295,11 +1295,12 @@ def _entry_in_bill(
         return None  # fatura é anterior à compra
 
     if entry.get("recurring"):
-        end = entry.get("recurringEndMonth")
-        if end and str(end) and target_key > str(end):
-            return None
-        excluded = entry.get("recurringExcludedMonths") or []
-        if target_key in excluded:
+        # O app (gerenciador-financeiro) MATERIALIZA o recorrente em cópias
+        # mensais concretas (advanceRecurring) e conta cada cópia pela sua data;
+        # a fonte recorrente entra só na PRÓPRIA fatura. Se projetássemos a fonte
+        # pra todo mês aqui, dobraríamos com as cópias materializadas (que o bot
+        # também lê do Firestore). Logo: a fonte conta só no seu mês de início.
+        if target_key != start_key:
             return None
         amt = float(entry.get("amount") or 0)
         return {"kind": "recorrente", "value": amt}
@@ -1355,8 +1356,12 @@ def _open_invoice_range(state: dict, today: date) -> tuple[date, date, str]:
         else:
             start_year, start_month = today.year, today.month - 1
 
+    # Com semântica '>=' (compra no dia do fechamento já entra na fatura
+    # seguinte — igual ao billingMonthOf do app), a janela da fatura vai do DIA
+    # do fechamento do mês inicial até o dia (fechamento-1) do mês seguinte.
+    # Ex.: fechamento 20 → fatura de julho = [20/06 … 19/07].
     last_day_start_month = monthrange(start_year, start_month)[1]
-    start_day = min(closing + 1, last_day_start_month)
+    start_day = min(closing, last_day_start_month)
     start = date(start_year, start_month, start_day)
 
     if start_month == 12:
@@ -1364,7 +1369,7 @@ def _open_invoice_range(state: dict, today: date) -> tuple[date, date, str]:
     else:
         end_year, end_month = start_year, start_month + 1
     last_day_end_month = monthrange(end_year, end_month)[1]
-    end_day = min(closing, last_day_end_month)
+    end_day = min(max(closing - 1, 1), last_day_end_month)
     end = date(end_year, end_month, end_day)
 
     return start, end, (
@@ -1702,7 +1707,7 @@ async def build_card_closing_summary(
     except NotConfiguredError:
         return None
     except Exception:
-        logger.exception("card summary: failed to read state for user ", user.id)
+        logger.exception("card summary: failed to read state for user %s", getattr(user, "id", "?"))
         return None
 
     settings_d = state.get("settings") or {}
