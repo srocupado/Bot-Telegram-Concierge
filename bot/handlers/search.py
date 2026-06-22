@@ -18,6 +18,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import unicodedata
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import anthropic
 from aiogram import Router
@@ -35,6 +37,20 @@ from bot.services.llm.factory import get_provider
 logger = logging.getLogger(__name__)
 
 router = Router(name="search")
+
+_DIAS_SEMANA = ["segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo"]
+
+
+def _dated_system() -> str:
+    """_SEARCH_SYSTEM + a data/hora local de hoje, pra a busca resolver
+    'hoje'/'amanhã'/datas relativas no fuso de Brasília — e não em UTC (que
+    deixava a busca um dia adiantada à noite)."""
+    now = datetime.now(ZoneInfo(settings.timezone))
+    return _SEARCH_SYSTEM + (
+        f"\n\nData/hora atual: {_DIAS_SEMANA[now.weekday()]}, "
+        f"{now.strftime('%d/%m/%Y %H:%M')} ({settings.timezone}). "
+        "Resolva 'hoje', 'amanhã' e datas relativas a partir dela."
+    )
 
 
 _SEARCH_SYSTEM = (
@@ -66,7 +82,7 @@ async def _synth(query: str, context: str, user: User) -> str:
     resultados do Google Shopping) com o provider do usuário."""
     provider = get_provider(user.provider)
     messages = [{"role": "user", "content": _SYNTH_PROMPT.format(query=query, context=context)}]
-    return await provider.chat(messages, system=_SEARCH_SYSTEM, max_tokens=2000)
+    return await provider.chat(messages, system=_dated_system(), max_tokens=2000)
 
 
 # Detecção de intenção de PREÇO de produto → roteia pro buscar_preco (Google
@@ -120,7 +136,7 @@ def _anthropic_search(query: str) -> str:
     resp = client.messages.create(
         model=settings.anthropic_model,
         max_tokens=2000,
-        system=_SEARCH_SYSTEM,
+        system=_dated_system(),
         messages=[{"role": "user", "content": query}],
         tools=[{
             "type": "web_search_20250305",
@@ -135,7 +151,7 @@ def _anthropic_search(query: str) -> str:
 def _gemini_search(query: str) -> str:
     client = genai.Client(api_key=settings.gemini_api_key)
     config = types.GenerateContentConfig(
-        system_instruction=_SEARCH_SYSTEM,
+        system_instruction=_dated_system(),
         tools=[types.Tool(google_search=types.GoogleSearch())],
         max_output_tokens=2000,
     )
