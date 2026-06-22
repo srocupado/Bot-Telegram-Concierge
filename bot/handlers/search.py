@@ -120,17 +120,6 @@ def _strip_price_words(q: str) -> str:
     return " ".join(toks[i:]).strip() or q
 
 
-# Intenção de HORÁRIO DE CINEMA → tool consultar_sessoes_cinema (API da Cinemark),
-# porque a busca web não lê os horários (a página é SPA + seleção de cidade).
-_CINEMA_SHOWTIME = ("horario", "horarios", "sessao", "sessoes", "que horas", "programacao")
-
-
-def _is_cinema_query(q: str) -> bool:
-    n = _norm(q)
-    return (any(k in n for k in _CINEMA_SHOWTIME)
-            and any(k in n for k in ("cinema", "cinemark", "filme")))
-
-
 def _anthropic_search(query: str) -> str:
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
     resp = client.messages.create(
@@ -185,25 +174,6 @@ async def cmd_buscar(message: Message, command: CommandObject, user: User) -> No
             parse_mode=None,
         )
         return
-
-    # Horários de cinema (Cinemark) → tool dedicada; a busca web não lê a SPA.
-    # Casa cinema+filme do texto cru (sem LLM). Se não for Cinemark (cinema fora
-    # do diretório), cai pra busca web normal.
-    if _is_cinema_query(query):
-        await message.bot.send_chat_action(message.chat.id, "typing")
-        from bot.services.cinema import consultar_sessoes_texto
-        tz = getattr(user, "timezone", None) or settings.timezone
-        # None = não é Cinemark do diretório ou a API falhou → cai pra busca web.
-        try:
-            ans = await consultar_sessoes_texto(query, tz=tz)
-        except Exception as e:
-            logger.warning("/buscar cinema falhou: %s", e)
-            ans = None
-        if ans:
-            memory.append(message.chat.id, "user", query)
-            memory.append(message.chat.id, "assistant", ans)
-            await answer_llm(message, ans, disable_web_page_preview=True)
-            return
 
     from bot.services.websearch import backend_available
 
