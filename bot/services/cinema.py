@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import unicodedata
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -119,6 +120,57 @@ _MOVIE_STOP = _STOP | {
 }
 
 
+# Dias da semana normalizados (sem acento) → weekday() (segunda=0).
+_WEEKDAYS = {
+    "segunda": 0, "terca": 1, "quarta": 2, "quinta": 3,
+    "sexta": 4, "sabado": 5, "domingo": 6,
+}
+_DIAS_SEMANA = ["segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo"]
+
+
+def _parse_data_pt(query: str, hoje: date) -> date:
+    """Extrai uma data do texto cru: 'hoje', 'amanhã', 'depois de amanhã', dia
+    da semana ('terça'), 'dia 23', '23/06'. Default: hoje. Não confunde o filme
+    'Dia D' com data ('dia N' exige número)."""
+    n = _norm(query)
+    m = re.search(r"\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b", n)  # DD/MM[/AAAA]
+    if m:
+        d, mo = int(m.group(1)), int(m.group(2))
+        yr = int(m.group(3)) if m.group(3) else hoje.year
+        if yr < 100:
+            yr += 2000
+        try:
+            cand = date(yr, mo, d)
+            if not m.group(3) and cand < hoje:  # sem ano e já passou → próximo ano
+                cand = date(yr + 1, mo, d)
+            return cand
+        except ValueError:
+            pass
+    if "depois de amanha" in n:
+        return hoje + timedelta(days=2)
+    if "amanha" in n:
+        return hoje + timedelta(days=1)
+    if "hoje" in n:
+        return hoje
+    m = re.search(r"\bdia (\d{1,2})\b", n)
+    if m:
+        d = int(m.group(1))
+        for bump in (0, 1):  # neste mês; se já passou, no mês seguinte
+            y, mo = hoje.year, hoje.month
+            if bump:
+                y, mo = (y + 1, 1) if mo == 12 else (y, mo + 1)
+            try:
+                cand = date(y, mo, d)
+            except ValueError:
+                break
+            if cand >= hoje:
+                return cand
+    for name, wd in _WEEKDAYS.items():
+        if re.search(rf"\b{name}\b", n):
+            return hoje + timedelta(days=(wd - hoje.weekday()) % 7)
+    return hoje
+
+
 def _match_movie(em_cartaz: list[dict], texto: str, extra_stop=frozenset()) -> dict | None:
     """Melhor filme em cartaz que casa com o texto (match por tokens, ignorando
     conectores/ruído e os tokens do próprio cinema em `extra_stop`). Retorna None
@@ -172,9 +224,18 @@ async def _sessions_for(th: dict, filme_text: str, data_iso: str | None, tz: str
     res = res if isinstance(res, dict) else {}
     sessoes = res.get("sessions") or []
     nome_filme = res.get("movieName") or melhor.get("name") or filme_text
-    quando = "hoje" if d == hoje else d.strftime("%d/%m")
+    delta = (d - hoje).days
+    if delta == 0:
+        quando = "hoje"
+    elif delta == 1:
+        quando = "amanhã"
+    elif 2 <= delta <= 6:
+        quando = _DIAS_SEMANA[d.weekday()]
+    else:
+        quando = None
+    data_br = d.strftime("%d/%m")
     cab = (f"🎬 {nome_filme} — Cinemark {th['name']} ({th['city']}/{_uf(th['state'])})\n"
-           f"📅 {quando}, {d.strftime('%d/%m')}")
+           f"📅 {f'{quando}, {data_br}' if quando else data_br}")
 
     if not sessoes:
         return cab + "\n\n(sem sessões nessa data)"
@@ -232,6 +293,9 @@ async def consultar_sessoes_texto(
     if len(cands) > 1:
         nomes = "; ".join(f"{c['name']} ({c['city']})" for c in cands[:6])
         return f"Tem mais de um cinema parecido — qual? {nomes}"
+    if data_iso is None:  # sem LLM: extrai 'amanhã'/dia/data do próprio texto
+        hoje = datetime.now(ZoneInfo(tz)).date()
+        data_iso = _parse_data_pt(query, hoje).isoformat()
     try:
         return await _sessions_for(cands[0], query, data_iso, tz)
     except CinemaError:
