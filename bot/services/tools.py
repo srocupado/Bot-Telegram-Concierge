@@ -159,8 +159,8 @@ async def _h_consultar_sessoes_cinema(args: dict, ctx: ToolContext) -> str:
     filme = (args.get("filme") or "").strip()
     cinema = (args.get("cinema") or "").strip()
     data_iso = (args.get("data_iso") or "").strip() or None
-    if not filme or not cinema:
-        return "erro: precisa de 'filme' e 'cinema'"
+    if not cinema:
+        return "erro: precisa de 'cinema' (ex: 'Iguatemi Brasília')"
     try:
         return await consultar_sessoes(filme, cinema, data_iso, tz=ctx.tz)
     except CinemaError as e:
@@ -2197,20 +2197,22 @@ TOOLS: list[Tool] = [
             "Horários de sessões de cinema na rede CINEMARK (Brasil) — fonte "
             "oficial (API da Cinemark), cobre TODA a rede e QUALQUER data "
             "(hoje/amanhã/dia específico). USE SEMPRE pra 'que horas passa o "
-            "filme X no cinema Y', 'sessões de X no Iguatemi Brasília', "
-            "'horários do cinema'. NUNCA use buscar_web pra Cinemark (o site "
-            "carrega via JS e só mostra a aba de hoje → erra data futura). "
-            "Retorna agrupado por 2D/3D e dublado/legendado. Pra outras redes "
-            "(Cinépolis, Kinoplex…), aí sim buscar_web."
+            "filme X no cinema Y', 'sessões de X no Iguatemi Brasília', e também "
+            "pra 'PROGRAMAÇÃO do cinema Y' / 'o que está passando no Y' / "
+            "'filmes em cartaz no Y' — nesse caso deixe 'filme' VAZIO e ele "
+            "lista todos os filmes com horários. NUNCA use buscar_web pra "
+            "Cinemark (o site carrega via JS e só mostra a aba de hoje → erra "
+            "data futura). Retorna agrupado por 2D/3D e dublado/legendado. Pra "
+            "outras redes (Cinépolis, Kinoplex…), aí sim buscar_web."
         ),
         parameters={
             "type": "object",
             "properties": {
-                "filme": {"type": "string", "description": "Nome do filme (ex: 'Mestres do Universo')"},
+                "filme": {"type": "string", "description": "Nome do filme (ex: 'Mestres do Universo'). VAZIO/omitido = programação completa do cinema."},
                 "cinema": {"type": "string", "description": "Cinema/shopping + CIDADE (ex: 'Iguatemi Brasília', 'Eldorado São Paulo', 'Pier 21 Brasília')"},
                 "data_iso": {"type": "string", "description": "Data AAAA-MM-DD (opcional; default hoje). Resolva 'amanhã'/dia da semana antes de passar."},
             },
-            "required": ["filme", "cinema"],
+            "required": ["cinema"],
         },
         handler=_h_consultar_sessoes_cinema,
     ),

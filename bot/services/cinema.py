@@ -289,39 +289,8 @@ def _match_movie(em_cartaz: list[dict], texto: str, extra_stop=frozenset()) -> d
     return melhor
 
 
-async def _sessions_for(
-    client: httpx.AsyncClient, th: dict, filme_text: str, data_iso: str | None, tz: str,
-) -> str:
-    """Casa o filme (de `filme_text`) em cartaz no cinema `th`, busca as sessões
-    da data e formata. Levanta CinemaError se a API não devolver a programação
-    (o caller decide o fallback)."""
-    try:
-        d = date.fromisoformat(data_iso) if data_iso else datetime.now(ZoneInfo(tz)).date()
-    except ValueError:
-        return f"erro: data inválida ({data_iso!r}). Use AAAA-MM-DD."
-    hoje = datetime.now(ZoneInfo(tz)).date()
-    # tokens do próprio cinema (nome/cidade/UF) não podem casar como filme
-    th_stop = frozenset(t for t in _norm(f"{th['name']} {th['city']} {th['state']}").split() if t)
-
-    # 1) filmes em cartaz no cinema → casa o título → movieId
-    em_cartaz = await _get(client, "/v1/movies/onDisplayByTheater",
-                           {"theaterId": th["id"], "pageNumber": 1, "pageSize": 40})
-    em_cartaz = em_cartaz if isinstance(em_cartaz, list) else []
-    if not em_cartaz:
-        raise CinemaError(f"sem programação retornada para {th['name']}")
-    melhor = _match_movie(em_cartaz, filme_text, extra_stop=th_stop)
-    if not melhor:
-        lista = ", ".join(m.get("name", "?") for m in em_cartaz[:10])
-        return f"Não identifiquei o filme no {th['name']}. Em cartaz: {lista}."
-
-    # 2) sessões do dia (priceTable devolve os horários)
-    res = await _get(client, "/v1/ticketTypes/priceTable",
-                     {"movieId": melhor["id"], "theaterId": th["id"],
-                      "sessionDate": d.isoformat()})
-
-    res = res if isinstance(res, dict) else {}
-    sessoes = res.get("sessions") or []
-    nome_filme = res.get("movieName") or melhor.get("name") or filme_text
+def _quando_label(d: date, hoje: date) -> str:
+    """'hoje, 21/06' / 'amanhã, 22/06' / 'terça, 23/06' / '30/06' (datas longe)."""
     delta = (d - hoje).days
     if delta == 0:
         quando = "hoje"
@@ -332,35 +301,108 @@ async def _sessions_for(
     else:
         quando = None
     data_br = d.strftime("%d/%m")
-    cab = (f"🎬 {nome_filme} — Cinemark {th['name']} ({th['city']}/{_uf(th['state'])})\n"
-           f"📅 {f'{quando}, {data_br}' if quando else data_br}")
+    return f"{quando}, {data_br}" if quando else data_br
 
-    if not sessoes:
-        return cab + "\n\n(sem sessões nessa data)"
 
-    # agrupa por (tecnologia, áudio)
+def _group_sessions(sessoes: list[dict]) -> list[str]:
+    """Linhas '• {tech} {aud}: h, h' agrupadas por tecnologia/áudio. [] se vazio."""
     grupos: dict[tuple[str, str], list[str]] = {}
     for s in sessoes:
         tech = " ".join(_FEATURES.get(f, str(f)) for f in (s.get("features") or [])) or "—"
         aud = _AUDIO.get(s.get("audio"), str(s.get("audio")))
         grupos.setdefault((tech, aud), []).append(_fmt_hhmm(s.get("time") or ""))
-
-    linhas = [cab, ""]
+    linhas = []
     for (tech, aud), horas in sorted(grupos.items()):
         horas = sorted(h for h in horas if h)
-        linhas.append(f"• {tech} {aud}: {', '.join(horas)}")
-    return "\n".join(linhas)
+        if horas:
+            linhas.append(f"• {tech} {aud}: {', '.join(horas)}")
+    return linhas
+
+
+async def _programacao(
+    client: httpx.AsyncClient, th: dict, em_cartaz: list[dict], d: date, hoje: date,
+) -> str:
+    """Programação completa do cinema na data: TODOS os filmes em cartaz com as
+    sessões do dia (1 priceTable por filme, concorrente)."""
+    sem = asyncio.Semaphore(_DIR_CONCURRENCY)
+
+    async def _sess(m: dict) -> tuple[str, list[dict]]:
+        async with sem:
+            try:
+                res = await _get(client, "/v1/ticketTypes/priceTable",
+                                 {"movieId": m["id"], "theaterId": th["id"],
+                                  "sessionDate": d.isoformat()})
+            except CinemaError:
+                return (m.get("name") or "?", [])
+        res = res if isinstance(res, dict) else {}
+        return (m.get("name") or "?", res.get("sessions") or [])
+
+    results = await asyncio.gather(*(_sess(m) for m in em_cartaz))
+    linhas = [f"🎬 Programação — Cinemark {th['name']} ({th['city']}/{_uf(th['state'])})",
+              f"📅 {_quando_label(d, hoje)}", ""]
+    sem_sessao, teve = [], False
+    for nome, sessoes in results:
+        grupos = _group_sessions(sessoes)
+        if not grupos:
+            sem_sessao.append(nome)
+            continue
+        teve = True
+        linhas.append(nome)
+        linhas.extend(grupos)
+        linhas.append("")
+    if not teve:
+        linhas.append("(nenhum filme com sessão nessa data)")
+    elif sem_sessao:
+        linhas.append("Sem sessões nessa data: " + ", ".join(sem_sessao))
+    return "\n".join(linhas).strip()
+
+
+async def _sessions_for(
+    client: httpx.AsyncClient, th: dict, filme_text: str, data_iso: str | None, tz: str,
+) -> str:
+    """Sessões da data no cinema `th`. Com filme casado em `filme_text` → sessões
+    dele; sem filme identificado (ex.: pediu a 'programação', ou o filme citado
+    não está em cartaz) → TODOS os filmes em cartaz com horários. Levanta
+    CinemaError se a API não devolver a programação (o caller decide o fallback)."""
+    try:
+        d = date.fromisoformat(data_iso) if data_iso else datetime.now(ZoneInfo(tz)).date()
+    except ValueError:
+        return f"erro: data inválida ({data_iso!r}). Use AAAA-MM-DD."
+    hoje = datetime.now(ZoneInfo(tz)).date()
+    # tokens do próprio cinema (nome/cidade/UF) não podem casar como filme
+    th_stop = frozenset(t for t in _norm(f"{th['name']} {th['city']} {th['state']}").split() if t)
+
+    em_cartaz = await _get(client, "/v1/movies/onDisplayByTheater",
+                           {"theaterId": th["id"], "pageNumber": 1, "pageSize": 40})
+    em_cartaz = em_cartaz if isinstance(em_cartaz, list) else []
+    if not em_cartaz:
+        raise CinemaError(f"sem programação retornada para {th['name']}")
+    melhor = _match_movie(em_cartaz, filme_text, extra_stop=th_stop)
+    if not melhor:
+        return await _programacao(client, th, em_cartaz, d, hoje)
+
+    res = await _get(client, "/v1/ticketTypes/priceTable",
+                     {"movieId": melhor["id"], "theaterId": th["id"],
+                      "sessionDate": d.isoformat()})
+    res = res if isinstance(res, dict) else {}
+    nome_filme = res.get("movieName") or melhor.get("name") or filme_text
+    cab = (f"🎬 {nome_filme} — Cinemark {th['name']} ({th['city']}/{_uf(th['state'])})\n"
+           f"📅 {_quando_label(d, hoje)}")
+    grupos = _group_sessions(res.get("sessions") or [])
+    if not grupos:
+        return cab + "\n\n(sem sessões nessa data)"
+    return "\n".join([cab, ""] + grupos)
 
 
 async def consultar_sessoes(
     filme: str, cinema: str, data_iso: str | None, tz: str = "America/Sao_Paulo",
 ) -> str:
-    """Horários de um filme num cinema (filme e cinema já separados — usado pela
-    tool do agente). Texto pronto pra repassar no chat."""
+    """Horários no cinema (usado pela tool do agente). Com `filme` → sessões
+    dele; `filme` vazio → programação completa do cinema. Texto pronto pro chat."""
     filme = (filme or "").strip()
     cinema = (cinema or "").strip()
-    if not filme or not cinema:
-        return "erro: informe o filme e o cinema (ex: 'Mestres do Universo no Iguatemi Brasília')"
+    if not cinema:
+        return "erro: informe o cinema (ex: 'Iguatemi Brasília')"
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         cands = await _resolve_theaters(client, cinema)
         if not cands:
