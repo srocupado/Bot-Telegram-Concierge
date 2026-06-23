@@ -176,13 +176,27 @@ async def _theaters_for_cities(client: httpx.AsyncClient, cities: list[dict]) ->
 
 
 async def _resolve_theaters(client: httpx.AsyncClient, texto: str) -> list[dict]:
-    """Texto → candidatos de cinema: acha a cidade, baixa os teatros dela e casa
-    o nome. Vazio se não dá pra localizar (sem cidade reconhecível ou sem match)."""
+    """Texto → candidatos de cinema: acha a cidade citada, baixa os teatros dela
+    e casa o nome. Se o texto NÃO nomeia cidade (ex.: 'no Cinemark Iguatemi'),
+    assume a cidade padrão (settings.cinema_cidade_padrao, p.ex. Brasília) — é o
+    caso comum do dono do bot. Vazio se nem assim casar."""
     cities = await _ensure_cities(client)
     cand_cities = _candidate_cities(texto, cities)
-    if not cand_cities:
+    if cand_cities:
+        theaters = await _theaters_for_cities(client, cand_cities)
+        # Se a(s) cidade(s) citada(s) TÊM Cinemark, resolve nelas e pronto —
+        # mesmo que o nome não case (→ []), pra não enganar quem nomeou outra
+        # cidade. 'Iguatemi' casa a cidade Iguatemi/MS (sem Cinemark) → theaters
+        # vazio → cai pro padrão abaixo.
+        if theaters:
+            return resolver_cinema(texto, theaters)
+    # Texto sem cidade reconhecível (ou só cidades sem Cinemark, p.ex. quando o
+    # 'nome' do cinema coincide com nome de município) → assume a cidade padrão.
+    from bot.config import settings
+    default = _candidate_cities(settings.cinema_cidade_padrao, cities)
+    if not default:
         return []
-    theaters = await _theaters_for_cities(client, cand_cities)
+    theaters = await _theaters_for_cities(client, default)
     return resolver_cinema(texto, theaters)
 
 
