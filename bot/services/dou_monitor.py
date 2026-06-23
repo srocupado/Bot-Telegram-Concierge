@@ -652,11 +652,13 @@ async def _gen_nota_gemini(mp: dict, *, model_override: str | None = None) -> di
 # ──────────────────────── prazos + formatação ────────────────────────
 
 def compute_prazos(pub: date) -> dict:
-    """Prazos regimentais a partir da publicação (dia 1 = publicação)."""
+    """Prazos regimentais a partir da publicação no DOU."""
     return {
         "eficacia_fim": pub + timedelta(days=59),       # 60 dias
         "sobrestamento": pub + timedelta(days=45),
-        "emendas_fim": pub + timedelta(days=7),
+        # 6 dias contados da publicação (Res. 1/2002-CN, art. 4º, §1º): o dia da
+        # publicação não conta — ex.: DOU 23/06 → emendas até 29/06.
+        "emendas_fim": pub + timedelta(days=6),
     }
 
 
