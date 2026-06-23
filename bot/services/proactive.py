@@ -169,10 +169,17 @@ async def collect_mp(
 
 
 def _clean_ementa(ementa: str, limit: int = 220) -> str:
-    """Limpa a ementa pro aviso leve: remove o título do ato que às vezes
-    vem anexado ('... MEDIDA PROVISÓRIA Nº ...') e trunca em limite com '…'."""
+    """Limpa a ementa pro aviso leve: remove o TÍTULO do próprio ato que às
+    vezes vem anexado no fim ('... MEDIDA PROVISÓRIA Nº 1.371, DE 22 DE JUNHO
+    DE 2026 ...') e trunca em limite com '…'.
+
+    O título anexado é MAIÚSCULO e datado. Uma menção a OUTRA MP DENTRO da
+    ementa ('Altera a Medida Provisória nº 1.354, de 30 de abril...') vem em
+    caixa-título/minúscula e NÃO pode cortar — antes, com IGNORECASE, cortava
+    nela e a ementa virava só 'Altera a'."""
     e = re.sub(r"\s+", " ", ementa).strip()
-    cut = re.search(r"\bMEDIDA\s+PROVIS", e, re.IGNORECASE)
+    # casa só o título anexado: MAIÚSCULO + número + ', DE <dia>' (case-sensitive)
+    cut = re.search(r"MEDIDA\s+PROVIS[ÓO]RIA\s+N\S*\s*[\d.]+,?\s+DE\s+\d", e)
     if cut and cut.start() > 0:
         e = e[:cut.start()].strip()
     if len(e) > limit:
