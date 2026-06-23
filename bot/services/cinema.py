@@ -86,6 +86,7 @@ _CITIES_LOCK = asyncio.Lock()
 _THEATERS_BY_CITY: dict[int, list[dict]] = {}
 _DIR_CONCURRENCY = 6
 _CITY_CONNECTORS = {"de", "do", "da", "dos", "das", "e", "d"}
+_CIDADE_PADRAO = "Brasília"  # bot é de Brasília; sem cidade citada, assume aqui
 
 # Palavras genéricas que não ajudam a desambiguar um cinema.
 _STOP = {"cinemark", "shopping", "cinema", "em", "de", "do", "da", "no", "na",
@@ -176,27 +177,21 @@ async def _theaters_for_cities(client: httpx.AsyncClient, cities: list[dict]) ->
 
 
 async def _resolve_theaters(client: httpx.AsyncClient, texto: str) -> list[dict]:
-    """Texto → candidatos de cinema: acha a cidade citada, baixa os teatros dela
-    e casa o nome. Se o texto NÃO nomeia cidade (ex.: 'no Cinemark Iguatemi'),
-    assume a cidade padrão (settings.cinema_cidade_padrao, p.ex. Brasília) — é o
-    caso comum do dono do bot. Vazio se nem assim casar."""
+    """Texto → candidatos de cinema. Regra: o padrão é SEMPRE Brasília; só sai
+    de Brasília se outra cidade COM Cinemark for explicitamente nomeada no texto
+    (ex.: 'Eldorado São Paulo'). Assim 'no Cinemark do Iguatemi Shopping' (sem
+    cidade) resolve em Brasília — mesmo 'Iguatemi' sendo também um município
+    (Iguatemi/MS, sem Cinemark)."""
     cities = await _ensure_cities(client)
-    cand_cities = _candidate_cities(texto, cities)
-    if cand_cities:
-        theaters = await _theaters_for_cities(client, cand_cities)
-        # Se a(s) cidade(s) citada(s) TÊM Cinemark, resolve nelas e pronto —
-        # mesmo que o nome não case (→ []), pra não enganar quem nomeou outra
-        # cidade. 'Iguatemi' casa a cidade Iguatemi/MS (sem Cinemark) → theaters
-        # vazio → cai pro padrão abaixo.
+    # cidade(s) explicitamente citada(s) que TÊM Cinemark têm prioridade
+    cand = _candidate_cities(texto, cities)
+    if cand:
+        theaters = await _theaters_for_cities(client, cand)
         if theaters:
             return resolver_cinema(texto, theaters)
-    # Texto sem cidade reconhecível (ou só cidades sem Cinemark, p.ex. quando o
-    # 'nome' do cinema coincide com nome de município) → assume a cidade padrão.
-    from bot.config import settings
-    default = _candidate_cities(settings.cinema_cidade_padrao, cities)
-    if not default:
-        return []
-    theaters = await _theaters_for_cities(client, default)
+    # padrão: Brasília
+    bsb = _candidate_cities(_CIDADE_PADRAO, cities)
+    theaters = await _theaters_for_cities(client, bsb) if bsb else []
     return resolver_cinema(texto, theaters)
 
 
