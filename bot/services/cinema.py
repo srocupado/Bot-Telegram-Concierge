@@ -196,16 +196,19 @@ async def _resolve_theaters(client: httpx.AsyncClient, texto: str) -> list[dict]
 
 
 def resolver_cinema(texto: str, theaters: list[dict]) -> list[dict]:
-    """Casa o texto do usuário (nome/cidade) com os teatros dados. Retorna os
-    candidatos de score máximo (melhor primeiro); vazio se nada bate. Mais de um
-    = ambiguidade real (ex.: 'Iguatemi' em mais de uma cidade citada) → pergunta."""
+    """Casa o texto do usuário com os teatros dados, pelo NOME DISTINTIVO do
+    cinema (token da cidade/UF é excluído — é comum a todos os cinemas daquela
+    cidade, então não conta como match). Retorna os candidatos de score máximo;
+    vazio se nenhum nome bate. Sem isso, 'Kinoplex do ParkShopping em Brasília'
+    casava os Cinemark de Brasília só pelo token 'brasilia'."""
     q = {t for t in _norm(texto).split() if t and t not in _STOP}
     if not q:
         return []
     scored: list[tuple[int, dict]] = []
     for th in theaters:
-        hay = set(_norm(f"{th['name']} {th['city']} {th['state']}").split())
-        score = len(q & hay)
+        cidade = set(_norm(f"{th['city']} {th['state']}").split())
+        nome = {t for t in _norm(th["name"]).split() if t not in _STOP and t not in cidade}
+        score = len(q & nome)
         if score:
             scored.append((score, th))
     scored.sort(key=lambda x: (-x[0], x[1]["name"]))
