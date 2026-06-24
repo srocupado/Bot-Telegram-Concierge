@@ -90,9 +90,12 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   agrupando por 2D/3D e dublado/legendado. Por voz/texto (tool
   `consultar_sessoes_cinema`) e `/buscar`: *"que horas passa Mestres do Universo
   no Iguatemi?"*, *"programação do Cinemark Pier 21 amanhã"* (sem filme = todos
-  os filmes em cartaz). Sem cidade no pedido, assume **Brasília**; nomeando
-  outra (*"Eldorado São Paulo"*) resolve lá. Cinema de outra rede (Kinoplex,
-  Cinépolis…) cai automaticamente na busca web. Sem chave/config.
+  os filmes em cartaz). Sem cidade no pedido, assume **Brasília** — valor
+  **hardcoded** (`_CIDADE_PADRAO` em `bot/services/cinema.py`), de propósito não
+  configurável via `.env`, porque o bot é de Brasília; pra mudar, edite a
+  constante. Nomeando outra cidade (*"Eldorado São Paulo"*) resolve lá. Cinema
+  de outra rede (Kinoplex, Cinépolis…) cai automaticamente na busca web. Sem
+  chave de API.
 - **Voz (STT)**: áudio transcrito via **Gemini multimodal** (default
   `gemini-3.5-flash`) ou **OpenAI Whisper/gpt-4o-transcribe** — selecionável por
   usuário com `/voice gemini|openai`. Aceita OGG/Opus nativo sem ffmpeg. Quando
