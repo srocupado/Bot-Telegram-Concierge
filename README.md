@@ -4,7 +4,8 @@ Assistente pessoal de atividades diárias no Telegram. Combina **agente
 proativo opt-in** (avisa por conta própria), digests de **trânsito + clima**
 (rota casa↔trabalho), **Medidas Provisórias** (pauta do Congresso + publicação
 no Diário Oficial com nota técnica gerada por IA), **gerenciador financeiro**
-(Firestore), **academia**, **lista de compras**, **tarefas/lembretes** e
+(Firestore), **academia**, **cinema** (sessões Cinemark via API), **lista de
+compras**, **tarefas/lembretes** e
 **chat livre com LLM** multi-provider (Anthropic/OpenAI/Gemini) com troca de
 provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
 
@@ -78,10 +79,20 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   citando fontes. (OpenAI não tem busca nativa nessa versão.)
 - **Busca web com leitura de página** (tool `buscar_web` + `/buscar`): busca
   **e lê o corpo renderizado** da página — funciona pra dados que só existem
-  dentro da página e mudam com o tempo (horários de sessão de cinema,
-  funcionamento de loja, preços, cardápios). Backend **SearXNG+Jina**
+  dentro da página e mudam com o tempo (horário de funcionamento de loja,
+  preços, cardápios). Backend **SearXNG+Jina**
   (self-hosted, custo zero) como primário e **Firecrawl** como fallback.
   Ver [Busca web](#busca-web-buscar_web--buscar).
+- **Cinema (Cinemark)**: horários de sessão e **programação completa** da rede
+  Cinemark via **API da Cinemark** (não web scraping — o site é SPA e só mostra
+  a aba de hoje). Cobre **toda a rede** (resolução on-demand: estado→cidade→
+  cinema, cacheada) e **qualquer data** (hoje/amanhã/dia da semana/DD-MM),
+  agrupando por 2D/3D e dublado/legendado. Por voz/texto (tool
+  `consultar_sessoes_cinema`) e `/buscar`: *"que horas passa Mestres do Universo
+  no Iguatemi?"*, *"programação do Cinemark Pier 21 amanhã"* (sem filme = todos
+  os filmes em cartaz). Sem cidade no pedido, assume **Brasília**; nomeando
+  outra (*"Eldorado São Paulo"*) resolve lá. Cinema de outra rede (Kinoplex,
+  Cinépolis…) cai automaticamente na busca web. Sem chave/config.
 - **Voz (STT)**: áudio transcrito via **Gemini multimodal** (default
   `gemini-3.5-flash`) ou **OpenAI Whisper/gpt-4o-transcribe** — selecionável por
   usuário com `/voice gemini|openai`. Aceita OGG/Opus nativo sem ffmpeg. Quando
@@ -424,9 +435,15 @@ devolvendo preço aproximado — nunca erro duro.
 
 Busca **e lê** o corpo das páginas (markdown renderizado, com JS) — permite
 responder perguntas cujo dado só existe dentro da página e muda com o tempo:
-*"que horas tem sessão do filme X no Cinemark do shopping Y?"*, horário de
-funcionamento, preços, cardápios. A busca web **nativa** (snippets) acha a
-página certa mas não traz esses dados; só lendo a página eles aparecem.
+horário de funcionamento de uma loja, preços, cardápios. A busca web **nativa**
+(snippets) acha a página certa mas não traz esses dados; só lendo a página eles
+aparecem.
+
+> **Cinema é exceção:** sessão/programação da **Cinemark** vai pela API
+> dedicada (ver [Cinema (Cinemark)](#funcionalidades)), não pelo `buscar_web` —
+> o `/buscar` detecta a intenção e roteia pra lá; só cai pra web se for outra
+> rede. A data local de Brasília é injetada no prompt de síntese, pra "hoje"/
+> "amanhã" não saírem um dia adiantados (o LLM resolvia em UTC).
 
 Dois caminhos usam isso:
 - **Chat livre / voz** → o agente aciona a tool `buscar_web` quando faz sentido.
@@ -805,6 +822,7 @@ bot/
 │   ├── scheduled_actions.py      # dispatch de ações agendadas
 │   ├── traffic.py, weather.py, traffic_baseline.py, geocoding.py
 │   ├── congress.py               # scraper pauta do Congresso
+│   ├── cinema.py                 # sessões/programação Cinemark (API + cache)
 │   ├── dou_monitor.py            # Inlabs/DOU + nota técnica + DOCX
 │   ├── proactive.py              # agente proativo (coletores + orquestrador)
 │   ├── financeiro.py             # gerenciador financeiro (Firestore)
