@@ -424,7 +424,7 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
 
     try:
         provider = get_provider(user.provider, gemini_model=user.gemini_model)
-        ctx = ToolContext(user=user, session=session, tz=user.timezone)
+        ctx = ToolContext(user=user, session=session, tz=user.timezone, user_text=user_text)
         reply = await provider.chat_with_tools(
             inject_context(history, user.timezone, summary), tools=TOOLS, ctx=ctx,
             system=_build_system_prompt(),

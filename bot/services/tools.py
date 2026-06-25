@@ -568,12 +568,33 @@ def _resolve_data_iso(args: dict, tz_name: str) -> str:
     return datetime.now(ZoneInfo(tz_name)).date().isoformat()
 
 
+_CARD_CUES = ("credito", "crédito", "cartao", "cartão", "parcel")
+
+
+def _looks_like_card_purchase(text: str, tipo: str) -> bool:
+    """SAÍDA (débito) cujo texto cita crédito/cartão = compra no cartão, não
+    banco — trava determinística contra o modelo lançar 'comprei no crédito' no
+    banco. Exceção: 'fatura' no texto = PAGAMENTO da fatura (saída do banco
+    mesmo). 'crédito' como ENTRADA bancária (➕) não entra (exige saída)."""
+    t = (text or "").lower()
+    if "fatura" in t:
+        return False
+    is_saida = (tipo or "").strip().lower() in ("debito", "debit", "despesa")
+    return is_saida and any(k in t for k in _CARD_CUES)
+
+
 async def _h_lancar_movimento_banco(args: dict, ctx: ToolContext) -> str:
     desc = (args.get("desc") or "").strip()
     valor = args.get("valor")
     tipo = (args.get("tipo") or "").strip()
     if not desc or valor is None or not tipo:
         return "erro: 'desc', 'valor' e 'tipo' são obrigatórios"
+    # Trava: 'comprei no crédito/cartão' (saída) virou banco → redireciona p/ cartão.
+    if _looks_like_card_purchase(ctx.user_text, tipo):
+        return await _h_lancar_despesa_cartao(
+            {"desc": desc, "valor": valor, "data_iso": args.get("data_iso"),
+             "categoria": args.get("categoria"), "parcelas": 1}, ctx,
+        )
     try:
         valor_f = float(valor)
     except (TypeError, ValueError):

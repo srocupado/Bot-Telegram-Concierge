@@ -88,7 +88,7 @@ async def cmd_photo(message: Message, user: User, session: AsyncSession) -> None
     )
     try:
         provider = get_provider(vision_provider_name, gemini_model=user.gemini_model)
-        ctx = ToolContext(user=user, session=session, tz=user.timezone)
+        ctx = ToolContext(user=user, session=session, tz=user.timezone, user_text=caption or "")
         logger.info(
             "photo analyzing",
             extra={"provider": vision_provider_name, "gemini_model": user.gemini_model},
