@@ -580,6 +580,19 @@ async def _h_consultar_clima(args: dict, ctx: ToolContext) -> str:
     return "ok: previsão enviada ao usuário (não escreva nada, a mensagem já foi enviada)"
 
 
+async def _h_consultar_cotacao(args: dict, ctx: ToolContext) -> str:
+    from bot.services.cotacao import CotacaoError, consultar_cotacao
+
+    ativo = (args.get("ativo") or "").strip()
+    tipo = (args.get("tipo") or "").strip().lower() or None
+    if not ativo:
+        return "erro: precisa de 'ativo' (ex: 'dólar', 'PETR4', 'bitcoin')"
+    try:
+        return "ok (repasse o valor exato, não altere): " + await consultar_cotacao(ativo, tipo)
+    except CotacaoError as e:
+        return f"erro: {e}"
+
+
 def _resolve_data_iso(args: dict, tz_name: str) -> str:
     raw = (args.get("data_iso") or "").strip()
     if raw:
@@ -1631,6 +1644,33 @@ TOOLS: list[Tool] = [
             },
         },
         handler=_h_consultar_clima,
+    ),
+    Tool(
+        name="consultar_cotacao",
+        description=(
+            "Cotação ATUAL (ao vivo, em reais) de ação/FII/ETF da B3 (PETR4, "
+            "HGLG11…), moeda (dólar, euro, libra, iene…) ou cripto (bitcoin, "
+            "ethereum…). USE SEMPRE pra 'quanto está o dólar/bitcoin/PETR4', "
+            "'cotação do euro' — NUNCA invente nem responda de cabeça (valor de "
+            "mercado muda o tempo todo). Um ativo por chamada (pra 'dólar e "
+            "euro', chame 2×)."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "ativo": {
+                    "type": "string",
+                    "description": "Ticker B3 (PETR4), moeda (dólar/USD/euro) ou cripto (bitcoin/BTC)",
+                },
+                "tipo": {
+                    "type": "string",
+                    "enum": ["acao", "moeda", "cripto"],
+                    "description": "Opcional; se omitido, é detectado automaticamente.",
+                },
+            },
+            "required": ["ativo"],
+        },
+        handler=_h_consultar_cotacao,
     ),
     Tool(
         name="consultar_transito",
