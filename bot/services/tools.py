@@ -69,7 +69,13 @@ from bot.services.workouts import (
     normalize_groups,
     summary_current_week,
 )
-from bot.services.weather import WeatherError, fetch_today_weather, format_weather_line
+from bot.services.weather import (
+    WeatherError,
+    fetch_forecast,
+    fetch_today_weather,
+    format_weather_line,
+    format_week_forecast,
+)
 from bot.services.travels.tool_handlers import (
     _h_buscar_hotel,
     _h_buscar_voo,
@@ -551,11 +557,27 @@ async def _h_consultar_clima(args: dict, ctx: ToolContext) -> str:
     if not coords:
         return "erro: coords não fornecido e HOME_COORDS não configurado"
     try:
+        dias = int(args.get("dias") or 1)
+    except (TypeError, ValueError):
+        dias = 1
+    try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            w = await fetch_today_weather(client, coords, ctx.tz)
+            if dias <= 1:
+                w = await fetch_today_weather(client, coords, ctx.tz)
+                return "ok: " + format_weather_line(w)
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            hoje_iso = datetime.now(ZoneInfo(ctx.tz)).date().isoformat()
+            days = await fetch_forecast(client, coords, ctx.tz, days=dias)
     except WeatherError as e:
         return f"erro: {e}"
-    return "ok: " + format_weather_line(w)
+    # Previsão dia a dia: envia verbatim (emojis/quebras intactos) como
+    # congresso/banco, em vez de deixar o modelo leve reescrever a tabela.
+    texto = "🌦️ Previsão — próximos dias\n" + format_week_forecast(days, hoje_iso)
+    ctx.fallback_text = texto
+    ctx.direct_html = _html_escape(texto)
+    ctx.short_circuit = True
+    return "ok: previsão enviada ao usuário (não escreva nada, a mensagem já foi enviada)"
 
 
 def _resolve_data_iso(args: dict, tz_name: str) -> str:
@@ -1589,7 +1611,11 @@ TOOLS: list[Tool] = [
     Tool(
         name="consultar_clima",
         description=(
-            "Consulta previsão do tempo de hoje. Sem coords, usa HOME_COORDS."
+            "Previsão do tempo. 'dias'=1 (default) = só hoje; 'dias'=7 = "
+            "previsão DIA A DIA dos próximos dias. USE com dias≥7 pra 'clima da "
+            "semana', 'próximos dias', 'vai chover essa semana', e pra follow-up "
+            "'detalhe dia a dia' DEPOIS de uma pergunta de clima (NÃO confunda "
+            "com academia/treino). Sem coords, usa HOME_COORDS."
         ),
         parameters={
             "type": "object",
@@ -1597,7 +1623,11 @@ TOOLS: list[Tool] = [
                 "coords": {
                     "type": "string",
                     "description": "Coordenadas 'lat,lng' (opcional)",
-                }
+                },
+                "dias": {
+                    "type": "integer",
+                    "description": "Dias de previsão: 1=hoje (default), 7=semana (máx 16).",
+                },
             },
         },
         handler=_h_consultar_clima,
