@@ -407,20 +407,24 @@ async def _pesquisar_contexto(client, mp: dict, *, model: str | None = None) -> 
         "redigir a nota ainda."
     )
     messages = [{"role": "user", "content": prompt}]
-    # 90s por chamada: o web_search costuma encadear várias buscas server-side
-    # numa só create e 60s era apertado (estourava 'Request timed out' e a MP
-    # ficava sem dossiê). Continua com fallback gracioso se passar disso.
-    bounded = client.with_options(timeout=90.0, max_retries=1)
+    bounded = client.with_options(timeout=180.0, max_retries=1)
     try:
         async def _run() -> str:
             msgs = messages
             for _ in range(3):
-                resp = await bounded.messages.create(
+                # STREAMING (não messages.create): o web_search encadeia várias
+                # buscas server-side numa só turn, e o create não-streaming
+                # estourava o guard de "requisição longa" do SDK ('Request timed
+                # out'), deixando a MP sem dossiê. Com stream a conexão fica viva
+                # e get_final_message devolve a mensagem completa (incl.
+                # pause_turn). É o caminho recomendado pra requisições longas.
+                async with bounded.messages.stream(
                     model=model,
                     max_tokens=2048,
                     tools=_WEB_TOOLS,
                     messages=msgs,
-                )
+                ) as stream:
+                    resp = await stream.get_final_message()
                 if resp.stop_reason == "pause_turn":
                     msgs = [
                         {"role": "user", "content": prompt},
