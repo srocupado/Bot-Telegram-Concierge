@@ -380,11 +380,11 @@ _NOTA_TOOL = {
     },
 }
 
-# Só web_search com TETO de usos. SEM web_fetch: ele baixa páginas INTEIRAS pro
-# contexto e, com pause_turn reenviando o acumulado a cada rodada, os tokens de
-# entrada explodiam (consumo absurdo). Snippets do web_search bastam pro dossiê.
+# Só web_search com teto BAIXO de usos. SEM web_fetch (baixava páginas inteiras
+# → tokens explodiam). max_uses=2: prompt pesado + busca sem teto fazia o modelo
+# pesquisar/processar >100s e estourar; 2 buscas + prompt curto fecham rápido.
 _WEB_TOOLS = [
-    {"type": "web_search_20260209", "name": "web_search", "max_uses": 3},
+    {"type": "web_search_20260209", "name": "web_search", "max_uses": 2},
 ]
 
 
@@ -396,43 +396,34 @@ async def _pesquisar_contexto(client, mp: dict, *, model: str | None = None) -> 
     if not settings.dou_mp_web_research:
         return ""
     model = model or settings.anthropic_model
+    # Prompt CURTO e expectativa baixa: MP recém-publicada quase não tem
+    # cobertura web, e pedir 'dossiê com 5 categorias, só fatos com fonte' fazia
+    # o modelo pesquisar/processar indefinidamente (>100s, estourava o timeout).
+    # Pouca coisa, rápido, e tudo bem se vier vazio.
     prompt = (
-        f"Pesquise o contexto da Medida Provisória nº {mp['numero']}, de "
-        f"{mp['ano']} (publicada no DOU em {mp['data_publicacao']}). "
-        f"Ementa: {mp['ementa']}\n\n"
-        "Busque: evento motivador (calamidade, crise setorial, pacote do "
-        "governo), atores políticos (ministros, lideranças), valores e dados "
-        "quantitativos, MPs correlatas anteriores e reações de setores "
-        "afetados. Fontes: Planalto, Agência Gov, Câmara, Senado, imprensa. "
-        "Responda com um dossiê objetivo em tópicos — só fatos com fonte, sem "
-        "redigir a nota ainda."
+        f"Em no máximo 2 buscas rápidas, traga o contexto essencial da Medida "
+        f"Provisória nº {mp['numero']}/{mp['ano']} (DOU {mp['data_publicacao']}). "
+        f"Ementa: {mp['ementa']}\n"
+        "Foco: por que foi editada e valores/impacto, se houver cobertura. "
+        "Responda em 3-6 tópicos curtos com fonte. Se não achar nada relevante "
+        "(MP nova costuma não ter), responda só 'sem cobertura web ainda'."
     )
-    messages = [{"role": "user", "content": prompt}]
-    bounded = client.with_options(timeout=90.0, max_retries=1)
+    # create (não streaming): com max_uses=2 + prompt curto a requisição é curta
+    # e não esbarra no guard de 'requisição longa' do SDK; o timeout aperta o
+    # resto. Sem loop de pause_turn (raro com max_uses=2; se vier, o texto pode
+    # estar vazio → fallback gracioso).
+    bounded = client.with_options(timeout=50.0, max_retries=1)
     try:
-        async def _run() -> str:
-            msgs = messages
-            # No máx. 2 rodadas: com max_uses=3 no web_search o pause_turn é raro;
-            # cada rodada reenvia o acumulado, então poucas rodadas = pouco token.
-            for _ in range(2):
-                # Streaming evita o guard de "requisição longa" do SDK (era o
-                # 'Request timed out' do create não-streaming).
-                async with bounded.messages.stream(
-                    model=model,
-                    max_tokens=2048,
-                    tools=_WEB_TOOLS,
-                    messages=msgs,
-                ) as stream:
-                    resp = await stream.get_final_message()
-                if resp.stop_reason == "pause_turn":
-                    msgs = [
-                        {"role": "user", "content": prompt},
-                        {"role": "assistant", "content": resp.content},
-                    ]
-                    continue
-                return "\n".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
-            return ""
-        return await asyncio.wait_for(_run(), timeout=100.0)
+        resp = await asyncio.wait_for(
+            bounded.messages.create(
+                model=model,
+                max_tokens=1024,
+                tools=_WEB_TOOLS,
+                messages=[{"role": "user", "content": prompt}],
+            ),
+            timeout=55.0,
+        )
+        return "\n".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
     except Exception as exc:
         logger.warning("dou: pesquisa web indisponível/lenta p/ MP %s (%s); seguindo sem dossiê",
                        mp["numero"], exc)
