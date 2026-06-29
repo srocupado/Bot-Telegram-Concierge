@@ -380,10 +380,11 @@ _NOTA_TOOL = {
     },
 }
 
-# Tools de web search/fetch nativas da Anthropic (Passo 2 das diretrizes).
+# Só web_search com TETO de usos. SEM web_fetch: ele baixa páginas INTEIRAS pro
+# contexto e, com pause_turn reenviando o acumulado a cada rodada, os tokens de
+# entrada explodiam (consumo absurdo). Snippets do web_search bastam pro dossiê.
 _WEB_TOOLS = [
-    {"type": "web_search_20260209", "name": "web_search"},
-    {"type": "web_fetch_20260209", "name": "web_fetch"},
+    {"type": "web_search_20260209", "name": "web_search", "max_uses": 3},
 ]
 
 
@@ -407,17 +408,15 @@ async def _pesquisar_contexto(client, mp: dict, *, model: str | None = None) -> 
         "redigir a nota ainda."
     )
     messages = [{"role": "user", "content": prompt}]
-    bounded = client.with_options(timeout=180.0, max_retries=1)
+    bounded = client.with_options(timeout=90.0, max_retries=1)
     try:
         async def _run() -> str:
             msgs = messages
-            for _ in range(3):
-                # STREAMING (não messages.create): o web_search encadeia várias
-                # buscas server-side numa só turn, e o create não-streaming
-                # estourava o guard de "requisição longa" do SDK ('Request timed
-                # out'), deixando a MP sem dossiê. Com stream a conexão fica viva
-                # e get_final_message devolve a mensagem completa (incl.
-                # pause_turn). É o caminho recomendado pra requisições longas.
+            # No máx. 2 rodadas: com max_uses=3 no web_search o pause_turn é raro;
+            # cada rodada reenvia o acumulado, então poucas rodadas = pouco token.
+            for _ in range(2):
+                # Streaming evita o guard de "requisição longa" do SDK (era o
+                # 'Request timed out' do create não-streaming).
                 async with bounded.messages.stream(
                     model=model,
                     max_tokens=2048,
@@ -433,7 +432,7 @@ async def _pesquisar_contexto(client, mp: dict, *, model: str | None = None) -> 
                     continue
                 return "\n".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
             return ""
-        return await asyncio.wait_for(_run(), timeout=210.0)
+        return await asyncio.wait_for(_run(), timeout=100.0)
     except Exception as exc:
         logger.warning("dou: pesquisa web indisponível/lenta p/ MP %s (%s); seguindo sem dossiê",
                        mp["numero"], exc)
