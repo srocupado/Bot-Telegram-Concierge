@@ -407,7 +407,10 @@ async def _pesquisar_contexto(client, mp: dict, *, model: str | None = None) -> 
         "redigir a nota ainda."
     )
     messages = [{"role": "user", "content": prompt}]
-    bounded = client.with_options(timeout=60.0, max_retries=1)
+    # 90s por chamada: o web_search costuma encadear várias buscas server-side
+    # numa só create e 60s era apertado (estourava 'Request timed out' e a MP
+    # ficava sem dossiê). Continua com fallback gracioso se passar disso.
+    bounded = client.with_options(timeout=90.0, max_retries=1)
     try:
         async def _run() -> str:
             msgs = messages
@@ -426,7 +429,7 @@ async def _pesquisar_contexto(client, mp: dict, *, model: str | None = None) -> 
                     continue
                 return "\n".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
             return ""
-        return await asyncio.wait_for(_run(), timeout=150.0)
+        return await asyncio.wait_for(_run(), timeout=210.0)
     except Exception as exc:
         logger.warning("dou: pesquisa web indisponível/lenta p/ MP %s (%s); seguindo sem dossiê",
                        mp["numero"], exc)
