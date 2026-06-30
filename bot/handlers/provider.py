@@ -7,9 +7,32 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db.models import User
+from bot.services.llm import catalog
 from bot.services.llm.factory import SUPPORTED_PROVIDERS
 
 router = Router(name=__name__)
+
+
+def _html_escape(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+async def _format_model_list(provider: str) -> str:
+    """Lista dinâmica (Models API) dos modelos de chat do provider, em HTML."""
+    modelos = await catalog.list_models(provider)
+    if not modelos:
+        return (
+            f"Não consegui listar os modelos de <b>{_html_escape(provider)}</b> "
+            "agora (chave ausente ou API indisponível)."
+        )
+    linhas = [f"<b>Modelos {_html_escape(provider)}:</b>"]
+    for mid, nome in modelos:
+        if nome and nome != mid:
+            linhas.append(f"<code>{_html_escape(mid)}</code> · {_html_escape(nome)}")
+        else:
+            linhas.append(f"<code>{_html_escape(mid)}</code>")
+    return "\n".join(linhas)
+
 
 # Variantes de modelo do Gemini via /provider gemini <variante>.
 _GEMINI_VARIANTS = {
@@ -28,6 +51,15 @@ _GEMINI_VARIANTS = {
 }
 
 
+async def _is_valid_gemini_id(model_id: str) -> bool:
+    """Confere o id contra a lista viva da Models API (aceita modelos novos sem
+    mexer no código). Se a API falhar, aceita o id pra não travar o usuário."""
+    modelos = await catalog.list_models("gemini")
+    if not modelos:
+        return True
+    return any(mid == model_id for mid, _ in modelos)
+
+
 @router.message(Command("provider"))
 async def cmd_provider(
     message: Message, command: CommandObject, user: User, session: AsyncSession
@@ -40,11 +72,24 @@ async def cmd_provider(
             atual += f" ({user.gemini_model or settings.gemini_model})"
         await message.answer(
             f"Provider atual: *{atual}*\n\nUse: /provider {opts}\n"
-            "No Gemini dá pra escolher o modelo:\n"
+            "Modelos disponíveis (lista dinâmica da API):\n"
+            "• `/provider modelos` (gemini) | `/provider modelos anthropic` | `/provider modelos openai`\n\n"
+            "No Gemini dá pra escolher o modelo (alias ou id completo):\n"
             "• geração nova (estável): `/provider gemini 3.5` | `/provider gemini 3.1-pro` | `/provider gemini 3.1-lite`\n"
-            "• geração 2.5: `/provider gemini pro` | `/provider gemini flash`",
+            "• geração 2.5: `/provider gemini pro` | `/provider gemini flash`\n"
+            "• id direto: `/provider gemini gemini-3.5-flash`",
             parse_mode="Markdown",
         )
+        return
+
+    # /provider modelos [provider] — lista dinâmica (metadata, não gasta token).
+    if tokens[0] in ("modelos", "models", "lista"):
+        prov = tokens[1] if len(tokens) > 1 else "gemini"
+        if prov not in SUPPORTED_PROVIDERS:
+            opts = ", ".join(SUPPORTED_PROVIDERS)
+            await message.answer(f"Provider inválido. Opções: {opts}", parse_mode=None)
+            return
+        await message.answer(await _format_model_list(prov), parse_mode="HTML")
         return
 
     prov = tokens[0]
@@ -59,9 +104,13 @@ async def cmd_provider(
             user.gemini_model = None  # volta ao GEMINI_MODEL do .env
         elif variant in _GEMINI_VARIANTS:
             user.gemini_model = _GEMINI_VARIANTS[variant]
+        elif variant.startswith("gemini-") and await _is_valid_gemini_id(variant):
+            user.gemini_model = variant
         else:
             await message.answer(
-                "Variante inválida. Use: /provider gemini pro | flash | flash-lite",
+                "Variante inválida. Use um alias (pro | flash | flash-lite | 3.5 | "
+                "3.1-pro | 3.1-lite) ou um id completo válido "
+                "(veja /provider modelos).",
                 parse_mode=None,
             )
             return
@@ -152,10 +201,14 @@ async def cmd_voice_provider(
             user.voice_stt_model = None  # volta ao VOICE_STT_MODEL do .env
         elif variant in _VOICE_GEMINI_VARIANTS:
             user.voice_stt_model = _VOICE_GEMINI_VARIANTS[variant]
+        elif variant.startswith("gemini-") and await _is_valid_gemini_id(variant):
+            user.voice_stt_model = variant
         else:
             opts = ", ".join(sorted(set(_VOICE_GEMINI_VARIANTS.keys())))
             await message.answer(
-                f"Variante inválida. Opções: {opts}", parse_mode=None,
+                f"Variante inválida. Use um alias ({opts}) ou um id completo "
+                "válido (veja /provider modelos).",
+                parse_mode=None,
             )
             return
     else:
