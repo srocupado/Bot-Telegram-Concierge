@@ -352,7 +352,9 @@ async def consultar_pauta(
                     papeis.append("autoria")
                 if relator_hit:
                     papeis.append("relatoria")
-                tag = f"{projeto.get('siglaTipo')} {projeto.get('numero')}/{projeto.get('ano')}"
+                # \x02..\x03 marcam o que vira <b>..</b> no handler (depois do
+                # escape HTML), pra negritar o número da proposição.
+                tag = f"\x02{projeto.get('siglaTipo')} {projeto.get('numero')}/{projeto.get('ano')}\x03"
                 papel_txt = f" [{' + '.join(papeis)}]" if papeis else ""
                 aut = ", ".join(f"{n} ({p})" if p else n for n, p in autores[:2]) or "—"
                 rel_txt = f"{relator} ({rel_partido})" if relator else "—"

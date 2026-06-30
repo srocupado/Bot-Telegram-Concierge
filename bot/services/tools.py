@@ -1168,8 +1168,9 @@ async def _h_consultar_pauta_camara(args: dict, ctx: ToolContext) -> str:
     except Exception as e:
         logger.exception("camara: falha ao consultar pauta")
         return f"erro: não consegui montar a pauta da Câmara agora ({type(e).__name__})"
-    ctx.fallback_text = texto
-    ctx.direct_html = _html_escape(texto)
+    # \x02/\x03 (marcados no serviço) → <b>/</b>, após o escape do resto do texto.
+    ctx.fallback_text = texto.replace("\x02", "").replace("\x03", "")
+    ctx.direct_html = _html_escape(texto).replace("\x02", "<b>").replace("\x03", "</b>")
     ctx.short_circuit = True
     return "ok: pauta enviada ao usuário (não escreva nada, a mensagem já foi enviada)"
 
