@@ -17,13 +17,19 @@ def _html_escape(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-async def _format_model_list(provider: str) -> str:
-    """Lista dinâmica (Models API) dos modelos de chat do provider, em HTML."""
-    modelos = await catalog.list_models(provider)
+async def _format_model_list(provider: str, modality: str = "text") -> str:
+    """Lista dinâmica (Models API) dos modelos do provider que aceitam
+    `modality` na entrada (text/vision/audio), em HTML."""
+    modelos = await catalog.list_models(provider, modality)
     if not modelos:
+        _por_modalidade = {
+            "audio": " que aceitem áudio",
+            "vision": " que aceitem imagem",
+        }.get(modality, "")
         return (
-            f"Não consegui listar os modelos de <b>{_html_escape(provider)}</b> "
-            "agora (chave ausente ou API indisponível)."
+            f"Não há modelos de <b>{_html_escape(provider)}</b>{_por_modalidade} "
+            "pra listar agora (provider sem essa modalidade, chave ausente ou "
+            "API indisponível)."
         )
     linhas = [f"<b>Modelos {_html_escape(provider)}:</b>"]
     for mid, nome in modelos:
@@ -155,8 +161,9 @@ async def cmd_voice_provider(
             f"Transcrição de voz (STT): <b>{label}</b>\n\n"
             "<b>Comandos:</b>\n"
             "<code>/voice</code> · mostra o atual\n"
+            "<code>/voice modelos [provider]</code> · lista modelos com entrada de áudio\n"
             "<code>/voice gemini</code> · provider gemini, submodelo do .env\n"
-            "<code>/voice gemini &lt;alias&gt;</code> · escolhe submodelo Gemini\n"
+            "<code>/voice gemini &lt;alias|id&gt;</code> · escolhe submodelo Gemini\n"
             "<code>/voice openai</code> · Whisper / gpt-4o-transcribe\n"
             "<code>/voice padrao</code> · reseta tudo (volta ao .env)\n\n"
             "<b>Aliases do Gemini:</b>\n"
@@ -177,6 +184,18 @@ async def cmd_voice_provider(
 
     arg = tokens[0]
     variant = tokens[1] if len(tokens) > 1 else None
+
+    # /voice modelos [provider] — só modelos que ACEITAM ÁUDIO (STT).
+    if arg in ("modelos", "models", "lista"):
+        prov = tokens[1] if len(tokens) > 1 else "gemini"
+        if prov not in _VOICE_STT_PROVIDERS:
+            opts = " | ".join(sorted(_VOICE_STT_PROVIDERS))
+            await message.answer(
+                f"Provider de voz inválido. Opções: {opts}", parse_mode=None,
+            )
+            return
+        await message.answer(await _format_model_list(prov, "audio"), parse_mode="HTML")
+        return
 
     if arg in ("padrao", "padrão", "auto", "limpar", "none"):
         user.voice_stt_provider = None
@@ -238,15 +257,27 @@ async def cmd_provider_visao(
     message: Message, command: CommandObject, user: User, session: AsyncSession
 ) -> None:
     """Override só pra entrada de imagens (foto). 'auto' / vazio = limpa override."""
-    arg = (command.args or "").strip().lower()
+    tokens = (command.args or "").strip().lower().split()
+    arg = tokens[0] if tokens else ""
     if not arg:
         current = user.vision_provider or "(seguindo /provider)"
         opts = " | ".join(SUPPORTED_PROVIDERS)
         await message.answer(
             f"Provider de visão: <b>{current}</b>\n\n"
-            f"Use: /provider_visao {opts} | auto",
+            f"Use: /provider_visao {opts} | auto\n"
+            "<code>/provider_visao modelos [provider]</code> · lista modelos com "
+            "entrada de imagem",
             parse_mode="HTML",
         )
+        return
+    # /provider_visao modelos [provider] — só modelos que ACEITAM IMAGEM (visão).
+    if arg in ("modelos", "models", "lista"):
+        prov = tokens[1] if len(tokens) > 1 else "gemini"
+        if prov not in SUPPORTED_PROVIDERS:
+            opts = ", ".join(SUPPORTED_PROVIDERS)
+            await message.answer(f"Provider inválido. Opções: {opts}", parse_mode=None)
+            return
+        await message.answer(await _format_model_list(prov, "vision"), parse_mode="HTML")
         return
     if arg in ("auto", "none", "padrao", "padrão", "limpar"):
         user.vision_provider = None
