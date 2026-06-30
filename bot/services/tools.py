@@ -1165,6 +1165,9 @@ async def _h_consultar_pauta_camara(args: dict, ctx: ToolContext) -> str:
         texto = await consultar_pauta(comissao, data, partido=partido, deputado=deputado, tz=ctx.tz)
     except CamaraError as e:
         return f"erro: API da Câmara indisponível ({e})"
+    except Exception as e:
+        logger.exception("camara: falha ao consultar pauta")
+        return f"erro: não consegui montar a pauta da Câmara agora ({type(e).__name__})"
     ctx.fallback_text = texto
     ctx.direct_html = _html_escape(texto)
     ctx.short_circuit = True

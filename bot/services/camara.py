@@ -330,10 +330,17 @@ async def consultar_pauta(
 
             amap = dict(await asyncio.gather(*(_fa(pid) for pid in ids)))
 
+            def _ordem(t):
+                # `numero` às vezes vem string, às vezes int — coage p/ não
+                # quebrar o sort (TypeError str vs int).
+                try:
+                    num = int(t[0].get("numero") or 0)
+                except (TypeError, ValueError):
+                    num = 0
+                return (str(t[0].get("siglaTipo") or ""), num)
+
             linhas = []
-            for projeto, relator, parecer in sorted(
-                itens, key=lambda x: (x[0].get("siglaTipo") or "", x[0].get("numero") or 0)
-            ):
+            for projeto, relator, parecer in sorted(itens, key=_ordem):
                 autores = amap.get(projeto["id"], [])
                 rel_partido = _partido_de_nome(relator, deps) if relator else ""
                 autor_hit = any(_match_pessoa(partido, deputado, n, p) for n, p in autores)
