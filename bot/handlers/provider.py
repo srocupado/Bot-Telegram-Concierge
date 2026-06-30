@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
@@ -38,6 +40,14 @@ async def _format_model_list(provider: str, modality: str = "text") -> str:
         else:
             linhas.append(f"<code>{_html_escape(mid)}</code>")
     return "\n".join(linhas)
+
+
+async def _format_model_lists(providers: list[str], modality: str = "text") -> str:
+    """Junta as listas de vários providers (uma seção por provider), em paralelo."""
+    secoes = await asyncio.gather(
+        *(_format_model_list(p, modality) for p in providers)
+    )
+    return "\n\n".join(secoes)
 
 
 # Variantes de modelo do Gemini via /provider gemini <variante>.
@@ -223,15 +233,19 @@ async def cmd_voice_provider(
     variant = tokens[1] if len(tokens) > 1 else None
 
     # /voice modelos [provider] — só modelos que ACEITAM ÁUDIO (STT).
+    # Sem provider, lista os dois providers de voz de uma vez.
     if arg in ("modelos", "models", "lista"):
-        prov = tokens[1] if len(tokens) > 1 else "gemini"
-        if prov not in _VOICE_STT_PROVIDERS:
-            opts = " | ".join(sorted(_VOICE_STT_PROVIDERS))
-            await message.answer(
-                f"Provider de voz inválido. Opções: {opts}", parse_mode=None,
-            )
-            return
-        await message.answer(await _format_model_list(prov, "audio"), parse_mode="HTML")
+        if len(tokens) > 1:
+            if tokens[1] not in _VOICE_STT_PROVIDERS:
+                opts = " | ".join(sorted(_VOICE_STT_PROVIDERS))
+                await message.answer(
+                    f"Provider de voz inválido. Opções: {opts}", parse_mode=None,
+                )
+                return
+            provs = [tokens[1]]
+        else:
+            provs = sorted(_VOICE_STT_PROVIDERS)
+        await message.answer(await _format_model_lists(provs, "audio"), parse_mode="HTML")
         return
 
     if arg in ("padrao", "padrão", "auto", "limpar", "none"):
@@ -308,13 +322,17 @@ async def cmd_provider_visao(
         )
         return
     # /provider_visao modelos [provider] — só modelos que ACEITAM IMAGEM (visão).
+    # Sem provider, lista os três de uma vez.
     if arg in ("modelos", "models", "lista"):
-        prov = tokens[1] if len(tokens) > 1 else "gemini"
-        if prov not in SUPPORTED_PROVIDERS:
-            opts = ", ".join(SUPPORTED_PROVIDERS)
-            await message.answer(f"Provider inválido. Opções: {opts}", parse_mode=None)
-            return
-        await message.answer(await _format_model_list(prov, "vision"), parse_mode="HTML")
+        if len(tokens) > 1:
+            if tokens[1] not in SUPPORTED_PROVIDERS:
+                opts = ", ".join(SUPPORTED_PROVIDERS)
+                await message.answer(f"Provider inválido. Opções: {opts}", parse_mode=None)
+                return
+            provs = [tokens[1]]
+        else:
+            provs = list(SUPPORTED_PROVIDERS)
+        await message.answer(await _format_model_lists(provs, "vision"), parse_mode="HTML")
         return
     if arg in ("auto", "none", "padrao", "padrão", "limpar"):
         user.vision_provider = None
