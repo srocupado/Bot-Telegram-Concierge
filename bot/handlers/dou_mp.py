@@ -34,6 +34,26 @@ _ANTHROPIC_VARIANTS = {
 }
 
 
+async def _list_claude_models() -> list[tuple[str, str]]:
+    """[(id, display_name)] dos modelos Claude via Models API — DINÂMICO, então
+    modelos novos (ex.: claude-sonnet-5) aparecem sozinhos sem mexer no código.
+    [] se faltar ANTHROPIC_API_KEY ou a API falhar."""
+    if not settings.anthropic_api_key:
+        return []
+    try:
+        import anthropic
+        client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        out: list[tuple[str, str]] = []
+        async for m in client.models.list():
+            mid = getattr(m, "id", "") or ""
+            if mid.startswith("claude-"):
+                out.append((mid, getattr(m, "display_name", "") or mid))
+        return out
+    except Exception:
+        logger.exception("dou: falha ao listar modelos Anthropic")
+        return []
+
+
 def nota_keyboard(date_iso: str, numeros: list[str] | None = None) -> InlineKeyboardMarkup:
     """Botões Sim/Não pra oferecer a nota técnica das MPs de uma data.
 
@@ -133,9 +153,31 @@ async def cmd_dou_provider(
             "<code>/dou_provider anthropic [alias]</code> · Claude (web_search)\n"
             "<code>/dou_provider gemini [alias]</code> · Gemini\n"
             "<code>/dou_provider &lt;alias&gt;</code> · atalho (infere o provider)\n"
+            "<code>/dou_provider modelos</code> · lista os modelos Claude da API\n"
+            "<code>/dou_provider anthropic &lt;id&gt;</code> · qualquer id (ex.: claude-sonnet-5)\n"
             "<code>/dou_provider padrao</code> · volta ao .env\n\n"
             f"<b>Aliases Gemini:</b> {gem_aliases}\n"
-            f"<b>Aliases Claude:</b> {ant_aliases} <i>(sonnet recomendado — ~½ do custo do opus)</i>",
+            f"<b>Aliases Claude:</b> {ant_aliases} <i>(ou use o id completo — veja /dou_provider modelos)</i>",
+            parse_mode="HTML",
+        )
+        return
+
+    if tokens[0] in ("modelos", "modelo", "listar", "models", "list"):
+        modelos = await _list_claude_models()
+        if not modelos:
+            await message.answer(
+                "Não consegui listar os modelos Claude agora "
+                "(sem ANTHROPIC_API_KEY ou API fora).", parse_mode=None,
+            )
+            return
+        atual = user.dou_mp_model or settings.anthropic_model
+        linhas = [
+            f"• <code>{mid}</code> — {nome}" + (" ⬅️ atual" if mid == atual else "")
+            for mid, nome in modelos
+        ]
+        await message.answer(
+            "<b>Modelos Claude disponíveis</b> (direto da API):\n" + "\n".join(linhas)
+            + "\n\nPra usar na nota: <code>/dou_provider anthropic &lt;id&gt;</code>",
             parse_mode="HTML",
         )
         return
@@ -159,9 +201,23 @@ async def cmd_dou_provider(
             user.dou_mp_model = None  # volta ao ANTHROPIC_MODEL do .env
         elif variant in _ANTHROPIC_VARIANTS:
             user.dou_mp_model = _ANTHROPIC_VARIANTS[variant]
+        elif variant.startswith("claude-"):
+            # id completo (ex.: claude-sonnet-5) — valida na Models API quando
+            # possível; se a lista vier vazia (sem chave), aceita e a API valida no uso.
+            ids = {m[0] for m in await _list_claude_models()}
+            if ids and variant not in ids:
+                await message.answer(
+                    f"Modelo <code>{variant}</code> não está na lista da API. "
+                    "Veja <code>/dou_provider modelos</code>.", parse_mode="HTML",
+                )
+                return
+            user.dou_mp_model = variant
         else:
             opts = ", ".join(sorted(_ANTHROPIC_VARIANTS))
-            await message.answer(f"Alias Claude inválido. Opções: {opts}", parse_mode=None)
+            await message.answer(
+                f"Use um alias ({opts}), um id <code>claude-…</code>, ou "
+                "<code>/dou_provider modelos</code> pra listar.", parse_mode="HTML",
+            )
             return
         user.dou_mp_provider = "anthropic"
         await session.commit()
