@@ -244,11 +244,12 @@ async def _h_criar_lembrete(args: dict, ctx: ToolContext) -> str:
 async def _h_listar_lembretes(_args: dict, ctx: ToolContext) -> str:
     from bot.services.reminders import format_pending_list
     items = await list_pending(ctx.session, ctx.user.id)
-    if not items:
-        return "ok: nenhum lembrete pendente"
-    # Formatação padronizada (mesma do /lembretes). REPASSE VERBATIM.
-    return "ok (repasse estas linhas exatamente como estão, sem reformatar):\n" + \
-        format_pending_list(items, ctx.tz)
+    # Hard guard contra alucinação: o LLM reformatava a lista e inventava
+    # horários/lembretes. Envia a mesma saída do /lembretes VERBATIM e encerra
+    # o turno (igual câmara/cotação/clima), sem deixar o modelo tocar nela.
+    ctx.direct_html = _html_escape(format_pending_list(items, ctx.tz))
+    ctx.short_circuit = True
+    return "ok: lista de lembretes enviada ao usuário (verbatim)"
 
 
 async def _h_criar_lembrete_pagamento(args: dict, ctx: ToolContext) -> str:
