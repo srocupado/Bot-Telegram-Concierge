@@ -232,6 +232,30 @@ async def _autores_partidos(client: httpx.AsyncClient, prop_id: int,
     return out
 
 
+def _partido_de_nome(nome: str, deps: dict[int, dict]) -> str:
+    """Partido atual de um deputado pelo NOME (o campo `relator` da pauta é só
+    nome, sem id). Igualdade primeiro; senão contém."""
+    if not nome:
+        return ""
+    nn = _norm(nome)
+    for d in deps.values():
+        if _norm(d["nome"]) == nn:
+            return d["partido"]
+    for d in deps.values():
+        dn = _norm(d["nome"])
+        if nn in dn or dn in nn:
+            return d["partido"]
+    return ""
+
+
+def _match_pessoa(partido: str | None, deputado: str | None, nome: str, part: str) -> bool:
+    if partido and _partido_casa(partido, part):
+        return True
+    if deputado and _norm(deputado) in _norm(nome):
+        return True
+    return False
+
+
 async def consultar_pauta(
     comissao_texto: str, data_texto: str, *,
     partido: str | None = None, deputado: str | None = None,
@@ -264,6 +288,7 @@ async def consultar_pauta(
             return f"🏛️ {org['sigla']} — sem reunião agendada em {_br(d)}."
 
         deps = await _ensure_deputados(client)
+        alvo = partido or deputado
         partes = [f"🏛️ {org['nome']} ({org['sigla']}) — {_br(d)}"]
         sem = asyncio.Semaphore(_CONCURRENCY)
 
@@ -271,43 +296,58 @@ async def consultar_pauta(
             hora = (ev.get("dataHoraInicio") or "")[11:16]
             tipo = ev.get("descricaoTipo") or "Reunião"
             pauta = await _get(client, f"/eventos/{ev['id']}/pauta")
-            # proposições distintas da pauta
-            props = {}
+
+            # Cada item → o PROJETO (PL relatada num parecer, ou a própria
+            # proposição) + o nome do relator. Assim cobrimos AUTORIA (autor do
+            # projeto de fundo) E RELATORIA (campo relator) separadamente.
+            itens = []
             for item in pauta:
-                p = item.get("proposicao_") or {}
-                pid = p.get("id")
-                if pid and pid not in props:
-                    props[pid] = p
+                prop = item.get("proposicao_") or {}
+                rel_prop = item.get("proposicaoRelacionada_") or {}
+                projeto = rel_prop if rel_prop.get("id") else prop
+                relator = item.get("relator")
+                if isinstance(relator, dict):
+                    relator = relator.get("nome")
+                if projeto.get("id"):
+                    itens.append((projeto, relator if isinstance(relator, str) else None))
 
-            async def _resolve(pid, p):
+            ids = list({p["id"] for p, _ in itens})
+
+            async def _fa(pid):
                 async with sem:
-                    autores = await _autores_partidos(client, pid, deps)
-                return (p, autores)
+                    return pid, await _autores_partidos(client, pid, deps)
 
-            resolved = await asyncio.gather(*(_resolve(pid, p) for pid, p in props.items()))
+            amap = dict(await asyncio.gather(*(_fa(pid) for pid in ids)))
 
-            # filtro por partido/deputado
-            def _match(autores):
-                if not partido and not deputado:
-                    return True
-                for nome, part in autores:
-                    if partido and _partido_casa(partido, part):
-                        return True
-                    if deputado and _norm(deputado) in _norm(nome):
-                        return True
-                return False
+            linhas = []
+            for projeto, relator in sorted(
+                itens, key=lambda x: (x[0].get("siglaTipo") or "", x[0].get("numero") or 0)
+            ):
+                autores = amap.get(projeto["id"], [])
+                rel_partido = _partido_de_nome(relator, deps) if relator else ""
+                autor_hit = any(_match_pessoa(partido, deputado, n, p) for n, p in autores)
+                relator_hit = bool(relator) and _match_pessoa(partido, deputado, relator, rel_partido)
+                if alvo and not (autor_hit or relator_hit):
+                    continue
+                papeis = []
+                if autor_hit:
+                    papeis.append("autoria")
+                if relator_hit:
+                    papeis.append("relatoria")
+                tag = f"{projeto.get('siglaTipo')} {projeto.get('numero')}/{projeto.get('ano')}"
+                papel_txt = f" [{' + '.join(papeis)}]" if papeis else ""
+                aut = ", ".join(f"{n} ({p})" if p else n for n, p in autores[:2]) or "—"
+                rel_txt = f"{relator} ({rel_partido})" if relator else "—"
+                ementa = (projeto.get("ementa") or "").strip().replace("\n", " ")
+                linhas.append(
+                    f"   • {tag}{papel_txt}\n     autor: {aut} · relator: {rel_txt}\n     {ementa[:150]}"
+                )
 
-            filtrados = [(p, a) for (p, a) in resolved if _match(a)]
-            cab = f"\n📋 {tipo} {hora} — {len(props)} item(ns)"
-            if (partido or deputado) and not filtrados:
-                alvo = partido or deputado
-                partes.append(cab + f"\n   • Nada de {alvo} nesta pauta.")
-                continue
-            partes.append(cab + (f" · {len(filtrados)} de {partido or deputado}:" if (partido or deputado) else ":"))
-            for p, autores in sorted(filtrados, key=lambda x: (x[0].get("siglaTipo") or "", x[0].get("numero") or 0)):
-                tag = f"{p.get('siglaTipo')} {p.get('numero')}/{p.get('ano')}"
-                aut = ", ".join(f"{n} ({pt})" if pt else n for n, pt in autores[:3]) or "—"
-                ementa = (p.get("ementa") or "").strip().replace("\n", " ")
-                partes.append(f"   • {tag} — {aut}\n     {ementa[:160]}")
+            cab = f"\n📋 {tipo} {hora} — {len(itens)} projeto(s)"
+            if alvo and not linhas:
+                partes.append(cab + f"\n   • Nada de {alvo} — nem autoria nem relatoria.")
+            else:
+                partes.append(cab + (f" · {len(linhas)} de {alvo}:" if alvo else ":"))
+                partes.extend(linhas)
 
     return "\n".join(partes)
