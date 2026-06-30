@@ -256,6 +256,17 @@ def _match_pessoa(partido: str | None, deputado: str | None, nome: str, part: st
     return False
 
 
+def _extrair_voto(parecer: dict) -> str:
+    """Teor do voto do relator, da ementa do parecer (PRL): 'pela aprovação, com
+    substitutivo', 'pela rejeição' etc. '' se o item não for um parecer (ex.:
+    requerimento, ou PL ainda sem parecer)."""
+    if (parecer.get("siglaTipo") or "").upper() != "PRL":
+        return ""
+    e = re.sub(r"\s+", " ", parecer.get("ementa") or "").strip()
+    m = re.search(r"\bpel[ao]\s+.+", e, re.IGNORECASE)   # 'pela aprovação...'
+    return m.group(0).rstrip(". ")[:170] if m else ""
+
+
 async def consultar_pauta(
     comissao_texto: str, data_texto: str, *,
     partido: str | None = None, deputado: str | None = None,
@@ -309,9 +320,9 @@ async def consultar_pauta(
                 if isinstance(relator, dict):
                     relator = relator.get("nome")
                 if projeto.get("id"):
-                    itens.append((projeto, relator if isinstance(relator, str) else None))
+                    itens.append((projeto, relator if isinstance(relator, str) else None, prop))
 
-            ids = list({p["id"] for p, _ in itens})
+            ids = list({p["id"] for p, _, _ in itens})
 
             async def _fa(pid):
                 async with sem:
@@ -320,7 +331,7 @@ async def consultar_pauta(
             amap = dict(await asyncio.gather(*(_fa(pid) for pid in ids)))
 
             linhas = []
-            for projeto, relator in sorted(
+            for projeto, relator, parecer in sorted(
                 itens, key=lambda x: (x[0].get("siglaTipo") or "", x[0].get("numero") or 0)
             ):
                 autores = amap.get(projeto["id"], [])
@@ -338,10 +349,15 @@ async def consultar_pauta(
                 papel_txt = f" [{' + '.join(papeis)}]" if papeis else ""
                 aut = ", ".join(f"{n} ({p})" if p else n for n, p in autores[:2]) or "—"
                 rel_txt = f"{relator} ({rel_partido})" if relator else "—"
+                voto = _extrair_voto(parecer)
                 ementa = (projeto.get("ementa") or "").strip().replace("\n", " ")
-                linhas.append(
-                    f"   • {tag}{papel_txt}\n     autor: {aut} · relator: {rel_txt}\n     {ementa[:150]}"
-                )
+                linha = f"   • {tag}{papel_txt}\n     autor: {aut} · relator: {rel_txt}"
+                if voto:
+                    linha += f"\n     🗳️ voto do relator: {voto}"
+                else:
+                    linha += "\n     🗳️ voto do relator: (ainda sem parecer na pauta)"
+                linha += f"\n     {ementa[:140]}"
+                linhas.append(linha)
 
             cab = f"\n📋 {tipo} {hora} — {len(itens)} projeto(s)"
             if alvo and not linhas:
