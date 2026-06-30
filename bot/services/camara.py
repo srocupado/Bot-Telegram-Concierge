@@ -267,42 +267,17 @@ def _extrair_voto(parecer: dict) -> str:
     return m.group(0).rstrip(". ")[:170] if m else ""
 
 
-async def consultar_pauta(
-    comissao_texto: str, data_texto: str, *,
-    partido: str | None = None, deputado: str | None = None,
-    tz: str = "America/Sao_Paulo",
-) -> str:
-    """Pauta de uma comissão da Câmara numa data, com filtro opcional por
-    partido/deputado. Texto pronto pro chat (dado oficial; nunca inventa)."""
-    comissao_texto = (comissao_texto or "").strip()
-    if not comissao_texto:
-        return "erro: informe a comissão (ex: 'Comissão de Saúde', 'CCJ')."
-    hoje = datetime.now(ZoneInfo(tz)).date()
-    d = parse_data(data_texto, hoje)
-    if not d:
-        return "erro: não entendi a data (use DD/MM, AAAA-MM-DD, 'amanhã' ou '1º de julho')."
+async def _secao_comissao(client, org: dict, d: date, partido, deputado, deps) -> str:
+    """Seção de UMA comissão: header + reuniões/pauta na data, com filtro."""
+    eventos = await _get(client, f"/orgaos/{org['id']}/eventos",
+                         {"dataInicio": d.isoformat(), "dataFim": d.isoformat(), "itens": 50})
+    if not eventos:
+        return f"🏛️ {org['nome']} ({org['sigla']}) — sem reunião agendada em {_br(d)}."
 
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-        comissoes = await _ensure_comissoes(client)
-        cands = resolver_comissao(comissao_texto, comissoes)
-        if not cands:
-            return ("Não achei essa comissão entre as permanentes da Câmara. "
-                    "Tente o nome (ex: 'Saúde', 'Constituição e Justiça') ou a sigla.")
-        if len(cands) > 1:
-            nomes = "; ".join(f"{c['sigla']} ({c['nome']})" for c in cands[:6])
-            return f"Tem mais de uma comissão parecida — qual? {nomes}"
-        org = cands[0]
-
-        eventos = await _get(client, f"/orgaos/{org['id']}/eventos",
-                             {"dataInicio": d.isoformat(), "dataFim": d.isoformat(), "itens": 50})
-        if not eventos:
-            return f"🏛️ {org['sigla']} — sem reunião agendada em {_br(d)}."
-
-        deps = await _ensure_deputados(client)
-        alvo = partido or deputado
-        partes = [f"🏛️ {org['nome']} ({org['sigla']}) — {_br(d)}"]
-        sem = asyncio.Semaphore(_CONCURRENCY)
-
+    alvo = partido or deputado
+    partes = [f"🏛️ {org['nome']} ({org['sigla']}) — {_br(d)}"]
+    sem = asyncio.Semaphore(_CONCURRENCY)
+    if True:
         for ev in eventos:
             hora = (ev.get("dataHoraInicio") or "")[11:16]
             tipo = ev.get("descricaoTipo") or "Reunião"
@@ -376,3 +351,37 @@ async def consultar_pauta(
                 partes.extend(linhas)
 
     return "\n".join(partes)
+
+
+async def consultar_pauta(
+    comissoes, data_texto: str, *,
+    partido: str | None = None, deputado: str | None = None,
+    tz: str = "America/Sao_Paulo",
+) -> str:
+    """Pauta de UMA OU MAIS comissões da Câmara numa data, com filtro opcional
+    por partido/deputado. `comissoes` aceita str (uma) ou lista. Texto pronto
+    pro chat (dado oficial; nunca inventa)."""
+    if isinstance(comissoes, str):
+        comissoes = [comissoes]
+    comissoes = [str(c).strip() for c in (comissoes or []) if str(c).strip()]
+    if not comissoes:
+        return "erro: informe a comissão (ex: 'Comissão de Saúde', 'CCJ')."
+    hoje = datetime.now(ZoneInfo(tz)).date()
+    d = parse_data(data_texto, hoje)
+    if not d:
+        return "erro: não entendi a data (use DD/MM, AAAA-MM-DD, 'amanhã' ou '1º de julho')."
+
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        catalogo = await _ensure_comissoes(client)
+        deps = await _ensure_deputados(client)
+        secoes = []
+        for texto in comissoes:
+            cands = resolver_comissao(texto, catalogo)
+            if not cands:
+                secoes.append(f"🏛️ “{texto}” — não achei essa comissão permanente da Câmara.")
+            elif len(cands) > 1:
+                nomes = "; ".join(f"{c['sigla']} ({c['nome']})" for c in cands[:6])
+                secoes.append(f"🏛️ “{texto}” — qual delas? {nomes}")
+            else:
+                secoes.append(await _secao_comissao(client, cands[0], d, partido, deputado, deps))
+        return "\n\n".join(secoes)

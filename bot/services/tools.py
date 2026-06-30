@@ -1155,14 +1155,20 @@ async def _h_consultar_congresso(_args: dict, ctx: ToolContext) -> str:
 async def _h_consultar_pauta_camara(args: dict, ctx: ToolContext) -> str:
     from bot.services.camara import CamaraError, consultar_pauta
 
-    comissao = (args.get("comissao") or "").strip()
+    comissoes = args.get("comissoes")
+    if not comissoes:
+        c = (args.get("comissao") or "").strip()  # back-compat (singular)
+        comissoes = [c] if c else []
+    if isinstance(comissoes, str):
+        comissoes = [comissoes]
+    comissoes = [str(c).strip() for c in comissoes if str(c).strip()]
     data = (args.get("data") or "").strip()
     partido = (args.get("partido") or "").strip() or None
     deputado = (args.get("deputado") or "").strip() or None
-    if not comissao or not data:
-        return "erro: precisa de 'comissao' e 'data'"
+    if not comissoes or not data:
+        return "erro: precisa de 'comissoes' (uma ou mais) e 'data'"
     try:
-        texto = await consultar_pauta(comissao, data, partido=partido, deputado=deputado, tz=ctx.tz)
+        texto = await consultar_pauta(comissoes, data, partido=partido, deputado=deputado, tz=ctx.tz)
     except CamaraError as e:
         return f"erro: API da Câmara indisponível ({e})"
     except Exception as e:
@@ -2227,19 +2233,25 @@ TOOLS: list[Tool] = [
             "proposições estão na reunião, com autor e PARTIDO. USE pra 'o que a "
             "Comissão de Saúde vota dia 1º de julho', 'tem projeto do Podemos na "
             "pauta da CCJ amanhã', 'tem algo do deputado Fulano na comissão Y "
-            "essa data'. Filtra por partido e/ou deputado. Só comissões "
-            "PERMANENTES da Câmara (não Senado, não CPI). NUNCA use buscar_web "
-            "pra isso — a busca web não acha a pauta específica da comissão."
+            "essa data'. Se o usuário citar VÁRIAS comissões, passe TODAS em "
+            "'comissoes' numa única chamada (ex: ['Minas e Energia','Saúde']). "
+            "Filtra por partido e/ou deputado. Só comissões PERMANENTES da "
+            "Câmara (não Senado, não CPI). NUNCA use buscar_web pra isso — a "
+            "busca web não acha a pauta específica da comissão."
         ),
         parameters={
             "type": "object",
             "properties": {
-                "comissao": {"type": "string", "description": "Nome ou sigla da comissão (ex: 'Comissão de Saúde', 'CCJ', 'Meio Ambiente')"},
+                "comissoes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Uma OU MAIS comissões (nome ou sigla). Passe TODAS as citadas, cada uma como item: ['Minas e Energia', 'Saúde'].",
+                },
                 "data": {"type": "string", "description": "Data da reunião: AAAA-MM-DD, DD/MM, 'amanhã' ou '1º de julho'."},
                 "partido": {"type": "string", "description": "Opcional — filtra por partido (ex: 'Podemos', 'PT', 'PL')."},
                 "deputado": {"type": "string", "description": "Opcional — filtra por nome de deputado."},
             },
-            "required": ["comissao", "data"],
+            "required": ["comissoes", "data"],
         },
         handler=_h_consultar_pauta_camara,
     ),
