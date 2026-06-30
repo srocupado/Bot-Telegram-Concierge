@@ -1152,6 +1152,25 @@ async def _h_consultar_congresso(_args: dict, ctx: ToolContext) -> str:
     return "ok: pauta entregue ao usuário (não escreva nada, a mensagem já foi enviada)"
 
 
+async def _h_consultar_pauta_camara(args: dict, ctx: ToolContext) -> str:
+    from bot.services.camara import CamaraError, consultar_pauta
+
+    comissao = (args.get("comissao") or "").strip()
+    data = (args.get("data") or "").strip()
+    partido = (args.get("partido") or "").strip() or None
+    deputado = (args.get("deputado") or "").strip() or None
+    if not comissao or not data:
+        return "erro: precisa de 'comissao' e 'data'"
+    try:
+        texto = await consultar_pauta(comissao, data, partido=partido, deputado=deputado, tz=ctx.tz)
+    except CamaraError as e:
+        return f"erro: API da Câmara indisponível ({e})"
+    ctx.fallback_text = texto
+    ctx.direct_html = _html_escape(texto)
+    ctx.short_circuit = True
+    return "ok: pauta enviada ao usuário (não escreva nada, a mensagem já foi enviada)"
+
+
 async def _h_consultar_transito(args: dict, ctx: ToolContext) -> str:
     origem = (args.get("origem") or "").strip()
     destino = (args.get("destino") or "").strip()
@@ -2195,6 +2214,30 @@ TOOLS: list[Tool] = [
         ),
         parameters={"type": "object", "properties": {}},
         handler=_h_consultar_congresso,
+    ),
+    Tool(
+        name="consultar_pauta_camara",
+        description=(
+            "Pauta de uma COMISSÃO da Câmara dos Deputados numa DATA — dado "
+            "oficial (API de Dados Abertos), nunca inventa. Diz quais "
+            "proposições estão na reunião, com autor e PARTIDO. USE pra 'o que a "
+            "Comissão de Saúde vota dia 1º de julho', 'tem projeto do Podemos na "
+            "pauta da CCJ amanhã', 'tem algo do deputado Fulano na comissão Y "
+            "essa data'. Filtra por partido e/ou deputado. Só comissões "
+            "PERMANENTES da Câmara (não Senado, não CPI). NUNCA use buscar_web "
+            "pra isso — a busca web não acha a pauta específica da comissão."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "comissao": {"type": "string", "description": "Nome ou sigla da comissão (ex: 'Comissão de Saúde', 'CCJ', 'Meio Ambiente')"},
+                "data": {"type": "string", "description": "Data da reunião: AAAA-MM-DD, DD/MM, 'amanhã' ou '1º de julho'."},
+                "partido": {"type": "string", "description": "Opcional — filtra por partido (ex: 'Podemos', 'PT', 'PL')."},
+                "deputado": {"type": "string", "description": "Opcional — filtra por nome de deputado."},
+            },
+            "required": ["comissao", "data"],
+        },
+        handler=_h_consultar_pauta_camara,
     ),
     Tool(
         name="buscar_web",
