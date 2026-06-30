@@ -107,6 +107,45 @@ async def list_pending(session: AsyncSession, user_id: int) -> list[Reminder]:
     return list(result.scalars().all())
 
 
+# Fast-path determinístico de "liste meus lembretes": o LLM às vezes inventava
+# horários ou repetia uma lista velha do contexto em vez de chamar a tool. Quando
+# a mensagem é claramente um PEDIDO DE LISTAGEM (e não criar/apagar/agendar),
+# respondemos direto do banco, sem passar pelo modelo.
+import re as _re  # noqa: E402
+import unicodedata as _ud  # noqa: E402
+
+
+def _norm_txt(s: str) -> str:
+    s = _ud.normalize("NFKD", (s or "").lower())
+    s = "".join(c for c in s if not _ud.combining(c))
+    return _re.sub(r"\s+", " ", s).strip()
+
+
+# Verbos que indicam OUTRA ação (não listar) — se aparecerem, não é fast-path.
+_REM_ACTION_BLOCK = (
+    "apag", "delet", "remov", "exclu", "cria", "criar", "cadastr", "marca",
+    "adicion", "agend", "edita", "altera", "atualiz", "conclu", "desfaz",
+    "me lembr", "lembra de", "lembre de", "lembrar de", "lembra-me", "lembre-me",
+)
+# Pistas de que o usuário quer VER a lista.
+_REM_LIST_CUES = (
+    "lista", "liste", "listar", "listos", "quais", "quantos", "mostra",
+    "meus lembrete", "os lembrete", "tem lembrete", "tem algum lembrete",
+    "que lembrete", "ver lembrete", "ver os lembrete", "tenho",
+)
+
+
+def is_list_reminders_request(text: str) -> bool:
+    """True só quando a mensagem é, sem ambiguidade, um pedido pra LISTAR os
+    lembretes pendentes (e não criar/apagar/agendar/concluir)."""
+    n = _norm_txt(text)
+    if "lembrete" not in n:
+        return False
+    if any(b in n for b in _REM_ACTION_BLOCK):
+        return False
+    return any(c in n for c in _REM_LIST_CUES)
+
+
 _DIAS_SEMANA = [
     "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo",
 ]

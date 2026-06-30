@@ -433,6 +433,19 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
     if not user_text.strip():
         return
 
+    # Fast-path determinístico: "liste meus lembretes" vai direto ao banco
+    # (mesma saída do /lembretes), sem passar pelo LLM — que às vezes inventava
+    # horários ou repetia uma lista velha do contexto.
+    from bot.services.reminders import (
+        format_pending_list, is_list_reminders_request, list_pending,
+    )
+    if is_list_reminders_request(user_text):
+        out = format_pending_list(await list_pending(session, user.id), user.timezone)
+        memory.append(chat_id, "user", user_text)
+        memory.append(chat_id, "assistant", out)
+        await message.answer(out, parse_mode=None)
+        return
+
     history = memory.get(chat_id)
     history.append({"role": "user", "content": user_text})
 

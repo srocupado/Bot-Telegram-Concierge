@@ -360,6 +360,20 @@ async def _dispatch_chat(
         return
 
     chat_id = message.chat.id
+
+    # Fast-path determinístico: "liste meus lembretes" vai direto ao banco
+    # (mesma saída do /lembretes), sem passar pelo LLM — que às vezes inventava
+    # horários ou repetia uma lista velha do contexto.
+    from bot.services.reminders import (
+        format_pending_list, is_list_reminders_request, list_pending,
+    )
+    if is_list_reminders_request(text):
+        out = format_pending_list(await list_pending(session, user.id), user.timezone)
+        memory.append(chat_id, "user", text)
+        memory.append(chat_id, "assistant", out)
+        await message.answer(out, parse_mode=None)
+        return
+
     history = memory.get(chat_id)  # já retorna cópia
     history.append({"role": "user", "content": text})
 
