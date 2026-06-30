@@ -19,7 +19,7 @@ from bot.handlers.chat import _build_system_prompt, answer_llm, inject_context
 from bot.config import settings
 from bot.services.chat_memory import memory
 from bot.services.llm.base import ToolContext, make_image_message
-from bot.services.llm.factory import get_provider
+from bot.services.llm.factory import get_provider_for_user
 from bot.services.tools import TOOLS
 
 logger = logging.getLogger(__name__)
@@ -87,7 +87,7 @@ async def cmd_photo(message: Message, user: User, session: AsyncSession) -> None
         user.vision_provider or settings.vision_provider or user.provider
     )
     try:
-        provider = get_provider(vision_provider_name, gemini_model=user.gemini_model)
+        provider = get_provider_for_user(user, vision_provider_name)
         ctx = ToolContext(user=user, session=session, tz=user.timezone, user_text=caption or "")
         logger.info(
             "photo analyzing",

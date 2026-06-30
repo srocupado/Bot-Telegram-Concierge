@@ -403,8 +403,8 @@ async def _redigir(user: User, deterministic: str) -> str:
     if not settings.proactive_use_llm:
         return deterministic
     try:
-        from bot.services.llm.factory import get_provider
-        provider = get_provider(user.provider, gemini_model=user.gemini_model)
+        from bot.services.llm.factory import get_provider_for_user
+        provider = get_provider_for_user(user)
         out = await provider.chat(
             [{"role": "user", "content": deterministic}],
             system=_PROACTIVE_SYSTEM, max_tokens=400,

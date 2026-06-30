@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.db.models import User
 from bot.services.chat_memory import memory
 from bot.services.llm.base import ToolContext
-from bot.services.llm.factory import get_provider
+from bot.services.llm.factory import get_provider_for_user
 from bot.services.tools import TOOLS
 
 router = Router(name=__name__)
@@ -440,7 +440,7 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
     summary = await get_summary(session, user.id)
 
     try:
-        provider = get_provider(user.provider, gemini_model=user.gemini_model)
+        provider = get_provider_for_user(user)
         ctx = ToolContext(user=user, session=session, tz=user.timezone, user_text=user_text)
         reply = await provider.chat_with_tools(
             inject_context(history, user.timezone, summary), tools=TOOLS, ctx=ctx,

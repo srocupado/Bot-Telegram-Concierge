@@ -17,7 +17,7 @@ from bot.db.models import User
 from bot.handlers.chat import _build_system_prompt, inject_context
 from bot.services.chat_memory import memory
 from bot.services.llm.base import ToolContext, make_document_message
-from bot.services.llm.factory import get_provider
+from bot.services.llm.factory import get_provider_for_user
 from bot.services.tools import TOOLS
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ async def cmd_pdf(message: Message, user: User, session: AsyncSession) -> None:
         user.vision_provider or settings.vision_provider or user.provider
     )
     try:
-        provider = get_provider(vision_provider_name, gemini_model=user.gemini_model)
+        provider = get_provider_for_user(user, vision_provider_name)
         ctx = ToolContext(user=user, session=session, tz=user.timezone)
         reply = await provider.chat_with_tools(
             inject_context(history, user.timezone), tools=TOOLS, ctx=ctx,

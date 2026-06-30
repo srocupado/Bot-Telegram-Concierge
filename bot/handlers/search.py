@@ -32,7 +32,7 @@ from bot.config import settings
 from bot.db.models import User
 from bot.handlers.chat import answer_llm
 from bot.services.chat_memory import memory
-from bot.services.llm.factory import get_provider
+from bot.services.llm.factory import get_provider_for_user
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +86,7 @@ _SYNTH_PROMPT = (
 async def _synth(query: str, context: str, user: User) -> str:
     """Sintetiza a resposta curta a partir do contexto (páginas lidas ou
     resultados do Google Shopping) com o provider do usuário."""
-    provider = get_provider(user.provider)
+    provider = get_provider_for_user(user)
     messages = [{"role": "user", "content": _SYNTH_PROMPT.format(query=query, context=context)}]
     return await provider.chat(messages, system=_dated_system(), max_tokens=2000)
 

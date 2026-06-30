@@ -57,13 +57,17 @@ _GEMINI_VARIANTS = {
 }
 
 
-async def _is_valid_gemini_id(model_id: str) -> bool:
+async def _is_valid_id(provider: str, model_id: str) -> bool:
     """Confere o id contra a lista viva da Models API (aceita modelos novos sem
     mexer no código). Se a API falhar, aceita o id pra não travar o usuário."""
-    modelos = await catalog.list_models("gemini")
+    modelos = await catalog.list_models(provider)
     if not modelos:
         return True
     return any(mid == model_id for mid, _ in modelos)
+
+
+async def _is_valid_gemini_id(model_id: str) -> bool:
+    return await _is_valid_id("gemini", model_id)
 
 
 @router.message(Command("provider"))
@@ -76,14 +80,18 @@ async def cmd_provider(
         atual = user.provider
         if atual == "gemini":
             atual += f" ({user.gemini_model or settings.gemini_model})"
+        elif atual == "anthropic":
+            atual += f" ({user.anthropic_model or settings.anthropic_model})"
+        elif atual == "openai":
+            atual += f" ({user.openai_model or settings.openai_model})"
         await message.answer(
             f"Provider atual: *{atual}*\n\nUse: /provider {opts}\n"
             "Modelos disponíveis (lista dinâmica da API):\n"
             "• `/provider modelos` (gemini) | `/provider modelos anthropic` | `/provider modelos openai`\n\n"
-            "No Gemini dá pra escolher o modelo (alias ou id completo):\n"
-            "• geração nova (estável): `/provider gemini 3.5` | `/provider gemini 3.1-pro` | `/provider gemini 3.1-lite`\n"
-            "• geração 2.5: `/provider gemini pro` | `/provider gemini flash`\n"
-            "• id direto: `/provider gemini gemini-3.5-flash`",
+            "Pra escolher o modelo (id completo da lista; NULL = volta ao .env):\n"
+            "• `/provider gemini <id>` — ou alias: `3.5` | `3.1-pro` | `pro` | `flash`\n"
+            "• `/provider anthropic <id>` — ex.: `/provider anthropic claude-sonnet-5`\n"
+            "• `/provider openai <id>` — ex.: `/provider openai gpt-5.1`",
             parse_mode="Markdown",
         )
         return
@@ -110,7 +118,7 @@ async def cmd_provider(
             user.gemini_model = None  # volta ao GEMINI_MODEL do .env
         elif variant in _GEMINI_VARIANTS:
             user.gemini_model = _GEMINI_VARIANTS[variant]
-        elif variant.startswith("gemini-") and await _is_valid_gemini_id(variant):
+        elif variant.startswith("gemini-") and await _is_valid_id("gemini", variant):
             user.gemini_model = variant
         else:
             await message.answer(
@@ -120,12 +128,41 @@ async def cmd_provider(
                 parse_mode=None,
             )
             return
+    elif prov == "anthropic":
+        if variant is None:
+            user.anthropic_model = None  # volta ao ANTHROPIC_MODEL do .env
+        elif variant.startswith("claude-") and await _is_valid_id("anthropic", variant):
+            user.anthropic_model = variant
+        else:
+            await message.answer(
+                "Modelo inválido. Passe um id Claude completo "
+                "(veja /provider modelos anthropic), ex.: "
+                "/provider anthropic claude-sonnet-5.",
+                parse_mode=None,
+            )
+            return
+    elif prov == "openai":
+        if variant is None:
+            user.openai_model = None  # volta ao OPENAI_MODEL do .env
+        elif variant.startswith(("gpt-", "o1", "o3", "o4", "chatgpt")) and await _is_valid_id("openai", variant):
+            user.openai_model = variant
+        else:
+            await message.answer(
+                "Modelo inválido. Passe um id de chat da OpenAI "
+                "(veja /provider modelos openai), ex.: /provider openai gpt-5.1.",
+                parse_mode=None,
+            )
+            return
     user.provider = prov
     await session.commit()
 
     label = prov
     if prov == "gemini":
         label = f"gemini ({user.gemini_model or settings.gemini_model})"
+    elif prov == "anthropic":
+        label = f"anthropic ({user.anthropic_model or settings.anthropic_model})"
+    elif prov == "openai":
+        label = f"openai ({user.openai_model or settings.openai_model})"
     await message.answer(f"✅ Provider definido como *{label}*.", parse_mode="Markdown")
 
 

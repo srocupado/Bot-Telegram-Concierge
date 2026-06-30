@@ -51,7 +51,7 @@ from bot.handlers.traffic import (
     cmd_transito_reset,
 )
 from bot.services.chat_memory import memory
-from bot.services.llm.factory import get_provider
+from bot.services.llm.factory import get_provider_for_user
 from bot.services.voice import VoiceTranscribeError, transcribe
 
 logger = logging.getLogger(__name__)
@@ -367,7 +367,7 @@ async def _dispatch_chat(
     summary = await get_summary(session, user.id)
 
     try:
-        provider = get_provider(user.provider, gemini_model=user.gemini_model)
+        provider = get_provider_for_user(user)
         ctx = ToolContext(user=user, session=session, tz=user.timezone, user_text=text)
         reply = await provider.chat_with_tools(
             inject_context(history, user.timezone, summary), tools=TOOLS, ctx=ctx,

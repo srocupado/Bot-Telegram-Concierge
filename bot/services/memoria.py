@@ -154,7 +154,7 @@ async def _compact(user_id: int, msgs: list[ChatMessage]) -> None:
 
     Usa o MESMO provider/modelo que o usuário escolheu no /provider — nada
     de modelo hardcoded. Se a chamada falhar, o resumo anterior fica."""
-    from bot.services.llm.factory import get_provider
+    from bot.services.llm.factory import get_provider_for_user
 
     assert _sessionmaker is not None
     try:
@@ -164,7 +164,7 @@ async def _compact(user_id: int, msgs: list[ChatMessage]) -> None:
             user = await session.get(User, user_id)
         if user is None:
             return
-        provider = get_provider(user.provider, gemini_model=user.gemini_model)
+        provider = get_provider_for_user(user)
         today = datetime.now(timezone.utc).strftime("%d/%m/%Y")
         prompt = (
             f"RESUMO ATUAL:\n{old}\n\n"

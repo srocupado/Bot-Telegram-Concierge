@@ -23,7 +23,7 @@ from bot.services.congress import (
     format_week_message,
 )
 from bot.services.llm.base import ToolContext
-from bot.services.llm.factory import get_provider
+from bot.services.llm.factory import get_provider_for_user
 from bot.services.tools import TOOLS
 from bot.services.traffic import (
     USER_AGENT as TRAFFIC_USER_AGENT,
@@ -137,7 +137,7 @@ async def _run_chat(
     history.append({"role": "user", "content": prompt})
     summary = await get_summary(session, user.id)
     try:
-        provider = get_provider(user.provider, gemini_model=user.gemini_model)
+        provider = get_provider_for_user(user)
         ctx = ToolContext(user=user, session=session, tz=user.timezone)
         reply = await provider.chat_with_tools(
             inject_context(history, user.timezone, summary), tools=TOOLS, ctx=ctx,

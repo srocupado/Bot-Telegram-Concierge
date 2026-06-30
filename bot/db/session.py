@@ -117,6 +117,12 @@ async def _ensure_columns(conn) -> None:
     if "dou_mp_model" not in cols:
         await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN dou_mp_model VARCHAR(48)")
         logger.info("migrated: added users.dou_mp_model")
+    if "anthropic_model" not in cols:
+        await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN anthropic_model VARCHAR(64)")
+        logger.info("migrated: added users.anthropic_model")
+    if "openai_model" not in cols:
+        await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN openai_model VARCHAR(64)")
+        logger.info("migrated: added users.openai_model")
 
     rem_cols = await conn.exec_driver_sql("PRAGMA table_info(reminders)")
     cols = {row[1] for row in rem_cols.fetchall()}

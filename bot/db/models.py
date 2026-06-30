@@ -25,6 +25,11 @@ class User(Base):
     # Modelo Gemini escolhido pelo usuário (/provider gemini pro|flash). NULL =
     # usa GEMINI_MODEL do .env. Só vale quando provider == "gemini".
     gemini_model: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    # Modelo de chat escolhido pelo usuário pra Anthropic/OpenAI
+    # (/provider anthropic|openai <id>). NULL = usa ANTHROPIC_MODEL/OPENAI_MODEL
+    # do .env. Só vale quando o provider efetivo for o respectivo.
+    anthropic_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    openai_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Override opcional só pra entrada de imagens (foto). Quando NULL, segue
     # VISION_PROVIDER do .env (também opcional) e depois cai em `provider`.
     vision_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
