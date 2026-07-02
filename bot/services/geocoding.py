@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from dataclasses import dataclass
 from urllib.parse import quote
 
@@ -140,6 +142,26 @@ async def _places_text_search(
     return GeocodeHit(coords=f"{lat},{lng}", formatted_address=label)
 
 
+# Tokens de logradouro/endereço (BR + padrões de Brasília). Se a query tiver
+# um destes, é ENDEREÇO POSTAL → Geocoding primeiro. Senão é NOME DE LUGAR
+# (loja, órgão, POI) → Places Text Search primeiro (a Geocoding devolveria só
+# o centroide do bairro, foi o bug do 'AC Coelho materiais ... asa norte').
+_LOGRADOURO_RE = re.compile(
+    r"\b("
+    r"rua|r|av|avenida|alameda|travessa|tv|rodovia|rod|estrada|"
+    r"quadra|qd|qn|qi|ql|qs|qe|qnl|qng|qnm|sqn|sqs|sqsw|sqnw|sgan|sgas|"
+    r"cln|cls|clnw|clsw|shin|shis|shcs|shcgn|shcgs|scs|scn|scrn|scln|sds|"
+    r"setor|lote|bloco|cep"
+    r")\b"
+)
+
+
+def _looks_like_postal_address(query: str) -> bool:
+    n = unicodedata.normalize("NFKD", (query or "").lower())
+    n = "".join(c for c in n if not unicodedata.combining(c))
+    return _LOGRADOURO_RE.search(n) is not None
+
+
 async def geocode(
     client: httpx.AsyncClient,
     api_key: str,
@@ -148,31 +170,34 @@ async def geocode(
 ) -> GeocodeHit | None:
     """Resolve `query` em coords + endereço formatado.
 
-    Estratégia em dois passos (a Geocoding API só entende ENDEREÇO postal;
-    nome de POI/prédio/órgão público cai pra Places Text Search):
-      1) Geocoding API (New) — endereços tipo 'Av. Paulista 1000';
-      2) Fallback Places API (New) Text Search — POIs tipo 'Anexo IV',
-         'Aeroporto JK', 'Restaurante X'.
+    Escolhe a ferramenta certa pela CARA da query e usa a outra como fallback:
+      • ENDEREÇO POSTAL (tem 'rua/av/quadra/SQN…') → Geocoding API primeiro
+        (é a boa pra 'Av. Paulista 1000', 'SQN 410 Bl A');
+      • NOME DE LUGAR (loja/órgão/POI, ex.: 'AC Coelho materiais de construção',
+        'Aeroporto JK') → Places Text Search primeiro. A Geocoding, nesses
+        casos, devolvia só o centroide do bairro e a rota ia pro lugar errado.
     bias_coords define o viewport (~50 km) pra priorizar resultados perto.
     """
-    # 1) tenta endereço postal
-    try:
-        hit = await _geocode_address(client, api_key, query, bias_coords)
-    except GeocodingError as e:
-        logger.warning("geocoding: falha em endereço; tentando POI. %s", e)
-        hit = None
-    if hit is not None:
-        logger.info("geocode: resolvido via Geocoding (%r)", query)
-        return hit
+    async def _via_geocoding() -> GeocodeHit | None:
+        return await _geocode_address(client, api_key, query, bias_coords)
 
-    # 2) fallback pra POI via Places Text Search
-    try:
-        hit = await _places_text_search(client, api_key, query, bias_coords)
-    except GeocodingError as e:
-        logger.warning("geocoding: places fallback também falhou (%s)", e)
-        return None
-    if hit is not None:
-        logger.info("geocode: resolvido via Places (%r)", query)
+    async def _via_places() -> GeocodeHit | None:
+        return await _places_text_search(client, api_key, query, bias_coords)
+
+    if _looks_like_postal_address(query):
+        ordem = [("Geocoding", _via_geocoding), ("Places", _via_places)]
     else:
-        logger.info("geocode: nada encontrado (Geocoding + Places) p/ %r", query)
-    return hit
+        ordem = [("Places", _via_places), ("Geocoding", _via_geocoding)]
+
+    for nome, metodo in ordem:
+        try:
+            hit = await metodo()
+        except GeocodingError as e:
+            logger.warning("geocode: %s falhou p/ %r (%s)", nome, query, e)
+            continue
+        if hit is not None:
+            logger.info("geocode: resolvido via %s (%r)", nome, query)
+            return hit
+
+    logger.info("geocode: nada encontrado (Geocoding + Places) p/ %r", query)
+    return None
