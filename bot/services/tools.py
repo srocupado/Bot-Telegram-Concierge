@@ -177,9 +177,18 @@ async def _h_consultar_sessoes_cinema(args: dict, ctx: ToolContext) -> str:
     if not cinema:
         return "erro: precisa de 'cinema' (ex: 'Iguatemi Brasília')"
     try:
-        return await consultar_sessoes(filme, cinema, data_iso, tz=ctx.tz)
+        out = await consultar_sessoes(filme, cinema, data_iso, tz=ctx.tz)
     except CinemaError as e:
         return f"erro ao consultar a Cinemark: {e}"
+    # Erros/validação voltam pro LLM tratar; resposta real (sessões, programação,
+    # desambiguação de cinema) vai VERBATIM ao usuário — os horários vêm da API
+    # da Cinemark e o modelo não pode reformatar/trocar sessão (mesmo guard de
+    # câmara/cotação/lembretes).
+    if out.startswith("erro"):
+        return out
+    ctx.direct_html = _html_escape(out)
+    ctx.short_circuit = True
+    return "ok: sessões enviadas ao usuário verbatim (não escreva nada, a mensagem já foi enviada)"
 
 
 async def _h_criar_tarefa(args: dict, ctx: ToolContext) -> str:
