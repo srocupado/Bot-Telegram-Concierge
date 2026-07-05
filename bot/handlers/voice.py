@@ -62,6 +62,13 @@ _TOO_LONG = "⚠️ Áudio muito longo (máx {max}s). Tenta um trecho menor."
 _EMPTY = "🤷 Não entendi nada no áudio. Tenta gravar de novo, mais perto do microfone."
 _STT_ERROR = "⚠️ Não consegui transcrever o áudio agora. Tenta de novo em alguns segundos."
 
+# Download do áudio no Telegram. O PRIMEIRO download após um restart do
+# container é lento (warm-up de conexão/DNS/TLS no Orange Pi): já vi 29s, na
+# beira do antigo teto de 30s. Teto folgado + 1 retry cobrem o cold start sem
+# travar o caminho quente (que baixa em ~1-2s).
+_DL_TIMEOUT = 60
+_DL_ATTEMPTS = 2
+
 # "cem" e "sem" são HOMÓFONOS em PT-BR (ambos /sẽj̃/) — nenhum STT distingue
 # pelo som, é decisão de contexto. Num comando do bot "sem reais" é quase
 # sempre "cem reais" (ninguém compra "sem reais"). Corrige só nesse contexto
@@ -252,19 +259,24 @@ async def cmd_voice(message: Message, user: User, session: AsyncSession) -> None
     file_id = voice_obj.file_id
     mime_type = getattr(voice_obj, "mime_type", None) or "audio/ogg"
 
-    try:
-        buf = io.BytesIO()
-        await asyncio.wait_for(
-            message.bot.download(file_id, destination=buf), timeout=30,
-        )
-        audio_bytes = buf.getvalue()
-        logger.info("voice downloaded", extra={"bytes": len(audio_bytes)})
-    except asyncio.TimeoutError:
-        logger.warning("voice download timed out")
-        await message.answer(_STT_ERROR)
-        return
-    except Exception:
-        logger.exception("voice download failed")
+    audio_bytes = b""
+    for attempt in range(1, _DL_ATTEMPTS + 1):
+        try:
+            buf = io.BytesIO()
+            await asyncio.wait_for(
+                message.bot.download(file_id, destination=buf), timeout=_DL_TIMEOUT,
+            )
+            audio_bytes = buf.getvalue()
+            logger.info("voice downloaded", extra={"bytes": len(audio_bytes), "attempt": attempt})
+            break
+        except asyncio.TimeoutError:
+            logger.warning("voice download timed out (tentativa %d/%d)", attempt, _DL_ATTEMPTS)
+        except Exception:
+            logger.exception("voice download failed (tentativa %d/%d)", attempt, _DL_ATTEMPTS)
+        if attempt < _DL_ATTEMPTS:
+            await asyncio.sleep(2)
+    else:
+        # todas as tentativas falharam
         await message.answer(_STT_ERROR)
         return
 
