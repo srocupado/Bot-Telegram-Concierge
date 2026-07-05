@@ -254,12 +254,17 @@ async def fetch_traffic(
     waypoints: list[str],
     maps_url: str = "",
     alternatives: bool = False,
+    departure_time: str = "now",
 ) -> list[TrafficInfo]:
-    """Retorna lista de rotas. Com alternatives=True, pode trazer 2-3."""
+    """Retorna lista de rotas. Com alternatives=True, pode trazer 2-3.
+
+    departure_time: "now" (default) ou um unix timestamp (segundos, como str)
+    no FUTURO — a Directions devolve duration_in_traffic *previsto* pra aquele
+    horário, base do "melhor horário pra sair"."""
     params: dict[str, str] = {
         "origin": origin,
         "destination": destination,
-        "departure_time": "now",
+        "departure_time": departure_time,
         "traffic_model": "best_guess",
         "mode": "driving",
         "key": api_key,

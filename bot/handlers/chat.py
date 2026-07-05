@@ -80,7 +80,7 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "Os nomes EXATOS das tools disponíveis são:\n"
     "- criar_tarefa, listar_tarefas, concluir_tarefa, apagar_tarefa\n"
     "- criar_lembrete, criar_lembrete_pagamento, criar_lembrete_recorrente, listar_lembretes, apagar_lembrete, agendar_comando\n"
-    "- consultar_clima, consultar_transito, consultar_cotacao\n"
+    "- consultar_clima, consultar_transito, melhor_horario_sair, consultar_cotacao\n"
     "- lembrar_fato, recuperar_fato, listar_fatos, esquecer_fato, buscar_historico\n"
     "- registrar_treino, apagar_treino_dia, consultar_treinos\n"
     "- lancar_movimento_banco, lancar_despesa_cartao, registrar_aporte_tesouro, registrar_operacao_ativo, consultar_lancamentos, consultar_saldo, apagar_lancamento\n"

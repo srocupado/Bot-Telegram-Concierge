@@ -26,6 +26,11 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   Directions API) + previsão do tempo (Open-Meteo). Suporta rota preferida via
   URL do Google Maps com waypoints. **Alerta proativo** quando o tempo está
   ≥30% acima do habitual.
+- **Melhor horário pra sair**: por chat/voz — *"que horas é melhor sair pro
+  trabalho?"* varre a próxima 1h prevendo o trânsito de cada horário (Directions
+  com `departure_time` futuro) e recomenda a saída de menor tempo; com horário
+  de chegada (*"preciso chegar no aeroporto às 9h, quando saio?"*) devolve a
+  última partida que ainda chega no prazo.
 - **Medidas Provisórias — pauta do Congresso** (digest semanal): agenda do
   Congresso Nacional via web scraping, filtrando MPs/CMMPV. Também por chat:
   *"como está a pauta do congresso?"* → mesma saída do `/congresso_agora`.
@@ -705,6 +710,17 @@ Atualizar depois:
 ```bash
 git pull origin main && pip install -r requirements.txt && python -m bot
 ```
+
+### Testes
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+Cobrem a lógica **determinística** (funções puras, sem rede nem API) — ex.:
+seleção do melhor horário pra sair, parsing de horários. `tests/conftest.py`
+já injeta `BOT_TOKEN`/`ACCESS_PASSWORD` dummy, então roda sem `.env`.
 
 ## Rodar com Docker
 

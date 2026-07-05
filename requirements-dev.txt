@@ -1,0 +1,6 @@
+# Dependências só de desenvolvimento/testes (não vão pra imagem de produção).
+-r requirements.txt
+pytest==8.3.4
+pytest-asyncio==0.24.0
+respx==0.21.1
+freezegun==1.5.1

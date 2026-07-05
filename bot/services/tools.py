@@ -21,6 +21,15 @@ from bot.services.tasks import (
     list_open_tasks,
     mark_done,
 )
+from bot.services.departure import (
+    HORIZON_MIN,
+    STEP_MIN,
+    candidate_times,
+    choose_best,
+    format_departure_message,
+    parse_arrive_by,
+    probe_departures,
+)
 from bot.services.traffic import (
     USER_AGENT,
     TrafficError,
@@ -1290,6 +1299,74 @@ async def _h_consultar_transito(args: dict, ctx: ToolContext) -> str:
     )
 
 
+async def _h_melhor_horario_sair(args: dict, ctx: ToolContext) -> str:
+    destino = (args.get("destino") or "").strip()
+    origem = (args.get("origem") or "").strip() or "casa"
+    chegar_ate_raw = (args.get("chegar_ate") or "").strip()
+    if not destino:
+        return "erro: parâmetro 'destino' é obrigatório"
+    if not settings.google_maps_api_key:
+        return "erro: GOOGLE_MAPS_API_KEY não configurada"
+
+    # Atalhos casa/trabalho → coords; qualquer outra string vai crua pra
+    # Directions (que geocoda endereço/lugar sozinha).
+    aliases = {"casa": settings.home_coords, "trabalho": settings.work_coords}
+    o_low, d_low = origem.lower(), destino.lower()
+    origem_res = aliases.get(o_low, origem)
+    destino_res = aliases.get(d_low, destino)
+    if origem_res is None:
+        return "erro: 'casa'/'trabalho' na origem mas HOME_COORDS/WORK_COORDS não configurado"
+    if destino_res is None:
+        return "erro: 'casa'/'trabalho' no destino mas HOME_COORDS/WORK_COORDS não configurado"
+
+    tz = ZoneInfo(ctx.tz)
+    now = datetime.now(tz)
+    arrive_by = None
+    if chegar_ate_raw:
+        arrive_by = parse_arrive_by(chegar_ate_raw, now)
+        if arrive_by is None:
+            return "erro: não entendi 'chegar_ate' (use HH:MM, '9h' ou ISO local)"
+        if arrive_by <= now:
+            return "erro: o horário de chegada informado já passou"
+
+    candidates = candidate_times(now, HORIZON_MIN, STEP_MIN, end=arrive_by)
+    if not candidates:
+        return "erro: janela de horários vazia (chegada muito próxima de agora)"
+
+    api_key = settings.google_maps_api_key.get_secret_value()
+    try:
+        async with httpx.AsyncClient(
+            timeout=25.0, follow_redirects=True, headers={"User-Agent": USER_AGENT},
+        ) as client:
+            # Waypoints da rota preferida só valem no corredor casa↔trabalho.
+            waypoints: list[str] = []
+            corredor = {o_low, d_low} <= {"casa", "trabalho"} and o_low != d_low
+            if corredor and settings.route_google_maps_url:
+                waypoints = await parse_route_waypoints(client, settings.route_google_maps_url)
+                if d_low == "casa":  # trabalho → casa = rota invertida
+                    waypoints = list(reversed(waypoints))
+            options = await probe_departures(
+                client, api_key, origem_res, destino_res,
+                candidates=candidates, waypoints=waypoints,
+            )
+    except Exception as e:  # rede/Directions — não deixa vazar pro LLM
+        logger.exception("melhor_horario_sair falhou")
+        return f"erro: {e}"
+
+    best, feasible = choose_best(options, arrive_by)
+    if best is None:
+        return "erro: não consegui prever o trânsito agora (nenhuma sondagem respondeu)"
+
+    origem_label = o_low if o_low in aliases else origem
+    destino_label = d_low if d_low in aliases else destino
+    ctx.direct_html = format_departure_message(
+        origem_label, destino_label, best, options,
+        arrive_by=arrive_by, feasible=feasible,
+    )
+    ctx.short_circuit = True
+    return "ok: melhor horário entregue ao usuário (não escreva nada, a mensagem já foi enviada)"
+
+
 TOOLS: list[Tool] = [
     Tool(
         name="criar_tarefa",
@@ -1745,6 +1822,41 @@ TOOLS: list[Tool] = [
             "required": ["destino"],
         },
         handler=_h_consultar_transito,
+    ),
+    Tool(
+        name="melhor_horario_sair",
+        description=(
+            "Recomenda o MELHOR HORÁRIO PRA SAIR de carro, prevendo o trânsito "
+            "na próxima 1h (a Google prevê o tempo de cada horário futuro). "
+            "Use quando o usuário perguntar 'que horas é melhor sair pro X?', "
+            "'quando devo sair pra pegar menos trânsito?', ou der um horário de "
+            "chegada ('preciso chegar no aeroporto às 9h, quando saio?').\n"
+            "• origem: 'casa' (default se omitido) | 'trabalho' | endereço/POI. "
+            "Só passe 'casa'/'trabalho' com base no que o usuário disse.\n"
+            "• destino: 'casa' | 'trabalho' | endereço / POI livre.\n"
+            "• chegar_ate (opcional): horário-alvo de chegada. Passe a HORA que "
+            "o usuário falou como 'HH:MM' ('9h'→'09:00') ou ISO local; sem isso, "
+            "o modo é 'sair em breve' (varre a próxima 1h)."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "origem": {
+                    "type": "string",
+                    "description": "'casa' (default) | 'trabalho' | 'lat,lng' | endereço/POI",
+                },
+                "destino": {
+                    "type": "string",
+                    "description": "'casa' | 'trabalho' | 'lat,lng' | endereço / POI",
+                },
+                "chegar_ate": {
+                    "type": "string",
+                    "description": "Opcional. Horário-alvo de chegada: 'HH:MM', '9h' ou ISO local.",
+                },
+            },
+            "required": ["destino"],
+        },
+        handler=_h_melhor_horario_sair,
     ),
     Tool(
         name="lancar_movimento_banco",
