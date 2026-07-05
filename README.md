@@ -34,6 +34,13 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
 - **Medidas Provisórias — pauta do Congresso** (digest semanal): agenda do
   Congresso Nacional via web scraping, filtrando MPs/CMMPV. Também por chat:
   *"como está a pauta do congresso?"* → mesma saída do `/congresso_agora`.
+- **Pauta de comissão da Câmara** (API Dados Abertos, por chat/voz): consulta a
+  reunião deliberativa de **qualquer comissão** numa data e diz se há projetos
+  de **autoria ou relatoria** de um partido/deputado — *"na reunião de minas e
+  energia e saúde do dia 1º de julho tem projeto de deputado do Podemos?"*.
+  Aceita **várias comissões** numa tacada, traz o **teor do voto** do relator
+  (pela aprovação/rejeição), com o número da proposição em negrito. Saída
+  verbatim (não passa por paráfrase do LLM).
 - **Medidas Provisórias — publicação no Diário Oficial (DOU)**: autentica no
   **Inlabs**, baixa os ZIPs do DOU (DO1E + DO1), extrai as MPs do dia e entrega
   um aviso (número, ementa, prazos, link) + **nota técnica em DOCX** no padrão
@@ -111,7 +118,13 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   agente (OCR de recibo/boleto, leitura de placa, resumo de screenshot…), e
   pode acionar tools. Provider de visão configurável (`/provider_visao`).
 - **Multi-provider LLM**: Anthropic, OpenAI, Gemini (com modelos 2.5 e 3.x).
-  Troca em runtime via `/provider`; preferência persistida por usuário.
+  Troca em runtime via `/provider`; preferência persistida por usuário. O
+  **modelo** de cada provider também é escolhível por id — `/provider modelos
+  [provider]` **lista dinamicamente** o que a Models API oferece (modelo novo
+  aparece sozinho, ex.: Sonnet 5) e `/provider anthropic <id>` | `/provider
+  openai <id>` | `/provider gemini <id>` fixa o modelo (por usuário; sem id
+  volta ao `.env`). `/voice modelos` e `/provider_visao modelos` filtram por
+  modalidade (áudio / imagem).
   Prompt caching no Anthropic pra reduzir custo; no Gemini o caching implícito
   (2.5/3.x) aproveita o mesmo prefixo estável. Para isso o prefixo `system +
   tools` é mantido fixo — data/hora e o resumo de memória entram na mensagem do
@@ -347,9 +360,10 @@ via chat. Tipos owner-only:
 | Comando | Descrição |
 |---|---|
 | `/ping` | Testa o LLM atual (provider e modelo) |
-| `/provider anthropic\|openai\|gemini` | Troca o LLM. No Gemini escolhe o modelo: `/provider gemini 3.5` \| `3.1-pro` \| `3.1-lite` \| `pro` \| `flash` |
-| `/provider_visao anthropic\|openai\|gemini\|auto` | Provider só para imagens (auto = segue o `/provider`) |
-| `/voice gemini\|openai` | Provider da transcrição de voz (Gemini multimodal vs Whisper) |
+| `/provider anthropic\|openai\|gemini` | Troca o LLM. Fixa o modelo por id: `/provider anthropic claude-sonnet-5` \| `/provider openai gpt-5.1` \| `/provider gemini <id>` (ou aliases `3.5`\|`3.1-pro`\|`pro`\|`flash`). Sem id volta ao `.env` |
+| `/provider modelos [provider]` | Lista dinâmica dos modelos disponíveis na API (metadata, não gasta token) |
+| `/provider_visao anthropic\|openai\|gemini\|auto` | Provider só para imagens (auto = segue o `/provider`). `/provider_visao modelos` lista os que aceitam imagem |
+| `/voice gemini\|openai` | Provider da transcrição de voz (Gemini multimodal vs Whisper). `/voice modelos` lista os que aceitam áudio |
 | `/reset` | Limpa o contexto da conversa livre |
 | `/start` | Início + fluxo de senha |
 | `/help` | Lista todos os comandos |
@@ -383,7 +397,9 @@ Atalhos de comando por voz (provider `gemini`):
 
 > Pedidos de trânsito casa↔trabalho no chat livre (voz `openai` ou texto)
 > devolvem a **mesma mensagem** do `/transito_agora` (2 rotas, tempo atual vs
-> típico, link do mapa) — sem paráfrase do LLM. Idem congresso e consulta de MP.
+> típico, link do mapa) — sem paráfrase do LLM. Idem congresso, consulta de MP,
+> pauta de comissão da Câmara, sessões de cinema (Cinemark) e a lista de
+> lembretes: saída **verbatim**, o modelo não reformata nem inventa dado.
 
 O bot ecoa a transcrição antes da resposta. Áudios acima de `VOICE_MAX_SECONDS`
 (default 120s) são rejeitados. Para desativar: `VOICE_ENABLED=false`.
