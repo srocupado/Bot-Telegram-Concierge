@@ -290,7 +290,8 @@ async def collect_transito(user: User, now_brt: datetime) -> list[ProactiveFact]
     import httpx
     from bot.services.traffic import (
         USER_AGENT as TRAFFIC_USER_AGENT,
-        fetch_traffic,
+        fetch_traffic_with_alternative,
+        format_traffic_briefing,
         parse_route_waypoints,
     )
     api_key = settings.google_maps_api_key.get_secret_value()
@@ -302,19 +303,15 @@ async def collect_transito(user: User, now_brt: datetime) -> list[ProactiveFact]
             waypoints: list[str] = []
             if settings.route_google_maps_url:
                 waypoints = await parse_route_waypoints(client, settings.route_google_maps_url)
-            infos = await fetch_traffic(
+            # Duas rotas comparadas (mesma leitura do /transito_agora), não só uma.
+            pref, alt = await fetch_traffic_with_alternative(
                 client, api_key, settings.home_coords, settings.work_coords,
                 waypoints, maps_url=settings.route_google_maps_url or "",
             )
-        info = infos[0]
     except Exception:
         logger.warning("proactive: trânsito casa→trabalho falhou", exc_info=True)
         return []
-    via = f" via {info.summary}" if info.summary else ""
-    txt = (
-        f"~<b>{info.duration_minutes} min</b>{via} (típico ~{info.typical_minutes} min) · "
-        f'<a href="{info.maps_url}">mapa</a>'
-    )
+    txt = format_traffic_briefing(pref, alt)
     return [ProactiveFact("transito", "transito_trabalho", "", txt)]
 
 

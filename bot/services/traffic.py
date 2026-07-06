@@ -387,18 +387,11 @@ def _route_block(label: str, info: TrafficInfo, star: bool = False) -> list[str]
     return lines
 
 
-def format_traffic_message_dual(
-    preferred: TrafficInfo,
-    alternative: TrafficInfo | None,
-    when_label: str,
-) -> str:
-    if alternative is None:
-        return format_traffic_message(preferred, when_label)
-
-    label = html.escape(when_label)
-    lines = [f"🚗 <b>Trânsito {label}</b>", ""]
+def _dual_body(preferred: TrafficInfo, alternative: TrafficInfo) -> list[str]:
+    """Corpo comparativo (rota A + rota B + resumo rápida/curta), SEM cabeçalho.
+    Reusado pelo /transito (com cabeçalho) e pelo briefing (que já tem o seu)."""
     alt_faster = alternative.duration_minutes < preferred.duration_minutes
-    lines += _route_block("➡️ <i>rota A:</i>", preferred, star=not alt_faster)
+    lines = _route_block("➡️ <i>rota A:</i>", preferred, star=not alt_faster)
     lines.append("")
     lines += _route_block("➡️ <i>rota B:</i>", alternative, star=alt_faster)
 
@@ -420,4 +413,31 @@ def format_traffic_message_dual(
         lines.append(f"📏 <b>Rota curta:</b> {nome} (poupa ~{dkm} km)")
     else:
         lines.append("📏 <b>Rota curta:</b> mesma distância")
-    return "\n".join(lines)
+    return lines
+
+
+def format_traffic_message_dual(
+    preferred: TrafficInfo,
+    alternative: TrafficInfo | None,
+    when_label: str,
+) -> str:
+    if alternative is None:
+        return format_traffic_message(preferred, when_label)
+    label = html.escape(when_label)
+    return "\n".join([f"🚗 <b>Trânsito {label}</b>", ""] + _dual_body(preferred, alternative))
+
+
+def format_traffic_briefing(
+    preferred: TrafficInfo, alternative: TrafficInfo | None,
+) -> str:
+    """Bloco de trânsito pro briefing (SEM cabeçalho próprio — o briefing já põe
+    '🚗 Trânsito casa → trabalho'). Com alternativa distinta, mostra as duas
+    rotas comparadas (igual ao /transito); só uma rota → linha compacta."""
+    if alternative is None:
+        via = f" via {html.escape(preferred.summary)}" if preferred.summary else ""
+        return (
+            f"~<b>{preferred.duration_minutes} min</b>{via} "
+            f"(típico ~{preferred.typical_minutes} min) · "
+            f'<a href="{html.escape(preferred.maps_url, quote=True)}">mapa</a>'
+        )
+    return "\n".join(_dual_body(preferred, alternative))
