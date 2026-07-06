@@ -648,13 +648,45 @@ async def _gen_nota_gemini(mp: dict, *, model_override: str | None = None) -> di
 
 # ──────────────────────── prazos + formatação ────────────────────────
 
+# Recesso parlamentar (CF art. 57: sessão legislativa de 2/2 a 17/7 e de 1/8 a
+# 22/12) → recesso de 18 a 31 de julho e de 23/dez a 1º/fev. Durante o recesso os
+# prazos CONSTITUCIONAIS da MP ficam SUSPENSOS: a eficácia por força do art. 62,
+# §4º, e o sobrestamento (§6º) pela prática do Congresso (as tabelas oficiais de
+# prazo constitucional já descontam o recesso). O prazo de emendas (Res. 1/2002-
+# CN) é regimental e corre em dias corridos.
+def _em_recesso(d: date) -> bool:
+    if d.month == 7:
+        return d.day >= 18
+    if d.month == 12:
+        return d.day >= 23
+    if d.month == 1:
+        return True
+    if d.month == 2:
+        return d.day == 1
+    return False
+
+
+def _prazo_suspenso_recesso(pub: date, dias: int) -> date:
+    """`pub` + `dias`, mas dias de recesso NÃO contam (prazo suspenso). Fora de
+    qualquer recesso, equivale exatamente a `pub + timedelta(days=dias)`."""
+    d = pub
+    contados = 0
+    while contados < dias:
+        d += timedelta(days=1)
+        if not _em_recesso(d):
+            contados += 1
+    return d
+
+
 def compute_prazos(pub: date) -> dict:
     """Prazos regimentais a partir da publicação no DOU."""
     return {
-        "eficacia_fim": pub + timedelta(days=59),       # 60 dias
-        "sobrestamento": pub + timedelta(days=45),
+        # Constitucionais: suspensos durante o recesso (art. 62, §4º).
+        "eficacia_fim": _prazo_suspenso_recesso(pub, 59),      # 60 dias
+        "sobrestamento": _prazo_suspenso_recesso(pub, 45),
         # 6 dias contados da publicação (Res. 1/2002-CN, art. 4º, §1º): o dia da
-        # publicação não conta — ex.: DOU 23/06 → emendas até 29/06.
+        # publicação não conta — ex.: DOU 23/06 → emendas até 29/06. Regimental,
+        # em dias corridos (não sofre a suspensão do recesso).
         "emendas_fim": pub + timedelta(days=6),
     }
 
