@@ -180,6 +180,48 @@ async def on_location(
         dest_coords = hit.coords
         dest_label = hit.formatted_address
 
+    # "Melhor horário pra sair": varre a próxima 1h a partir de ONDE o usuário
+    # está (o pin que acabou de chegar), em vez de assumir casa.
+    if pending.kind == "melhor_horario":
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo
+        from bot.services.departure import parse_arrive_by, plan_departure
+        now = _dt.now(ZoneInfo(user.timezone))
+        arrive_by = parse_arrive_by(pending.arrive_by_raw, now) if pending.arrive_by_raw else None
+        if arrive_by is not None and arrive_by <= now:
+            arrive_by = None  # alvo já passou → cai no modo 'sair em breve'
+        try:
+            async with httpx.AsyncClient(
+                timeout=25.0, follow_redirects=True,
+                headers={"User-Agent": USER_AGENT},
+            ) as client:
+                html_out = await plan_departure(
+                    client, api_key, user_coords, dest_coords,
+                    now=now, arrive_by=arrive_by,
+                    origin_label="sua localização", dest_label=dest_label,
+                )
+        except Exception:
+            logger.exception("melhor_horario directions failed")
+            html_out = None
+        if not html_out:
+            await message.answer(
+                "⚠️ Não consegui prever o trânsito agora. Tente de novo em alguns minutos.",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            return
+        try:
+            await message.answer(
+                html_out, parse_mode="HTML", disable_web_page_preview=True,
+                reply_markup=ReplyKeyboardRemove(),
+            )
+        except Exception:
+            logger.exception("HTML send failed in melhor_horario")
+            await message.answer(
+                html_out, parse_mode=None, disable_web_page_preview=True,
+                reply_markup=ReplyKeyboardRemove(),
+            )
+        return
+
     # Calcula rota + alternativa do Google (mostra as duas, ⭐ na mais rápida).
     try:
         async with httpx.AsyncClient(

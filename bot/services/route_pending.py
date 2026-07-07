@@ -10,6 +10,8 @@ class PendingRoute:
     raw_query: str                 # texto original do usuário
     resolved_coords: str | None    # "lat,lng" se atalho conhecido; None → geocodar depois
     expires_at: datetime
+    kind: str = "rota"             # "rota" | "melhor_horario"
+    arrive_by_raw: str | None = None  # só p/ melhor_horario: horário-alvo cru ("9h")
 
 
 class PendingRoutes:
@@ -27,12 +29,15 @@ class PendingRoutes:
         return datetime.now(timezone.utc)
 
     def put(self, user_id: int, label: str, raw_query: str,
-            resolved_coords: str | None) -> PendingRoute:
+            resolved_coords: str | None, *, kind: str = "rota",
+            arrive_by_raw: str | None = None) -> PendingRoute:
         pending = PendingRoute(
             label=label,
             raw_query=raw_query,
             resolved_coords=resolved_coords,
             expires_at=self._now() + self._ttl,
+            kind=kind,
+            arrive_by_raw=arrive_by_raw,
         )
         self._store[user_id] = pending
         return pending

@@ -180,6 +180,38 @@ def format_departure_message(
     return "\n".join(lines)
 
 
+async def plan_departure(
+    client: httpx.AsyncClient,
+    api_key: str,
+    origin: str,
+    destination: str,
+    *,
+    now: datetime,
+    arrive_by: datetime | None,
+    origin_label: str,
+    dest_label: str,
+    waypoints: list[str] | None = None,
+) -> str | None:
+    """Varredura + escolha + formatação, dados origem/destino já resolvidos.
+    Devolve a mensagem HTML pronta, ou None se não houve sondagem válida (o
+    caller trata a mensagem de erro). Reusado pela tool (origem nomeada) e pelo
+    on_location (origem = GPS do usuário)."""
+    candidates = candidate_times(now, HORIZON_MIN, STEP_MIN, end=arrive_by)
+    if not candidates:
+        return None
+    options = await probe_departures(
+        client, api_key, origin, destination,
+        candidates=candidates, waypoints=waypoints or [],
+    )
+    best, feasible = choose_best(options, arrive_by)
+    if best is None:
+        return None
+    return format_departure_message(
+        origin_label, dest_label, best, options,
+        arrive_by=arrive_by, feasible=feasible,
+    )
+
+
 async def probe_departures(
     client: httpx.AsyncClient,
     api_key: str,

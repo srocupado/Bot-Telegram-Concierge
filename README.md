@@ -30,7 +30,9 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   trabalho?"* varre a próxima 1h prevendo o trânsito de cada horário (Directions
   com `departure_time` futuro) e recomenda a saída de menor tempo; com horário
   de chegada (*"preciso chegar no aeroporto às 9h, quando saio?"*) devolve a
-  última partida que ainda chega no prazo.
+  última partida que ainda chega no prazo. A origem pode ser dita (*"saindo do
+  trabalho"*, um endereço); se você não disser, o bot **pede sua localização**
+  (GPS, igual ao `/rota`) e calcula a partir de onde você está.
 - **Medidas Provisórias — pauta do Congresso** (digest semanal): agenda do
   Congresso Nacional via web scraping, filtrando MPs/CMMPV. Também por chat:
   *"como está a pauta do congresso?"* → mesma saída do `/congresso_agora`.

@@ -22,13 +22,8 @@ from bot.services.tasks import (
     mark_done,
 )
 from bot.services.departure import (
-    HORIZON_MIN,
-    STEP_MIN,
-    candidate_times,
-    choose_best,
-    format_departure_message,
     parse_arrive_by,
-    probe_departures,
+    plan_departure,
 )
 from bot.services.traffic import (
     USER_AGENT,
@@ -1308,19 +1303,54 @@ async def _h_consultar_transito(args: dict, ctx: ToolContext) -> str:
     )
 
 
+# Origem implícita → pede o GPS (mesma UX do /rota), em vez de chutar 'casa'.
+_MHS_LOC_NOW = {"", "minha_localizacao", "minha localizacao", "minha localização",
+                "atual", "agora", "daqui", "aqui", "onde estou", "current"}
+
+
 async def _h_melhor_horario_sair(args: dict, ctx: ToolContext) -> str:
+    from bot.services.route_pending import pending_routes
+
     destino = (args.get("destino") or "").strip()
-    origem = (args.get("origem") or "").strip() or "casa"
+    origem = (args.get("origem") or "").strip()
     chegar_ate_raw = (args.get("chegar_ate") or "").strip()
     if not destino:
         return "erro: parâmetro 'destino' é obrigatório"
     if not settings.google_maps_api_key:
         return "erro: GOOGLE_MAPS_API_KEY não configurada"
 
-    # Atalhos casa/trabalho → coords; qualquer outra string vai crua pra
-    # Directions (que geocoda endereço/lugar sozinha).
     aliases = {"casa": settings.home_coords, "trabalho": settings.work_coords}
-    o_low, d_low = origem.lower(), destino.lower()
+    d_low = destino.lower()
+
+    # SEM origem explícita → pede a localização (GPS) ao usuário; o cálculo segue
+    # em on_location (route.py) quando o pin chegar. Só 'casa'/'trabalho'/endereço
+    # ditos EXPLICITAMENTE pulam essa etapa.
+    if origem.lower() in _MHS_LOC_NOW:
+        dest_label, dest_coords = destino, None
+        if d_low == "casa":
+            if not settings.home_coords:
+                return "erro: HOME_COORDS não configurado pra 'casa'"
+            dest_label, dest_coords = "casa", settings.home_coords
+        elif d_low == "trabalho":
+            if not settings.work_coords:
+                return "erro: WORK_COORDS não configurado pra 'trabalho'"
+            dest_label, dest_coords = "trabalho", settings.work_coords
+        pending_routes.put(
+            user_id=ctx.user.id, label=dest_label, raw_query=destino,
+            resolved_coords=dest_coords, kind="melhor_horario",
+            arrive_by_raw=chegar_ate_raw or None,
+        )
+        alvo = f" (chegando até {chegar_ate_raw})" if chegar_ate_raw else ""
+        ctx.direct_html = (
+            "📍 Toque para enviar sua localização e eu calculo o melhor horário "
+            f"pra sair até <b>{_html_escape(dest_label)}</b>{_html_escape(alvo)}."
+        )
+        ctx.short_circuit = True
+        ctx.request_location = True
+        return "ok: pedi a localização ao usuário (não escreva nada, a mensagem já foi enviada)"
+
+    # Origem explícita (casa/trabalho/endereço/POI): calcula direto.
+    o_low = origem.lower()
     origem_res = aliases.get(o_low, origem)
     destino_res = aliases.get(d_low, destino)
     if origem_res is None:
@@ -1328,8 +1358,7 @@ async def _h_melhor_horario_sair(args: dict, ctx: ToolContext) -> str:
     if destino_res is None:
         return "erro: 'casa'/'trabalho' no destino mas HOME_COORDS/WORK_COORDS não configurado"
 
-    tz = ZoneInfo(ctx.tz)
-    now = datetime.now(tz)
+    now = datetime.now(ZoneInfo(ctx.tz))
     arrive_by = None
     if chegar_ate_raw:
         arrive_by = parse_arrive_by(chegar_ate_raw, now)
@@ -1337,10 +1366,6 @@ async def _h_melhor_horario_sair(args: dict, ctx: ToolContext) -> str:
             return "erro: não entendi 'chegar_ate' (use HH:MM, '9h' ou ISO local)"
         if arrive_by <= now:
             return "erro: o horário de chegada informado já passou"
-
-    candidates = candidate_times(now, HORIZON_MIN, STEP_MIN, end=arrive_by)
-    if not candidates:
-        return "erro: janela de horários vazia (chegada muito próxima de agora)"
 
     api_key = settings.google_maps_api_key.get_secret_value()
     try:
@@ -1354,24 +1379,20 @@ async def _h_melhor_horario_sair(args: dict, ctx: ToolContext) -> str:
                 waypoints = await parse_route_waypoints(client, settings.route_google_maps_url)
                 if d_low == "casa":  # trabalho → casa = rota invertida
                     waypoints = list(reversed(waypoints))
-            options = await probe_departures(
+            html_out = await plan_departure(
                 client, api_key, origem_res, destino_res,
-                candidates=candidates, waypoints=waypoints,
+                now=now, arrive_by=arrive_by,
+                origin_label=(o_low if o_low in aliases else origem),
+                dest_label=(d_low if d_low in aliases else destino),
+                waypoints=waypoints,
             )
     except Exception as e:  # rede/Directions — não deixa vazar pro LLM
         logger.exception("melhor_horario_sair falhou")
         return f"erro: {e}"
 
-    best, feasible = choose_best(options, arrive_by)
-    if best is None:
+    if not html_out:
         return "erro: não consegui prever o trânsito agora (nenhuma sondagem respondeu)"
-
-    origem_label = o_low if o_low in aliases else origem
-    destino_label = d_low if d_low in aliases else destino
-    ctx.direct_html = format_departure_message(
-        origem_label, destino_label, best, options,
-        arrive_by=arrive_by, feasible=feasible,
-    )
+    ctx.direct_html = html_out
     ctx.short_circuit = True
     return "ok: melhor horário entregue ao usuário (não escreva nada, a mensagem já foi enviada)"
 
@@ -1840,8 +1861,10 @@ TOOLS: list[Tool] = [
             "Use quando o usuário perguntar 'que horas é melhor sair pro X?', "
             "'quando devo sair pra pegar menos trânsito?', ou der um horário de "
             "chegada ('preciso chegar no aeroporto às 9h, quando saio?').\n"
-            "• origem: 'casa' (default se omitido) | 'trabalho' | endereço/POI. "
-            "Só passe 'casa'/'trabalho' com base no que o usuário disse.\n"
+            "• origem: só passe se o usuário disser EXPLICITAMENTE de onde sai "
+            "('de casa', 'do trabalho', 'da Rua X', 'do shopping Y'). Se ele NÃO "
+            "disser a origem, OMITA o campo — o servidor pede a localização (GPS) "
+            "dele. NUNCA chute 'casa'/'trabalho' pelo destino.\n"
             "• destino: 'casa' | 'trabalho' | endereço / POI livre.\n"
             "• chegar_ate (opcional): horário-alvo de chegada. Passe a HORA que "
             "o usuário falou como 'HH:MM' ('9h'→'09:00') ou ISO local; sem isso, "
@@ -1852,7 +1875,11 @@ TOOLS: list[Tool] = [
             "properties": {
                 "origem": {
                     "type": "string",
-                    "description": "'casa' (default) | 'trabalho' | 'lat,lng' | endereço/POI",
+                    "description": (
+                        "OMITA se o usuário não disser de onde sai (o servidor pede "
+                        "o GPS). Só preencha com o que ele DISSE: 'casa' | 'trabalho' "
+                        "| 'lat,lng' | endereço/POI."
+                    ),
                 },
                 "destino": {
                     "type": "string",
