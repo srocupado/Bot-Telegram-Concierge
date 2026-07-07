@@ -14,7 +14,8 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
 - **Agente proativo (opt-in)**: roda em janelas do dia (default 7/13/19h BRT)
   e avisa por conta própria — vencimentos chegando (lembretes não recorrentes
   + fatura do cartão), **briefing matinal** (previsão do tempo do dia,
-  lembretes do dia, **tarefas abertas**, trânsito casa→trabalho e MPs do dia
+  lembretes do dia, **tarefas abertas**, trânsito casa→trabalho **com as duas
+  rotas comparadas** (igual ao `/transito_agora`) e MPs do dia
   anterior), **tarefas abertas** também no **resumo do fim do dia** (última
   janela), **nudges** por inatividade
   (treino/finanças/lista parados) e **revisão da carteira** na última janela do
@@ -47,9 +48,12 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   **Inlabs**, baixa os ZIPs do DOU (DO1E + DO1), extrai as MPs do dia e entrega
   um aviso (número, ementa, prazos, link) + **nota técnica em DOCX** no padrão
   institucional, gerada por IA em duas fases (pesquisa de contexto com busca
-  web + redação estruturada). A detecção de MP nova está integrada ao **agente
-  proativo** (avisa nas janelas do dia e cobre a véspera no briefing); a nota
-  completa vem sob demanda (`/mp_dou_agora` ou botão "gerar nota").
+  web + redação estruturada). Os prazos de **eficácia** e **sobrestamento**
+  descontam o **recesso parlamentar** (CF art. 62 §4º; recesso 18–31/jul e
+  23/dez–1º/fev), como o Congresso adota — não são dias corridos. A detecção de
+  MP nova está integrada ao **agente proativo** (avisa nas janelas do dia e
+  cobre a véspera no briefing); a nota completa vem sob demanda (`/mp_dou_agora`
+  ou botão "gerar nota").
 - **Gerenciador financeiro** (Firestore, integra com o app externo
   *gerenciador-financeiro*): lança compras no cartão, movimentos no banco,
   aportes em Tesouro Direto e **operações de compra/venda em ações, FIIs,
