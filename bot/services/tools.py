@@ -2398,10 +2398,14 @@ TOOLS: list[Tool] = [
         description=(
             "Pauta de uma COMISSÃO da Câmara dos Deputados numa DATA — dado "
             "oficial (API de Dados Abertos), nunca inventa. Diz quais "
-            "proposições estão na reunião, com autor e PARTIDO. USE pra 'o que a "
+            "proposições estão na reunião, com autor e PARTIDO. É ESTA (não "
+            "listar_comissoes_reuniao) SEMPRE que o usuário NOMEAR a(s) "
+            "comissão(ões) OU perguntar sobre PROJETOS / partido / deputado — "
+            "mesmo que diga 'em reuniões de hoje'. USE pra 'o que a "
             "Comissão de Saúde vota dia 1º de julho', 'tem projeto do Podemos na "
             "pauta da CCJ amanhã', 'tem algo do deputado Fulano na comissão Y "
-            "essa data'. Se o usuário citar VÁRIAS comissões, passe TODAS em "
+            "essa data', 'projetos do Podemos na CMADS e na CREDN hoje'. Se o "
+            "usuário citar VÁRIAS comissões, passe TODAS em "
             "'comissoes' numa única chamada (ex: ['Minas e Energia','Saúde']). "
             "Filtra por partido e/ou deputado. Só comissões PERMANENTES da "
             "Câmara (não Senado, não CPI). NUNCA use buscar_web pra isso — a "
@@ -2427,12 +2431,13 @@ TOOLS: list[Tool] = [
         name="listar_comissoes_reuniao",
         description=(
             "Lista QUAIS comissões permanentes da Câmara têm REUNIÃO "
-            "DELIBERATIVA numa data — dado oficial (API de Dados Abertos). USE "
-            "quando o usuário perguntar de forma ABERTA, sem nomear comissão: "
-            "'quais comissões têm reunião deliberativa hoje?', 'que comissões se "
-            "reúnem amanhã?'. Se ele NOMEAR a(s) comissão(ões), use "
-            "consultar_pauta_camara. Só comissões permanentes (não Senado, não "
-            "CPI). NUNCA use buscar_web pra isso."
+            "DELIBERATIVA numa data. USE SÓ na pergunta ABERTA — 'quais "
+            "comissões têm reunião hoje?', 'que comissões se reúnem amanhã?' — "
+            "em que o usuário NÃO nomeia comissão E NÃO fala de projeto/partido/"
+            "deputado. GATE (siga à risca): se o usuário CITAR qualquer comissão "
+            "(CMADS, CREDN, CCJ, Saúde…) OU perguntar sobre PROJETOS / partido / "
+            "deputado, NÃO É ESTA — use consultar_pauta_camara, mesmo que ele "
+            "diga 'reuniões de hoje'. Só comissões permanentes. Nunca buscar_web."
         ),
         parameters={
             "type": "object",
