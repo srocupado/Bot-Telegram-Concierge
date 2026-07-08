@@ -406,3 +406,64 @@ async def consultar_pauta(
             else:
                 secoes.append(await _secao_comissao(client, cands[0], d, partido, deputado, deps))
         return "\n\n".join(secoes)
+
+
+async def _eventos_do_dia(client: httpx.AsyncClient, d: date) -> list[dict]:
+    """Todos os eventos da Câmara na data (endpoint global /eventos), paginado."""
+    out: list[dict] = []
+    for pagina in range(1, 6):  # até 500 eventos/dia, folgado
+        dados = await _get(client, "/eventos", {
+            "dataInicio": d.isoformat(), "dataFim": d.isoformat(),
+            "itens": 100, "pagina": pagina,
+        })
+        if not dados:
+            break
+        out.extend(dados)
+        if len(dados) < 100:
+            break
+    return out
+
+
+async def listar_reunioes_deliberativas(
+    data_texto: str, *, tz: str = "America/Sao_Paulo",
+) -> str:
+    """Comissões PERMANENTES da Câmara com reunião DELIBERATIVA numa data.
+    Varre o endpoint global de eventos, filtra por tipo 'deliberativa' e por
+    órgão permanente (codTipoOrgao=2). Texto pronto pro chat (dado oficial)."""
+    hoje = datetime.now(ZoneInfo(tz)).date()
+    d = parse_data(data_texto, hoje)
+    if not d:
+        return "erro: não entendi a data (use DD/MM, AAAA-MM-DD, 'hoje', 'amanhã' ou '1º de julho')."
+
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        eventos = await _eventos_do_dia(client, d)
+
+    achados: dict[int, dict] = {}
+    for ev in eventos:
+        if "deliberativ" not in _norm(ev.get("descricaoTipo") or ""):
+            continue
+        hora = (ev.get("dataHoraInicio") or "")[11:16]
+        for org in (ev.get("orgaos") or []):
+            if org.get("codTipoOrgao") != 2:  # só comissão PERMANENTE
+                continue
+            oid = org.get("id")
+            e = achados.setdefault(oid, {
+                "sigla": org.get("sigla") or "", "nome": org.get("nome") or "", "horas": [],
+            })
+            if hora and hora not in e["horas"]:
+                e["horas"].append(hora)
+
+    if not achados:
+        return f"🏛️ Nenhuma comissão permanente com reunião deliberativa em {_br(d)}."
+    linhas = [f"🏛️ Comissões com reunião deliberativa — {_br(d)}"]
+    for e in sorted(achados.values(), key=lambda x: x["sigla"]):
+        horas = ", ".join(_fmt_hora(h) for h in sorted(e["horas"])) or "horário a confirmar"
+        # sigla em negrito (\x02..\x03 → <b> no handler).
+        linhas.append(f"• \x02{e['sigla']}\x03 ({e['nome']}) — {horas}")
+    return "\n".join(linhas)
+
+
+def _fmt_hora(h: str) -> str:
+    """'14:30' → '14h30'; '10:00' → '10h'."""
+    hh, _, mm = h.partition(":")
+    return f"{hh}h{mm}" if mm and mm != "00" else f"{hh}h"

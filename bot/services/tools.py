@@ -1195,6 +1195,25 @@ async def _h_consultar_pauta_camara(args: dict, ctx: ToolContext) -> str:
     return "ok: pauta enviada ao usuário (não escreva nada, a mensagem já foi enviada)"
 
 
+async def _h_listar_comissoes_reuniao(args: dict, ctx: ToolContext) -> str:
+    from bot.services.camara import CamaraError, listar_reunioes_deliberativas
+
+    data = (args.get("data") or "").strip() or "hoje"
+    try:
+        texto = await listar_reunioes_deliberativas(data, tz=ctx.tz)
+    except CamaraError as e:
+        return f"erro: API da Câmara indisponível ({e})"
+    except Exception as e:
+        logger.exception("camara: falha ao listar reuniões")
+        return f"erro: não consegui listar as reuniões da Câmara agora ({type(e).__name__})"
+    if texto.startswith("erro"):
+        return texto
+    ctx.fallback_text = texto.replace("\x02", "").replace("\x03", "")
+    ctx.direct_html = _html_escape(texto).replace("\x02", "<b>").replace("\x03", "</b>")
+    ctx.short_circuit = True
+    return "ok: lista de comissões enviada ao usuário (não escreva nada, a mensagem já foi enviada)"
+
+
 async def _h_consultar_transito(args: dict, ctx: ToolContext) -> str:
     origem = (args.get("origem") or "").strip()
     destino = (args.get("destino") or "").strip()
@@ -2403,6 +2422,29 @@ TOOLS: list[Tool] = [
             "required": ["comissoes", "data"],
         },
         handler=_h_consultar_pauta_camara,
+    ),
+    Tool(
+        name="listar_comissoes_reuniao",
+        description=(
+            "Lista QUAIS comissões permanentes da Câmara têm REUNIÃO "
+            "DELIBERATIVA numa data — dado oficial (API de Dados Abertos). USE "
+            "quando o usuário perguntar de forma ABERTA, sem nomear comissão: "
+            "'quais comissões têm reunião deliberativa hoje?', 'que comissões se "
+            "reúnem amanhã?'. Se ele NOMEAR a(s) comissão(ões), use "
+            "consultar_pauta_camara. Só comissões permanentes (não Senado, não "
+            "CPI). NUNCA use buscar_web pra isso."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "string",
+                    "description": "Data: AAAA-MM-DD, DD/MM, 'hoje' (default), 'amanhã' ou '1º de julho'.",
+                },
+            },
+            "required": [],
+        },
+        handler=_h_listar_comissoes_reuniao,
     ),
     Tool(
         name="buscar_web",

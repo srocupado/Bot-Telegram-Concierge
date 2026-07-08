@@ -42,8 +42,10 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   de **autoria ou relatoria** de um partido/deputado — *"na reunião de minas e
   energia e saúde do dia 1º de julho tem projeto de deputado do Podemos?"*.
   Aceita **várias comissões** numa tacada, traz o **teor do voto** do relator
-  (pela aprovação/rejeição), com o número da proposição em negrito. Saída
-  verbatim (não passa por paráfrase do LLM).
+  (pela aprovação/rejeição), com o número da proposição em negrito. Também
+  responde à pergunta ABERTA *"quais comissões têm reunião deliberativa hoje?"*
+  (varre todas as comissões permanentes e lista as que têm reunião, com
+  horário). Saída verbatim (não passa por paráfrase do LLM).
 - **Medidas Provisórias — publicação no Diário Oficial (DOU)**: autentica no
   **Inlabs**, baixa os ZIPs do DOU (DO1E + DO1), extrai as MPs do dia e entrega
   um aviso (número, ementa, prazos, link) + **nota técnica em DOCX** no padrão
