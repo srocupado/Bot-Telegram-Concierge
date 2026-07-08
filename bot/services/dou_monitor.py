@@ -261,6 +261,7 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
             raise DouError("autenticação Inlabs falhou (cookie ausente) — verifique e-mail/senha.")
 
         date_str = target_date.strftime("%Y-%m-%d")
+        failed_sections: list[str] = []
         for section in DOU_SECTIONS:
             url = f"{INLABS_BASE}/index.php?p={date_str}&dl={date_str}-{section}.zip"
             try:
@@ -268,11 +269,11 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
                     url, headers={"Cookie": f"inlabs_session_cookie={cookie}"}, timeout=60.0,
                 ))
                 if r.status_code == 404:
-                    continue
+                    continue  # seção não publicada nessa data (legítimo)
                 r.raise_for_status()
                 content = r.content
                 if len(content) < 100 or content[:2] != b"PK":
-                    continue  # seção não publicada / resposta HTML
+                    continue  # não publicada / resposta HTML (legítimo)
                 with zipfile.ZipFile(io.BytesIO(content)) as zf:
                     for name in (n for n in zf.namelist() if n.lower().endswith(".xml")):
                         xml_data = zf.read(name).decode("utf-8", errors="replace")
@@ -285,8 +286,23 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
                                 results.append(mp)
             except zipfile.BadZipFile:
                 logger.warning("dou: ZIP inválido em %s", section)
-            except Exception as exc:
-                logger.warning("dou: erro processando %s: %s", section, exc)
+                failed_sections.append(section)
+            except Exception as exc:  # 502/timeout após retries, conexão…
+                logger.warning("dou: erro baixando/processando %s: %s", section, exc)
+                failed_sections.append(section)
+
+    # Falso negativo é o pior caso: se NÃO achamos nada MAS uma seção falhou de
+    # verdade (≠ "não publicada"), não dá pra afirmar "sem MP" — levanta pro
+    # caller dizer "não consegui checar" em vez de "nenhuma MP".
+    if failed_sections and not results:
+        raise DouError(
+            f"não consegui baixar o DOU (seção(ões) {', '.join(failed_sections)} "
+            "indisponíveis no Inlabs) — não dá pra confirmar se houve MP; "
+            "tente de novo em instantes."
+        )
+    if failed_sections:
+        logger.warning("dou: %s — seção(ões) %s falharam; lista pode estar "
+                       "incompleta", target_date, failed_sections)
     return results
 
 
