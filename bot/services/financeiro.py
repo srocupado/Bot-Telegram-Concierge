@@ -766,17 +766,21 @@ def format_carteira_review(assets: list[dict], prices: dict[str, float]) -> str 
     parênteses pra contexto. Total destacado por separador.
     Retorna None se nada a mostrar."""
     rows: list[tuple[dict, dict]] = []
+    sem_cotacao: list[str] = []
     for a in assets:
         if (a.get("class") or "") not in QUOTABLE_CLASSES:
-            continue
-        t = (a.get("ticker") or "").strip().upper()
-        if t not in prices:
             continue
         m = _compute_asset_metrics(a)
         if m["qty"] <= 0:
             continue
+        t = (a.get("ticker") or "").strip().upper()
+        if t not in prices:
+            # Ativo real, com posição, mas SEM cotação (brapi falhou) — não some
+            # em silêncio: reporta no fim pra não parecer que "não existe".
+            sem_cotacao.append(t or "?")
+            continue
         rows.append((a, m))
-    if not rows:
+    if not rows and not sem_cotacao:
         return None
 
     rows.sort(key=lambda x: x[1]["position"], reverse=True)
@@ -811,14 +815,20 @@ def format_carteira_review(assets: list[dict], prices: dict[str, float]) -> str 
         )
         blocks.append(block)
 
-    tsign = "+" if total_pnl >= 0 else "−"
-    tpct = (total_pnl / total_inv * 100) if total_inv > 0 else 0.0
-    total_block = (
-        "━━━━━━━━━━━━━━━\n"
-        f"<b>Total</b>  {_fmt_brl(total_inv)} → {_fmt_brl(total_mkt)}\n"
-        f"{tsign}{_fmt_brl(abs(total_pnl))}  ({_pct_br(tpct, tsign)})"
-    )
-    blocks.append(total_block)
+    if rows:
+        tsign = "+" if total_pnl >= 0 else "−"
+        tpct = (total_pnl / total_inv * 100) if total_inv > 0 else 0.0
+        total_block = (
+            "━━━━━━━━━━━━━━━\n"
+            f"<b>Total</b>  {_fmt_brl(total_inv)} → {_fmt_brl(total_mkt)}\n"
+            f"{tsign}{_fmt_brl(abs(total_pnl))}  ({_pct_br(tpct, tsign)})"
+        )
+        blocks.append(total_block)
+    if sem_cotacao:
+        blocks.append(
+            "⚠️ Sem cotação de " + ", ".join(sorted(set(sem_cotacao)))
+            + " (brapi falhou; fora do total). Tenta de novo mais tarde."
+        )
     return "\n\n".join(blocks)
 
 

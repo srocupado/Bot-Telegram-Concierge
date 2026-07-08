@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 
 _BRAPI_URL = "https://brapi.dev/api/quote/{ticker}"
 USER_AGENT = "Bot-Telegram-Concierge/1.0"
+# Erros transitórios da brapi (incl. 500 "INTERNAL_ERROR / Erro ao validar
+# autenticação", que hiccupa por request mesmo com token válido) → vale retry.
+_QUOTE_RETRY_STATUS = {429, 500, 502, 503, 504}
+_QUOTE_RETRIES = 3
 
 
 class QuotesError(Exception):
@@ -35,25 +39,33 @@ async def _fetch_one(
     client: httpx.AsyncClient, ticker: str, token: str,
 ) -> tuple[str, float | None, str | None]:
     """Cotação de UM ticker. Retorna (ticker, preço_ou_None, erro_ou_None).
-    Falha individual não derruba a carteira inteira."""
-    try:
-        resp = await client.get(
-            _BRAPI_URL.format(ticker=ticker), params={"token": token},
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            for item in data.get("results") or []:
-                price = item.get("regularMarketPrice")
-                if price is not None:
-                    try:
-                        return ticker, float(price), None
-                    except (TypeError, ValueError):
-                        pass
-            return ticker, None, "resposta sem preço"
-        body = (resp.text or "").strip()[:200]
-        return ticker, None, f"HTTP {resp.status_code}: {body or '(sem corpo)'}"
-    except Exception as e:
-        return ticker, None, f"erro: {e}"
+    Retenta em erro transitório da brapi (5xx/429/rede); falha individual não
+    derruba a carteira inteira."""
+    last_err: str | None = None
+    for attempt in range(1, _QUOTE_RETRIES + 1):
+        try:
+            resp = await client.get(
+                _BRAPI_URL.format(ticker=ticker), params={"token": token},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                for item in data.get("results") or []:
+                    price = item.get("regularMarketPrice")
+                    if price is not None:
+                        try:
+                            return ticker, float(price), None
+                        except (TypeError, ValueError):
+                            pass
+                return ticker, None, "resposta sem preço"  # 200 válido, não retenta
+            body = (resp.text or "").strip()[:200]
+            last_err = f"HTTP {resp.status_code}: {body or '(sem corpo)'}"
+            if resp.status_code not in _QUOTE_RETRY_STATUS:
+                return ticker, None, last_err  # 4xx do pedido → não retenta
+        except Exception as e:
+            last_err = f"erro: {e}"
+        if attempt < _QUOTE_RETRIES:
+            await asyncio.sleep(attempt)  # 1s, 2s
+    return ticker, None, last_err
 
 
 async def fetch_quotes(tickers: list[str]) -> dict[str, float]:
