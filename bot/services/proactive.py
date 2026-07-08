@@ -146,11 +146,13 @@ async def collect_mp(
     from bot.services.dou_monitor import fetch_mps
     facts: list[ProactiveFact] = []
     seen: set[str] = set()
+    failed: list[date] = []
     for d in dates:
         try:
             mps = await fetch_mps(d)
         except Exception as exc:
             logger.warning("proactive: fetch_mps(%s) falhou: %s", d, exc)
+            failed.append(d)
             continue
         for mp in mps:
             key = f"{mp['numero']}/{mp['ano']}"
@@ -164,6 +166,23 @@ async def collect_mp(
                 "mp", "mp", key,
                 f"📜 MP {mp['numero']}/{mp['ano']}: {ementa}",
                 date_iso=d.isoformat(),
+            ))
+
+    # CRÍTICO: se NÃO conseguiu checar o DOU, AVISA — senão o usuário vê o
+    # briefing sem MP e conclui (errado) que não houve MP publicada. Dedup por
+    # conjunto de datas falhas (kind 'mp_fail' é marcado após o envio), pra
+    # avisar 1x e não repetir a cada janela na mesma pane. date_iso=None mantém
+    # o aviso FORA do botão de nota técnica (não é uma MP de verdade).
+    if failed:
+        fkey = "fail:" + ",".join(sorted(d.isoformat() for d in failed))
+        if force or not await already_notified(session, user.id, "mp_fail", fkey):
+            datas = ", ".join(d.strftime("%d/%m") for d in failed)
+            facts.append(ProactiveFact(
+                "mp", "mp_fail", fkey,
+                f"⚠️ <b>Não consegui checar o DOU</b> de {datas} (Inlabs "
+                "instável). NÃO assuma que não houve MP — confira depois com "
+                "<code>/mp_dou_agora</code>.",
+                date_iso=None,
             ))
     return facts
 
