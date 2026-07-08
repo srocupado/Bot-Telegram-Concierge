@@ -15,6 +15,7 @@ from bot.services.chat_memory import memory
 from bot.services.llm.base import ToolContext
 from bot.services.llm.factory import get_provider_for_user
 from bot.services.tools import TOOLS
+from bot.utils import chunk_text
 
 router = Router(name=__name__)
 logger = logging.getLogger(__name__)
@@ -53,6 +54,29 @@ def _to_telegram_markdown(text: str) -> str:
     return text
 
 
+async def send_html_chunked(
+    message: Message, html_text: str, *, reply_markup=None,
+) -> None:
+    """Envia HTML que pode passar de 4096 chars (teto do Telegram): quebra em
+    blocos (só em \\n, sem partir tags) e manda cada um. Se o HTML falhar num
+    bloco, reenvia aquele bloco em texto puro. Teclado (se houver) só no último
+    bloco. Sem isto, um verbatim grande (ex.: pauta de câmara) estourava e a
+    mensagem inteira sumia."""
+    chunks = chunk_text(html_text) or [""]
+    for i, chunk in enumerate(chunks):
+        kb = reply_markup if i == len(chunks) - 1 else None
+        try:
+            await message.answer(
+                chunk, parse_mode="HTML", disable_web_page_preview=True,
+                reply_markup=kb,
+            )
+        except TelegramBadRequest:
+            await message.answer(
+                chunk, parse_mode=None, disable_web_page_preview=True,
+                reply_markup=kb,
+            )
+
+
 async def answer_llm(
     message: Message, text: str, reply_markup=None, *,
     disable_web_page_preview: bool = False,
@@ -60,14 +84,17 @@ async def answer_llm(
     """Envia resposta do LLM com fallback. O bot usa parse_mode=Markdown por
     padrão, mas texto livre do LLM pode ter markdown quebrado (ex.: '*' ou '`'
     sem fechar) → Telegram rejeita a mensagem inteira (BadRequest). Nesse caso
-    reenvia em texto puro pra mensagem não sumir."""
+    reenvia em texto puro. Respostas longas (>4096) são quebradas em blocos."""
     text = _to_telegram_markdown(text or "(sem resposta)")
-    try:
-        await message.answer(text, reply_markup=reply_markup,
-                             disable_web_page_preview=disable_web_page_preview)
-    except TelegramBadRequest:
-        await message.answer(text, parse_mode=None, reply_markup=reply_markup,
-                             disable_web_page_preview=disable_web_page_preview)
+    chunks = chunk_text(text) or [""]
+    for i, chunk in enumerate(chunks):
+        kb = reply_markup if i == len(chunks) - 1 else None
+        try:
+            await message.answer(chunk, reply_markup=kb,
+                                 disable_web_page_preview=disable_web_page_preview)
+        except TelegramBadRequest:
+            await message.answer(chunk, parse_mode=None, reply_markup=kb,
+                                 disable_web_page_preview=disable_web_page_preview)
 
 
 _SYSTEM_PROMPT_TEMPLATE = (
@@ -477,16 +504,7 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
         if ctx.request_location:
             from bot.handlers.route import _build_keyboard
             loc_kb = _build_keyboard()
-        try:
-            await message.answer(
-                ctx.direct_html, parse_mode="HTML", disable_web_page_preview=True,
-                reply_markup=loc_kb,
-            )
-        except Exception:
-            await message.answer(
-                ctx.direct_html, parse_mode=None, disable_web_page_preview=True,
-                reply_markup=loc_kb,
-            )
+        await send_html_chunked(message, ctx.direct_html, reply_markup=loc_kb)
         return
 
     # O Gemini às vezes volta texto vazio após uma tool call; se a tool deixou

@@ -411,22 +411,14 @@ async def _dispatch_chat(
     reply = guard_financial_reply(text, ctx.financial_logged_ok, reply)
 
     if ctx.direct_html:
+        from bot.handlers.chat import send_html_chunked
         memory.append(chat_id, "user", text)
         memory.append(chat_id, "assistant", ctx.direct_html)
         loc_kb = None
         if ctx.request_location:
             from bot.handlers.route import _build_keyboard
             loc_kb = _build_keyboard()
-        try:
-            await message.answer(
-                ctx.direct_html, parse_mode="HTML", disable_web_page_preview=True,
-                reply_markup=loc_kb,
-            )
-        except Exception:
-            await message.answer(
-                ctx.direct_html, parse_mode=None, disable_web_page_preview=True,
-                reply_markup=loc_kb,
-            )
+        await send_html_chunked(message, ctx.direct_html, reply_markup=loc_kb)
         return
 
     # O Gemini às vezes volta texto vazio após uma tool call; se a tool deixou
