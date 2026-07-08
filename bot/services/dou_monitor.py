@@ -210,12 +210,21 @@ def _parse_dou_xml(client: httpx.Client, xml_content: str, target_date: date) ->
 # frequência — transitórios. Retry com backoff evita perder a busca inteira por
 # um Bad Gateway passageiro. Roda em thread (fetch_mps), então time.sleep é ok.
 _INLABS_RETRY_STATUS = frozenset({500, 502, 503, 504})
+# O Inlabs serve uma página "Sistema em Manutenção" (com status 502) quando o
+# sistema está fora pra manutenção — não adianta retentar, e o usuário merece
+# uma mensagem clara em vez de "HTTP 502".
+_MAINT_RE = re.compile(r"manuten[çc][ãa]o", re.IGNORECASE)
+
+
+class InlabsMaintenanceError(DouError):
+    pass
 
 
 def _inlabs_call(do_request, *, tries: int = 3):
     """do_request() → httpx.Response. Retenta em 5xx transitório/timeout do
     Inlabs (backoff 2s, 4s) e devolve a Response (o caller checa status/404).
-    Levanta o último erro se esgotar as tentativas."""
+    Levanta InlabsMaintenanceError se cair na página de manutenção (sem
+    retentar), ou o último erro se esgotar as tentativas."""
     last: Exception | None = None
     for attempt in range(1, tries + 1):
         try:
@@ -225,6 +234,12 @@ def _inlabs_call(do_request, *, tries: int = 3):
         else:
             if r.status_code not in _INLABS_RETRY_STATUS:
                 return r
+            # Página de manutenção: não é transitório, não retenta.
+            if _MAINT_RE.search(r.text or ""):
+                raise InlabsMaintenanceError(
+                    "o Inlabs (sistema oficial do DOU) está em manutenção agora "
+                    "— não dá pra checar as MPs. Tente mais tarde."
+                )
             last = httpx.HTTPStatusError(
                 f"HTTP {r.status_code}", request=r.request, response=r)
         if attempt < tries:
@@ -254,6 +269,8 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
                 timeout=20.0,
             ))
             resp.raise_for_status()
+        except DouError:
+            raise  # InlabsMaintenanceError já traz mensagem clara
         except Exception as exc:
             raise DouError(f"falha ao autenticar no Inlabs: {exc}") from exc
         cookie = client.cookies.get("inlabs_session_cookie")
@@ -284,6 +301,8 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
                                 seen_numeros.add(mp["numero"])
                                 mp["edicao"] = "Extra" if section == "DO1E" else "Normal"
                                 results.append(mp)
+            except InlabsMaintenanceError:
+                raise  # manutenção → mensagem clara, não é "seção incompleta"
             except zipfile.BadZipFile:
                 logger.warning("dou: ZIP inválido em %s", section)
                 failed_sections.append(section)
