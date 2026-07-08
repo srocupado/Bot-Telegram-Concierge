@@ -1214,6 +1214,29 @@ async def _h_listar_comissoes_reuniao(args: dict, ctx: ToolContext) -> str:
     return "ok: lista de comissões enviada ao usuário (não escreva nada, a mensagem já foi enviada)"
 
 
+async def _h_varrer_comissoes_partido(args: dict, ctx: ToolContext) -> str:
+    from bot.services.camara import CamaraError, varrer_comissoes_partido
+
+    data = (args.get("data") or "").strip() or "hoje"
+    partido = (args.get("partido") or "").strip() or None
+    deputado = (args.get("deputado") or "").strip() or None
+    if not partido and not deputado:
+        return "erro: precisa de 'partido' ou 'deputado' pra varrer"
+    try:
+        texto = await varrer_comissoes_partido(data, partido=partido, deputado=deputado, tz=ctx.tz)
+    except CamaraError as e:
+        return f"erro: API da Câmara indisponível ({e})"
+    except Exception as e:
+        logger.exception("camara: falha na varredura")
+        return f"erro: não consegui varrer as comissões agora ({type(e).__name__})"
+    if texto.startswith("erro"):
+        return texto
+    ctx.fallback_text = texto.replace("\x02", "").replace("\x03", "")
+    ctx.direct_html = _html_escape(texto).replace("\x02", "<b>").replace("\x03", "</b>")
+    ctx.short_circuit = True
+    return "ok: varredura enviada ao usuário (não escreva nada, a mensagem já foi enviada)"
+
+
 async def _h_consultar_transito(args: dict, ctx: ToolContext) -> str:
     origem = (args.get("origem") or "").strip()
     destino = (args.get("destino") or "").strip()
@@ -2431,13 +2454,13 @@ TOOLS: list[Tool] = [
         name="listar_comissoes_reuniao",
         description=(
             "Lista QUAIS comissões permanentes da Câmara têm REUNIÃO "
-            "DELIBERATIVA numa data. USE SÓ na pergunta ABERTA — 'quais "
-            "comissões têm reunião hoje?', 'que comissões se reúnem amanhã?' — "
-            "em que o usuário NÃO nomeia comissão E NÃO fala de projeto/partido/"
-            "deputado. GATE (siga à risca): se o usuário CITAR qualquer comissão "
-            "(CMADS, CREDN, CCJ, Saúde…) OU perguntar sobre PROJETOS / partido / "
-            "deputado, NÃO É ESTA — use consultar_pauta_camara, mesmo que ele "
-            "diga 'reuniões de hoje'. Só comissões permanentes. Nunca buscar_web."
+            "DELIBERATIVA numa data — SÓ os nomes/horários, sem olhar projeto. "
+            "USE SÓ na pergunta ABERTA e SEM filtro: 'quais comissões têm "
+            "reunião hoje?', 'que comissões se reúnem amanhã?'. GATE (siga à "
+            "risca): se o usuário CITAR uma comissão (CMADS, CCJ, Saúde…) → "
+            "consultar_pauta_camara; se ele cruzar com PROJETO / partido / "
+            "deputado SEM nomear comissão ('reuniões de hoje que têm projeto do "
+            "Podemos') → varrer_comissoes_partido. Nunca buscar_web."
         ),
         parameters={
             "type": "object",
@@ -2450,6 +2473,40 @@ TOOLS: list[Tool] = [
             "required": [],
         },
         handler=_h_listar_comissoes_reuniao,
+    ),
+    Tool(
+        name="varrer_comissoes_partido",
+        description=(
+            "VARRE todas as comissões permanentes com reunião DELIBERATIVA numa "
+            "data e diz quais têm projeto de AUTORIA ou RELATORIA de um partido/"
+            "deputado — dado oficial. USE quando o usuário cruza as DUAS coisas "
+            "numa pergunta ABERTA, SEM nomear comissão: 'quais comissões com "
+            "reunião hoje têm projeto do Podemos?', 'nas reuniões deliberativas "
+            "de amanhã tem algo do PT?', 'liste as comissões que se reúnem hoje "
+            "e veja se tem projeto de autoria/relatoria do Podemos'. Se o usuário "
+            "NOMEAR a(s) comissão(ões), use consultar_pauta_camara. É uma "
+            "varredura PESADA (leva alguns segundos). Exige 'partido' OU "
+            "'deputado'. Nunca buscar_web."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "string",
+                    "description": "Data: AAAA-MM-DD, DD/MM, 'hoje' (default), 'amanhã' ou '1º de julho'.",
+                },
+                "partido": {
+                    "type": "string",
+                    "description": "Partido a procurar (ex: 'Podemos', 'PT'). Um de partido/deputado é obrigatório.",
+                },
+                "deputado": {
+                    "type": "string",
+                    "description": "Nome do deputado a procurar (alternativa ao partido).",
+                },
+            },
+            "required": [],
+        },
+        handler=_h_varrer_comissoes_partido,
     ),
     Tool(
         name="buscar_web",

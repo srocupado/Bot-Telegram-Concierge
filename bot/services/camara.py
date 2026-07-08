@@ -286,15 +286,18 @@ def _extrair_voto(parecer: dict) -> str:
     return m.group(0).rstrip(". ")[:170] if m else ""
 
 
-async def _secao_comissao(client, org: dict, d: date, partido, deputado, deps) -> str:
-    """Seção de UMA comissão: header + reuniões/pauta na data, com filtro."""
+async def _secao_comissao(client, org: dict, d: date, partido, deputado, deps) -> tuple[bool, str]:
+    """Seção de UMA comissão: (tem_match, texto). tem_match=True quando há
+    projeto que casa o filtro (ou qualquer projeto, se sem filtro) — usado pela
+    varredura pra separar comissões com/sem resultado."""
     eventos = await _get(client, f"/orgaos/{org['id']}/eventos",
                          {"dataInicio": d.isoformat(), "dataFim": d.isoformat(), "itens": 50})
     if not eventos:
-        return f"🏛️ {org['nome']} ({org['sigla']}) — sem reunião agendada em {_br(d)}."
+        return False, f"🏛️ {org['nome']} ({org['sigla']}) — sem reunião agendada em {_br(d)}."
 
     alvo = partido or deputado
     partes = [f"🏛️ {org['nome']} ({org['sigla']}) — {_br(d)}"]
+    total_match = 0
     sem = asyncio.Semaphore(_CONCURRENCY)
     if True:
         for ev in eventos:
@@ -364,6 +367,7 @@ async def _secao_comissao(client, org: dict, d: date, partido, deputado, deps) -
                 linha += f"\n     {ementa[:140]}"
                 linhas.append(linha)
 
+            total_match += len(linhas)
             cab = f"\n📋 {tipo} {hora} — {len(itens)} projeto(s)"
             if alvo and not linhas:
                 partes.append(cab + f"\n   • Nada de {alvo} — nem autoria nem relatoria.")
@@ -371,7 +375,7 @@ async def _secao_comissao(client, org: dict, d: date, partido, deputado, deps) -
                 partes.append(cab + (f" · {len(linhas)} de {alvo}:" if alvo else ":"))
                 partes.extend(linhas)
 
-    return "\n".join(partes)
+    return total_match > 0, "\n".join(partes)
 
 
 async def consultar_pauta(
@@ -404,7 +408,8 @@ async def consultar_pauta(
                 nomes = "; ".join(f"{c['sigla']} ({c['nome']})" for c in cands[:6])
                 secoes.append(f"🏛️ “{texto}” — qual delas? {nomes}")
             else:
-                secoes.append(await _secao_comissao(client, cands[0], d, partido, deputado, deps))
+                _, texto = await _secao_comissao(client, cands[0], d, partido, deputado, deps)
+                secoes.append(texto)
         return "\n\n".join(secoes)
 
 
@@ -467,3 +472,62 @@ def _fmt_hora(h: str) -> str:
     """'14:30' → '14h30'; '10:00' → '10h'."""
     hh, _, mm = h.partition(":")
     return f"{hh}h{mm}" if mm and mm != "00" else f"{hh}h"
+
+
+_VARREDURA_CONCURRENCY = 5  # comissões varridas em paralelo (não martelar a API)
+
+
+async def varrer_comissoes_partido(
+    data_texto: str, *, partido: str | None = None, deputado: str | None = None,
+    tz: str = "America/Sao_Paulo",
+) -> str:
+    """Varre TODAS as comissões permanentes com reunião DELIBERATIVA na data e
+    reporta quais têm projeto de AUTORIA ou RELATORIA do partido/deputado.
+    Varredura pesada (muitas chamadas à API). Dado oficial; nunca inventa."""
+    alvo = (partido or deputado or "").strip()
+    if not alvo:
+        return "erro: informe o partido ou o deputado pra varrer."
+    hoje = datetime.now(ZoneInfo(tz)).date()
+    d = parse_data(data_texto, hoje)
+    if not d:
+        return "erro: não entendi a data (use DD/MM, AAAA-MM-DD, 'hoje', 'amanhã' ou '1º de julho')."
+
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        deps = await _ensure_deputados(client)
+        eventos = await _eventos_do_dia(client, d)
+        # comissões permanentes com reunião DELIBERATIVA (dedup por id)
+        orgs: dict[int, dict] = {}
+        for ev in eventos:
+            if "deliberativ" not in _norm(ev.get("descricaoTipo") or ""):
+                continue
+            for o in (ev.get("orgaos") or []):
+                if o.get("codTipoOrgao") != 2:
+                    continue
+                oid = o.get("id")
+                if oid and oid not in orgs:
+                    orgs[oid] = {"id": oid, "sigla": o.get("sigla") or "", "nome": o.get("nome") or ""}
+        if not orgs:
+            return f"🏛️ Nenhuma comissão permanente com reunião deliberativa em {_br(d)}."
+
+        sem_out = asyncio.Semaphore(_VARREDURA_CONCURRENCY)
+
+        async def _uma(org):
+            async with sem_out:
+                tem, texto = await _secao_comissao(client, org, d, partido, deputado, deps)
+            return org, tem, texto
+
+        resultados = await asyncio.gather(*(_uma(o) for o in orgs.values()))
+
+    com = sorted([(o, t) for o, tem, t in resultados if tem], key=lambda x: x[0]["sigla"])
+    sem_nada = sorted([o for o, tem, _ in resultados if not tem], key=lambda x: x["sigla"])
+
+    partes = [f"🏛️ Reuniões deliberativas de {_br(d)} — projetos (autoria/relatoria) de \x02{alvo}\x03"]
+    if com:
+        for _org, texto in com:
+            partes.append("\n" + texto)
+    else:
+        partes.append(f"\nNenhuma das comissões com reunião deliberativa hoje tem projeto (autoria/relatoria) de {alvo}.")
+    if sem_nada:
+        siglas = ", ".join(o["sigla"] for o in sem_nada)
+        partes.append(f"\nSem nada de {alvo} ({len(sem_nada)}): {siglas}")
+    return "\n".join(partes)

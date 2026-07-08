@@ -113,7 +113,7 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "- lancar_movimento_banco, lancar_despesa_cartao, registrar_aporte_tesouro, registrar_operacao_ativo, consultar_lancamentos, consultar_saldo, apagar_lancamento\n"
     "- adicionar_lista_compras, listar_compras, marcar_comprado, desmarcar_compra, remover_lista_compras, limpar_comprados, zerar_lista_compras\n"
     "- analisar_gastos, desfazer_ultima_acao\n"
-    "- consultar_mp_dou, consultar_congresso, consultar_pauta_camara, listar_comissoes_reuniao\n"
+    "- consultar_mp_dou, consultar_congresso, consultar_pauta_camara, listar_comissoes_reuniao, varrer_comissoes_partido\n"
     "- buscar_web, buscar_local, buscar_preco, consultar_sessoes_cinema, buscar_voo, buscar_hotel, criar_watch_voo, criar_watch_hotel, listar_watches_viagem, cancelar_watch_viagem\n"
     "- executar_agente, listar_arquivos\n\n"
     "CONTINUIDADE DE CONVERSA: um follow-up curto/elíptico ('E amanhã?', 'E o "

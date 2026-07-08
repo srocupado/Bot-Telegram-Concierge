@@ -45,7 +45,10 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   (pela aprovação/rejeição), com o número da proposição em negrito. Também
   responde à pergunta ABERTA *"quais comissões têm reunião deliberativa hoje?"*
   (varre todas as comissões permanentes e lista as que têm reunião, com
-  horário). Saída verbatim (não passa por paráfrase do LLM).
+  horário), e cruza os dois: *"quais comissões com reunião hoje têm projeto de
+  autoria/relatoria do Podemos?"* — varre todas as reuniões deliberativas do dia
+  e reporta quais têm o partido/deputado (com os projetos). Saída verbatim (não
+  passa por paráfrase do LLM).
 - **Medidas Provisórias — publicação no Diário Oficial (DOU)**: autentica no
   **Inlabs**, baixa os ZIPs do DOU (DO1E + DO1), extrai as MPs do dia e entrega
   um aviso (número, ementa, prazos, link) + **nota técnica em DOCX** no padrão
