@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import time
 import zipfile
 from datetime import date, datetime, timedelta
 from xml.etree import ElementTree as ET
@@ -205,6 +206,33 @@ def _parse_dou_xml(client: httpx.Client, xml_content: str, target_date: date) ->
     return results
 
 
+# O Inlabs (login + download dos ZIPs) solta 502/503/504 e timeouts com
+# frequência — transitórios. Retry com backoff evita perder a busca inteira por
+# um Bad Gateway passageiro. Roda em thread (fetch_mps), então time.sleep é ok.
+_INLABS_RETRY_STATUS = frozenset({500, 502, 503, 504})
+
+
+def _inlabs_call(do_request, *, tries: int = 3):
+    """do_request() → httpx.Response. Retenta em 5xx transitório/timeout do
+    Inlabs (backoff 2s, 4s) e devolve a Response (o caller checa status/404).
+    Levanta o último erro se esgotar as tentativas."""
+    last: Exception | None = None
+    for attempt in range(1, tries + 1):
+        try:
+            r = do_request()
+        except httpx.HTTPError as exc:      # timeout, erro de conexão
+            last = exc
+        else:
+            if r.status_code not in _INLABS_RETRY_STATUS:
+                return r
+            last = httpx.HTTPStatusError(
+                f"HTTP {r.status_code}", request=r.request, response=r)
+        if attempt < tries:
+            time.sleep(attempt * 2)
+    assert last is not None
+    raise last
+
+
 def _fetch_mps_sync(target_date: date) -> list[dict]:
     email = settings.inlabs_email
     password = settings.inlabs_password.get_secret_value() if settings.inlabs_password else None
@@ -217,14 +245,14 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
     results: list[dict] = []
     seen_numeros: set[str] = set()
     with httpx.Client(headers=_HEADERS, follow_redirects=True) as client:
-        # login
+        # login (com retry em 502/503/504/timeout transitórios do Inlabs)
         try:
-            resp = client.post(
+            resp = _inlabs_call(lambda: client.post(
                 f"{INLABS_BASE}/logar.php",
                 data={"email": email, "password": password},
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
                 timeout=20.0,
-            )
+            ))
             resp.raise_for_status()
         except Exception as exc:
             raise DouError(f"falha ao autenticar no Inlabs: {exc}") from exc
@@ -236,9 +264,9 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
         for section in DOU_SECTIONS:
             url = f"{INLABS_BASE}/index.php?p={date_str}&dl={date_str}-{section}.zip"
             try:
-                r = client.get(
+                r = _inlabs_call(lambda: client.get(
                     url, headers={"Cookie": f"inlabs_session_cookie={cookie}"}, timeout=60.0,
-                )
+                ))
                 if r.status_code == 404:
                     continue
                 r.raise_for_status()
