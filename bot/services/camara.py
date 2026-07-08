@@ -349,7 +349,9 @@ async def _secao_comissao(client, org: dict, d: date, partido, deputado, deps) -
                 # \x02..\x03 marcam o que vira <b>..</b> no handler (depois do
                 # escape HTML), pra negritar o número da proposição.
                 tag = f"\x02{projeto.get('siglaTipo')} {projeto.get('numero')}/{projeto.get('ano')}\x03"
-                papel_txt = f" [{' + '.join(papeis)}]" if papeis else ""
+                # Rótulo autoria/relatoria em negrito, com setinha (ex.: PL 2650/
+                # 2025 → relatoria). Mesmos sentinelas \x02..\x03 do número.
+                papel_txt = f" → \x02{' + '.join(papeis)}\x03" if papeis else ""
                 aut = ", ".join(f"{n} ({p})" if p else n for n, p in autores[:2]) or "—"
                 rel_txt = f"{relator} ({rel_partido})" if relator else "—"
                 voto = _extrair_voto(parecer)
