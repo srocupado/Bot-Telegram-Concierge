@@ -37,13 +37,32 @@ def _norm(s: str) -> str:
     )
 
 
+# A API de Dados Abertos da Câmara é instável: 502/503/504 e timeouts são
+# comuns e TRANSITÓRIOS (passam na tentativa seguinte). Retry com backoff evita
+# falhar a pauta inteira por um 504 passageiro. 4xx não repete (erro do pedido).
+_RETRY_STATUS = {500, 502, 503, 504}
+_RETRIES = 3
+
+
 async def _get(client: httpx.AsyncClient, path: str, params: dict | None = None) -> list:
-    try:
-        r = await client.get(f"{_API}{path}", params=params or {}, headers=_HEADERS)
-        r.raise_for_status()
-    except httpx.HTTPError as e:
-        raise CamaraError(f"API da Câmara falhou: {e}") from e
-    return (r.json() or {}).get("dados") or []
+    url = f"{_API}{path}"
+    last: Exception | None = None
+    for attempt in range(1, _RETRIES + 1):
+        try:
+            r = await client.get(url, params=params or {}, headers=_HEADERS)
+            r.raise_for_status()
+            return (r.json() or {}).get("dados") or []
+        except httpx.HTTPStatusError as e:
+            last = e
+            if e.response.status_code not in _RETRY_STATUS:
+                raise CamaraError(f"API da Câmara falhou: {e}") from e
+        except httpx.HTTPError as e:  # timeout, erro de conexão
+            last = e
+        if attempt < _RETRIES:
+            await asyncio.sleep(attempt)  # 1s, 2s
+    raise CamaraError(
+        f"API da Câmara instável (504/timeout) após {_RETRIES} tentativas"
+    ) from last
 
 
 # ── Cache: comissões permanentes + mapa deputado→partido ─────────────────────
