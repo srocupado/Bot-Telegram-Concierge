@@ -163,7 +163,7 @@ Só o usuário com `OWNER_TELEGRAM_ID` vê/usa — pros demais o recurso não ex
 | `/agente_fim` | Encerra a janela de continuação antes do TTL |
 | `/agente_parar` | Interrompe a tarefa em andamento |
 | `/agente_status` | Rodando há quanto tempo / sessão ativa |
-| `/agente_config` | Ajustes finos em runtime, sem restart: `modelo opus\|sonnet\|haiku`, `timeout 1800`, `turnos 20`, `custo 5`, `ttl 60`, `padrao` (volta ao `.env`) |
+| `/agente_config` | Ajustes finos em runtime, sem restart: `modelos` (lista dinâmica da API), `modelo opus\|sonnet\|haiku` (ou id `claude-*`, validado contra a lista viva), `timeout 1800`, `turnos 20`, `custo 5`, `ttl 60`, `padrao` (volta ao `.env`) |
 | agendado (cron) | *"todo dia útil 7h, roda o agente pra..."* — execução recorrente via scheduler; ver [Tarefas e lembretes](#tarefas-e-lembretes) |
 
 Guardrails: 1 tarefa por vez; env do agente com **whitelist** (nunca vê

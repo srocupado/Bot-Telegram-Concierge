@@ -470,18 +470,58 @@ async def cmd_agente_config(message: Message, command: CommandObject, user: User
         agent_config.reset()
         await message.answer("✅ Overrides limpos — valores do .env valem de novo.", parse_mode=None)
         return
+
+    # /agente_config modelos — lista DINÂMICA dos modelos Claude (Models API),
+    # pra estar sempre atualizado (modelo novo aparece sozinho).
+    if tokens[0].lower() in ("modelos", "models", "lista"):
+        from bot.services.llm import catalog
+        modelos = await catalog.list_models("anthropic")
+        if not modelos:
+            await message.answer(
+                "Não consegui listar os modelos Claude agora (ANTHROPIC_API_KEY "
+                "ausente ou API indisponível).", parse_mode=None,
+            )
+            return
+        linhas = ["<b>Modelos Claude disponíveis (Models API):</b>"]
+        for mid, nome in modelos:
+            linhas.append(f"<code>{html.escape(mid)}</code> · {html.escape(nome)}"
+                          if nome and nome != mid else f"<code>{html.escape(mid)}</code>")
+        linhas.append("\nUse: <code>/agente_config modelo &lt;id&gt;</code> "
+                      "(ou alias <code>opus</code>|<code>sonnet</code>|<code>haiku</code>).")
+        await message.answer("\n".join(linhas), parse_mode="HTML")
+        return
+
     if len(tokens) < 2:
         await message.answer(
             "Use: /agente_config <opção> <valor> (ou /agente_config pra ver tudo).",
             parse_mode=None,
         )
         return
+
+    # /agente_config modelo <id>: valida id completo contra a lista viva (aceita
+    # modelo novo sem mexer no código). Aliases opus/sonnet/haiku sempre valem.
+    aviso = ""
+    if tokens[0].lower() == "modelo":
+        from bot.services.agent_config import MODEL_ALIASES
+        from bot.services.llm import catalog
+        cand = tokens[1]
+        if cand.lower() not in MODEL_ALIASES and cand.startswith("claude-"):
+            modelos = await catalog.list_models("anthropic")
+            if modelos and not any(mid == cand for mid, _ in modelos):
+                await message.answer(
+                    f"❌ '{cand}' não está na lista atual de modelos Claude. "
+                    "Veja /agente_config modelos.", parse_mode=None,
+                )
+                return
+            if not modelos:
+                aviso = " ⚠️ (não deu pra validar na API agora — confira o id)"
+
     try:
         confirm = agent_config.set(tokens[0], tokens[1])
     except ValueError as e:
         await message.answer(f"❌ {e}", parse_mode=None)
         return
-    await message.answer(f"✅ {confirm} (vale já pra próxima tarefa).", parse_mode=None)
+    await message.answer(f"✅ {confirm} (vale já pra próxima tarefa).{aviso}", parse_mode=None)
 
 
 # --- continuação conversacional (registrar ANTES do catch-all de chat) ---
