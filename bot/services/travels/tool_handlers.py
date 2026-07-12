@@ -21,6 +21,7 @@ from bot.services.travels.serpapi_client import (
     extract_best_hotel,
     extract_price_insights,
     format_flight,
+    extract_source_rates,
     format_hotel,
     hotel_name_matches,
 )
@@ -118,6 +119,38 @@ async def _h_buscar_hotel(args: dict, ctx: ToolContext) -> str:
                 ctx.direct_html = html_msg
                 ctx.short_circuit = True
                 return "ok: aviso enviado ao usuário (não escreva nada)"
+            # Hotel nomeado: cartão com SÓ as fontes confiáveis (Booking.com /
+            # Hoteis.com) — sem "menor preço" de agregador-isca.
+            if hotel:
+                import html as _html
+                from datetime import date as _date
+                fontes = extract_source_rates(payload)
+                try:
+                    nights = (_date.fromisoformat(co) - _date.fromisoformat(ci)).days
+                    datas = (f"📅 {_date.fromisoformat(ci).strftime('%d/%m')} → "
+                             f"{_date.fromisoformat(co).strftime('%d/%m')} "
+                             f"({nights} noite{'s' if nights != 1 else ''})")
+                except ValueError:
+                    datas = f"📅 {ci} → {co}"
+                linhas = [f"🏨 <b>{_html.escape(payload.get('name') or hotel)}</b>", datas]
+                if fontes:
+                    for nome_f, diaria in fontes:
+                        linhas.append(f"💰 <b>{_html.escape(nome_f)}</b>: R$ {diaria:.2f} / diária")
+                else:
+                    linhas.append(
+                        "⚠️ Booking.com/Hoteis.com não apareceram entre as "
+                        "fontes dessa consulta — confira no link abaixo."
+                    )
+                rating = payload.get("overall_rating")
+                reviews = payload.get("reviews")
+                if rating:
+                    linhas.append(f"⭐ {rating} ({reviews or '—'} avaliações)")
+                link = payload.get("link")
+                if link:
+                    linhas.append(f'🔗 <a href="{_html.escape(link, quote=True)}">Ver no Google Hotels</a>')
+                ctx.direct_html = "\n".join(linhas)
+                ctx.short_circuit = True
+                return "ok: diárias (Booking/Hoteis.com) enviadas ao usuário"
             html_msg = (
                 f"🏨 <b>{hotel or location}</b>\n"
                 + format_hotel(price, payload, ci, co)

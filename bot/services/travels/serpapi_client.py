@@ -271,6 +271,32 @@ def hotel_name_matches(wanted: str, actual: str | None) -> bool:
     return bool(toks) and all(t in _norm_hotel_name(actual or "") for t in toks)
 
 
+# Fontes de reserva que o dono confia — só estas aparecem no cartão de hotel
+# nomeado (agregador obscuro com preço-isca fica de fora).
+TRUSTED_HOTEL_SOURCES = ("booking", "hoteis.com")
+
+
+def extract_source_rates(
+    payload: dict[str, Any], wanted: tuple[str, ...] = TRUSTED_HOTEL_SOURCES,
+) -> list[tuple[str, float]]:
+    """[(fonte, diária)] das fontes em `wanted` (match por substring, sem
+    acento/caixa), varrendo featured_prices + prices. Dedup por fonte."""
+    out: list[tuple[str, float]] = []
+    seen: set[str] = set()
+    for src in list(payload.get("featured_prices") or []) + list(payload.get("prices") or []):
+        if not isinstance(src, dict):
+            continue
+        name = (src.get("source") or "").strip()
+        n = _norm_hotel_name(name)
+        if not name or name in seen or not any(w in n for w in wanted):
+            continue
+        rate = _extract_rate(src.get("rate_per_night")) or _extract_rate(src.get("total_rate"))
+        if rate:
+            seen.add(name)
+            out.append((name, rate))
+    return out
+
+
 def extract_best_hotel(
     raw: dict[str, Any], prefer_name: str | None = None,
 ) -> tuple[float, dict[str, Any]] | None:
