@@ -714,6 +714,7 @@ async def _h_lancar_despesa_cartao(args: dict, ctx: ToolContext) -> str:
         entry = await lancar_despesa_cartao(
             ctx.session, ctx.user, desc, valor_f, data_iso,
             categoria=categoria, parcelas=parcelas,
+            today=datetime.now(ZoneInfo(ctx.tz)).date(),
         )
     except NotConfiguredError as e:
         return f"erro: {e}"

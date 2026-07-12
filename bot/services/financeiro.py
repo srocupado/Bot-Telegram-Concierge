@@ -1014,7 +1014,21 @@ async def lancar_movimento_banco(
         entry["recurring"] = True
 
     await _run_blocking(_append_in_transaction, db, uid, "bankTransactions", entry)
+    # Saldo pós-lançamento (soma dos amounts; o novo entry adiciona seu amount).
+    # Chave com _ prefix = só pra confirmação; NÃO é persistida (foi adicionada
+    # depois do append).
+    entry["_saldo_atual"] = _get_bank_balance(state) + amount
     return entry
+
+
+def _open_bill_total(entries: list[dict], closing: int, today: date) -> float:
+    """Total da fatura ABERTA (ciclo atual) — soma dos valores de fatura das
+    entries que caem no ciclo ainda não fechado (definido por `today`)."""
+    y, m = _bill_month_for_date(today, closing)
+    return sum(
+        float((_entry_in_bill(e, y, m, closing) or {}).get("value") or 0)
+        for e in entries
+    )
 
 
 async def lancar_despesa_cartao(
@@ -1025,6 +1039,7 @@ async def lancar_despesa_cartao(
     data_iso: str,
     categoria: str = "outros",
     parcelas: int = 1,
+    today: date | None = None,
 ) -> dict:
     uid = _require_uid(user)
     db = await _get_db(session)
@@ -1042,6 +1057,12 @@ async def lancar_despesa_cartao(
         "source": "bot",
     }
     await _run_blocking(_append_in_transaction, db, uid, "cardEntries", entry)
+    # Total da fatura ABERTA (ciclo atual) pós-lançamento — pra confirmação.
+    # Só se houver dia de fechamento configurado. Chave _ não é persistida.
+    closing = _get_card_closing_day(state)
+    if closing is not None and today is not None:
+        cards = (state.get("cardEntries") or []) + [entry]
+        entry["_fatura_aberta"] = _open_bill_total(cards, closing, today)
     return entry
 
 
@@ -1418,21 +1439,29 @@ def confirm_banco(entry: dict) -> str:
     """Confirmação amigável de um lançamento no banco (sem id/ok:)."""
     amt = float(entry.get("amount") or 0)
     sign = "➕" if amt >= 0 else "➖"
-    return (
+    linha = (
         f"✅ Lançado no banco: {sign} {_fmt_brl(abs(amt))} — "
         f"{entry.get('desc', '?')} · {_fmt_date_br(entry.get('date', ''))} · "
         f"{entry.get('category', 'outros')}"
     )
+    saldo = entry.get("_saldo_atual")
+    if saldo is not None:
+        linha += f"\n💰 Saldo bancário atual: {_fmt_brl(saldo)}"
+    return linha
 
 
 def confirm_cartao(entry: dict, parcelas: int = 1) -> str:
     total = float(entry.get("amount") or 0)
     par = f" em {parcelas}x" if parcelas and parcelas > 1 else ""
-    return (
+    linha = (
         f"✅ Compra no cartão: {_fmt_brl(total)}{par} — "
         f"{entry.get('desc', '?')} · {_fmt_date_br(entry.get('date', ''))} · "
         f"{entry.get('category', 'outros')}"
     )
+    fatura = entry.get("_fatura_aberta")
+    if fatura is not None:
+        linha += f"\n🧾 Fatura aberta (ciclo atual): {_fmt_brl(fatura)}"
+    return linha
 
 
 def confirm_tesouro(titulo: str, valor: float, data_iso: str, taxa=None) -> str:
