@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import html
 import logging
+import unicodedata
 from datetime import date, timedelta
 from typing import Any
 
@@ -257,7 +258,22 @@ def _property_price(p: dict[str, Any]) -> float | None:
     return None
 
 
-def extract_best_hotel(raw: dict[str, Any]) -> tuple[float, dict[str, Any]] | None:
+def _norm_hotel_name(s: str) -> str:
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", (s or "").casefold())
+        if not unicodedata.combining(c)
+    )
+
+
+def hotel_name_matches(wanted: str, actual: str | None) -> bool:
+    """True se todos os tokens ≥3 do nome pedido aparecem no nome retornado."""
+    toks = [t for t in _norm_hotel_name(wanted).split() if len(t) >= 3]
+    return bool(toks) and all(t in _norm_hotel_name(actual or "") for t in toks)
+
+
+def extract_best_hotel(
+    raw: dict[str, Any], prefer_name: str | None = None,
+) -> tuple[float, dict[str, Any]] | None:
     candidates: list[dict[str, Any]] = []
     candidates.extend(raw.get("properties") or [])
     candidates.extend(raw.get("ads") or [])
@@ -289,6 +305,19 @@ def extract_best_hotel(raw: dict[str, Any]) -> tuple[float, dict[str, Any]] | No
             len(candidates),
         )
         return None
+    # Hotel NOMEADO: prefere a property cujo nome casa, em vez do mais barato.
+    # Sem match, cai no mais barato e o handler avisa (não finge que achou).
+    if prefer_name:
+        matches = [
+            (pr, p) for pr, p in priced
+            if hotel_name_matches(prefer_name, p.get("name"))
+        ]
+        if matches:
+            return min(matches, key=lambda t: t[0])
+        logger.warning(
+            "hotel prefer_name %r sem match; candidatos: %s",
+            prefer_name, [p.get("name") for _, p in priced],
+        )
     return min(priced, key=lambda t: t[0])
 
 

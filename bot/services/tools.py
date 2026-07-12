@@ -2648,15 +2648,18 @@ TOOLS: list[Tool] = [
     Tool(
         name="buscar_hotel",
         description=(
-            "Busca hotel agora via SerpAPI (Google Hotels) e mostra a melhor "
-            "diária. `location` é texto livre (cidade, bairro ou nome do hotel). "
+            "Busca hotel agora via SerpAPI (Google Hotels) e mostra a diária. "
             "Datas em YYYY-MM-DD. Resposta vai pro usuário já formatada — não "
-            "parafrasear."
+            "parafrasear. Se o usuário CITAR um hotel específico ('estadia no "
+            "Gran Marquise de Fortaleza'), preencha 'hotel' com o NOME dele e "
+            "'location' só com a cidade — assim vem o preço DESSE hotel; sem "
+            "'hotel', vem o mais barato da cidade."
         ),
         parameters={
             "type": "object",
             "properties": {
-                "location": {"type": "string", "description": "Cidade/bairro/hotel (ex: 'Paris', 'Hotel Fasano Rio')"},
+                "location": {"type": "string", "description": "Cidade/bairro (ex: 'Fortaleza', 'Paris')"},
+                "hotel": {"type": "string", "description": "Nome do hotel específico, se o usuário citar (ex: 'Gran Marquise')."},
                 "check_in": {"type": "string", "description": "YYYY-MM-DD"},
                 "check_out": {"type": "string", "description": "YYYY-MM-DD"},
                 "adults": {"type": "integer", "description": "Hóspedes adultos (default 2)"},

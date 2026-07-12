@@ -22,6 +22,7 @@ from bot.services.travels.serpapi_client import (
     extract_price_insights,
     format_flight,
     format_hotel,
+    hotel_name_matches,
 )
 
 logger = logging.getLogger(__name__)
@@ -71,26 +72,54 @@ async def _h_buscar_voo(args: dict, ctx: ToolContext) -> str:
         return f"erro SerpAPI: {e}"
 
 
+_LODGING_WORDS = ("hotel", "pousada", "resort", "hostel", "inn", "flat")
+
+
 async def _h_buscar_hotel(args: dict, ctx: ToolContext) -> str:
     location = (args.get("location") or "").strip()
+    hotel = (args.get("hotel") or "").strip()
     ci = (args.get("check_in") or "").strip()
     co = (args.get("check_out") or "").strip()
     adults = int(args.get("adults") or 2)
     if not (location and ci and co):
         return "erro: precisa de location, check_in e check_out (YYYY-MM-DD)"
 
+    # Hotel NOMEADO: a query precisa do formato-ENTIDADE pro Google resolver o
+    # hotel específico (com todas as fontes de preço) em vez de listar a cidade.
+    # Testado ao vivo: 'Gran Marquise Fortaleza' → 9 hotéis da cidade (sem ele);
+    # 'Hotel Gran Marquise Fortaleza' → o hotel, na raiz, com 19 preços.
+    if hotel:
+        prefixo = "" if any(w in hotel.lower() for w in _LODGING_WORDS) else "Hotel "
+        q = f"{prefixo}{hotel} {location}"
+    else:
+        q = location
+
     client = _serpapi_or_error()
     if isinstance(client, str):
         return client
     try:
         async with client as serpapi:
-            raw = await serpapi.search_hotels(location, ci, co, adults, "BRL")
-            best = extract_best_hotel(raw)
+            raw = await serpapi.search_hotels(q, ci, co, adults, "BRL")
+            best = extract_best_hotel(raw, prefer_name=hotel or None)
             if best is None:
-                return f"sem hotéis em {location} ({ci}→{co})"
+                alvo = f"{hotel} em {location}" if hotel else location
+                return f"sem hotéis pra '{alvo}' ({ci}→{co})"
             price, payload = best
+            # Pediu hotel específico mas veio OUTRO → não finge: avisa e mostra
+            # o mais barato da cidade como referência rotulada.
+            if hotel and not hotel_name_matches(hotel, payload.get("name")):
+                html_msg = (
+                    f"⚠️ Não achei diária pro <b>{hotel}</b> em {location} "
+                    f"nesse período ({ci} → {co}) — pode estar esgotado ou "
+                    f"fora do Google Hotels. Confirme direto com o hotel.\n\n"
+                    f"<b>Referência, o mais barato na cidade:</b>\n"
+                    + format_hotel(price, payload, ci, co)
+                )
+                ctx.direct_html = html_msg
+                ctx.short_circuit = True
+                return "ok: aviso enviado ao usuário (não escreva nada)"
             html_msg = (
-                f"🏨 <b>{location}</b>\n"
+                f"🏨 <b>{hotel or location}</b>\n"
                 + format_hotel(price, payload, ci, co)
             )
             ctx.direct_html = html_msg
