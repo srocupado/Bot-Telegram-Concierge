@@ -1117,14 +1117,30 @@ async def _h_consultar_mp_dou(args: dict, ctx: ToolContext) -> str:
     try:
         mps = await fetch_mps(target)
     except DouError as e:
-        return f"erro: {e}"
+        # VERBATIM + fim de turno: modelo leve transformava "erro: manutenção"
+        # em "nenhuma MP publicada" (falso negativo perigoso — visto em produção
+        # num agendado pós-restart). "Não consegui checar" ≠ "não houve MP".
+        aviso = f"⚠️ Não consegui checar o DOU: {e}"
+        ctx.fallback_text = aviso
+        ctx.direct_html = _html_escape(aviso)
+        ctx.short_circuit = True
+        return "ok: aviso de indisponibilidade enviado ao usuário (não escreva nada)"
     except Exception:
-        return "erro: falha ao consultar o DOU"
+        logger.exception("consultar_mp_dou falhou")
+        aviso = "⚠️ Não consegui checar o DOU agora (falha inesperada). Tente de novo."
+        ctx.fallback_text = aviso
+        ctx.direct_html = _html_escape(aviso)
+        ctx.short_circuit = True
+        return "ok: aviso de indisponibilidade enviado ao usuário (não escreva nada)"
 
     if not mps:
+        # Vazio CONFIRMADO (fetch leu o DOU inteiro) — também verbatim, pra o
+        # "nenhuma MP" que o usuário vê ser sempre o do servidor, nunca fraseado.
         vazio = f"📭 Nenhuma MP publicada no DOU em {target.strftime('%d/%m/%Y')}."
         ctx.fallback_text = vazio
-        return f"ok (repasse): {vazio}"
+        ctx.direct_html = _html_escape(vazio)
+        ctx.short_circuit = True
+        return "ok: resultado enviado ao usuário (não escreva nada)"
     # Sinaliza ao handler de chat/voz pra oferecer a nota técnica com botões.
     ctx.dou_mp_found = {"date_iso": target.isoformat(), "count": len(mps)}
     from bot.services.proactive import _clean_ementa
