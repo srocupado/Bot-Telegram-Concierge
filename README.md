@@ -58,7 +58,11 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   23/dez–1º/fev), como o Congresso adota — não são dias corridos. A detecção de
   MP nova está integrada ao **agente proativo** (avisa nas janelas do dia e
   cobre a véspera no briefing); a nota completa vem sob demanda (`/mp_dou_agora`
-  ou botão "gerar nota").
+  ou botão "gerar nota"). Se o Inlabs estiver fora, o bot **avisa** que não
+  conseguiu checar (nunca um falso "sem MP"), registra o dia como pendente e
+  faz **checagem retroativa automática** quando o Inlabs volta (incl. edições
+  extras dos dias perdidos), anunciando o resultado — máx. 2 dias por janela,
+  pendência expira em 14 dias.
 - **Gerenciador financeiro** (Firestore, integra com o app externo
   *gerenciador-financeiro*): lança compras no cartão, movimentos no banco,
   aportes em Tesouro Direto e **operações de compra/venda em ações, FIIs,

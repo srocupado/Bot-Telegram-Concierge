@@ -71,6 +71,15 @@ async def mark_notified(session: AsyncSession, user_id: int, kind: str, key: str
     await session.commit()
 
 
+async def unmark_notified(session: AsyncSession, user_id: int, kind: str, key: str) -> None:
+    await session.execute(delete(ProactiveNotice).where(
+        ProactiveNotice.user_id == user_id,
+        ProactiveNotice.kind == kind,
+        ProactiveNotice.key == key,
+    ))
+    await session.commit()
+
+
 async def _nudge_recent(session: AsyncSession, user_id: int, kind: str, cooldown_days: int) -> bool:
     """True se já houve um nudge desse kind há menos de cooldown_days
     (evita repetir o mesmo nudge todo dia)."""
@@ -138,6 +147,38 @@ async def collect_vencimentos(
     return facts
 
 
+# Checagem RETROATIVA do DOU: dia que falhou vira pendência persistente e é
+# re-checado nas janelas seguintes quando o Inlabs voltar. fetch_mps cobre
+# DO1E+DO1, então edição EXTRA de dia perdido entra também. Teto por janela
+# (cada dia retroativo re-baixa os ZIPs do dia, ~100-200MB no Orange Pi) e
+# expiração pra não insistir num dia problemático pra sempre.
+_MP_RETRO_MAX_POR_JANELA = 2
+_MP_RETRO_EXPIRA_DIAS = 14
+
+
+async def _mp_dias_pendentes(session: AsyncSession, user_id: int, hoje: date) -> list[date]:
+    """Dias de DOU pendentes de checagem (antigos primeiro). Limpa do banco
+    pendências expiradas e chaves inválidas."""
+    rows = list(await session.scalars(
+        select(ProactiveNotice).where(
+            ProactiveNotice.user_id == user_id,
+            ProactiveNotice.kind == "mp_pendente",
+        )
+    ))
+    out: list[date] = []
+    for r in rows:
+        try:
+            d = date.fromisoformat(r.key)
+        except ValueError:
+            await unmark_notified(session, user_id, "mp_pendente", r.key)
+            continue
+        if (hoje - d).days > _MP_RETRO_EXPIRA_DIAS:
+            await unmark_notified(session, user_id, "mp_pendente", r.key)
+            continue
+        out.append(d)
+    return sorted(out)
+
+
 async def collect_mp(
     session: AsyncSession, user: User, dates: list[date], *, force: bool = False,
 ) -> list[ProactiveFact]:
@@ -147,13 +188,12 @@ async def collect_mp(
     facts: list[ProactiveFact] = []
     seen: set[str] = set()
     failed: list[date] = []
-    for d in dates:
-        try:
-            mps = await fetch_mps(d)
-        except Exception as exc:
-            logger.warning("proactive: fetch_mps(%s) falhou: %s", d, exc)
-            failed.append(d)
-            continue
+
+    async def _colher(d: date) -> list[ProactiveFact]:
+        """Facts das MPs de um dia (dedup por número e por já-notificada).
+        Levanta exceção quando o fetch falha — o caller decide a pendência."""
+        mps = await fetch_mps(d)
+        out: list[ProactiveFact] = []
         for mp in mps:
             key = f"{mp['numero']}/{mp['ano']}"
             if key in seen:
@@ -162,11 +202,27 @@ async def collect_mp(
             if not force and await already_notified(session, user.id, "mp", key):
                 continue
             ementa = _clean_ementa(mp.get("ementa") or "")
-            facts.append(ProactiveFact(
+            out.append(ProactiveFact(
                 "mp", "mp", key,
                 f"📜 MP {mp['numero']}/{mp['ano']}: {ementa}",
                 date_iso=d.isoformat(),
             ))
+        return out
+
+    ok_dates: set[date] = set()
+    for d in dates:
+        try:
+            facts += await _colher(d)
+            ok_dates.add(d)
+        except Exception as exc:
+            logger.warning("proactive: fetch_mps(%s) falhou: %s", d, exc)
+            failed.append(d)
+
+    # Dia que falhou vira PENDÊNCIA persistente — gravada JÁ (não no pós-envio):
+    # precisa sobreviver mesmo que o envio desta janela falhe.
+    for d in failed:
+        if not await already_notified(session, user.id, "mp_pendente", d.isoformat()):
+            await mark_notified(session, user.id, "mp_pendente", d.isoformat())
 
     # CRÍTICO: se NÃO conseguiu checar o DOU, AVISA — senão o usuário vê o
     # briefing sem MP e conclui (errado) que não houve MP publicada. Dedup por
@@ -184,6 +240,30 @@ async def collect_mp(
                 "<code>/mp_dou_agora</code>.",
                 date_iso=None,
             ))
+
+    # Checagem RETROATIVA dos dias pendentes de janelas anteriores. A pendência
+    # só é limpa APÓS o envio (run() → mp_retro), então falha de envio não
+    # perde o dia. Dia pendente que já entrou na varredura normal desta janela
+    # (ex.: briefing re-checa ontem) conta como coberto, sem novo fetch.
+    hoje = datetime.now(BRT).date()
+    pendentes = await _mp_dias_pendentes(session, user.id, hoje)
+    resolvidos: list[date] = [d for d in pendentes if d in ok_dates]
+    restantes = [d for d in pendentes if d not in dates][:_MP_RETRO_MAX_POR_JANELA]
+    for d in restantes:
+        try:
+            facts += await _colher(d)
+        except Exception as exc:
+            logger.warning("proactive: retroativa DOU %s ainda falhando: %s", d, exc)
+            continue
+        resolvidos.append(d)
+    for d in sorted(resolvidos):
+        novas = sum(1 for f in facts if f.kind == "mp" and f.date_iso == d.isoformat())
+        detalhe = f"{novas} MP(s) nova(s) acima" if novas else "nenhuma MP nova"
+        facts.append(ProactiveFact(
+            "mp", "mp_retro", f"retro:{d.isoformat()}",
+            f"✅ Checagem retroativa do DOU de {d.strftime('%d/%m')} concluída — {detalhe}.",
+            date_iso=None,
+        ))
     return facts
 
 
@@ -498,6 +578,12 @@ async def run_for_user(
             if f.category in ("clima", "transito", "venc", "tarefas"):
                 continue
             await mark_notified(session, user.id, f.kind, f.key)
+            # Retroativa do DOU ENTREGUE → o dia sai da pendência. Se o envio
+            # falhar, a pendência fica e a retro repete na próxima janela.
+            if f.kind == "mp_retro":
+                await unmark_notified(
+                    session, user.id, "mp_pendente", f.key.removeprefix("retro:"),
+                )
     return sent
 
 
