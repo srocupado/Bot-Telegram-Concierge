@@ -275,6 +275,21 @@ def _match_pessoa(partido: str | None, deputado: str | None, nome: str, part: st
     return False
 
 
+def _projeto_do_item(item: dict) -> tuple[dict, dict]:
+    """(projeto_em_pauta, proposicao_do_item) de um item de pauta.
+
+    Só promove `proposicaoRelacionada_` a projeto quando o item é um PARECER
+    (PRL*): aí a relacionada é o PL/PDL EM DELIBERAÇÃO. Num REQUERIMENTO, a
+    relacionada é apenas o projeto CITADO — promovê-la criava projeto-fantasma
+    na pauta (visto em produção: REQ 318/2026 citando o PL 1828/2023 fazia o
+    PL aparecer como se estivesse em deliberação na CSPCCO)."""
+    prop = item.get("proposicao_") or {}
+    rel_prop = item.get("proposicaoRelacionada_") or {}
+    eh_parecer = (prop.get("siglaTipo") or "").upper().startswith("PRL")
+    projeto = rel_prop if (rel_prop.get("id") and eh_parecer) else prop
+    return projeto, prop
+
+
 def _extrair_voto(parecer: dict) -> str:
     """Teor do voto do relator, da ementa do parecer (PRL): 'pela aprovação, com
     substitutivo', 'pela rejeição' etc. '' se o item não for um parecer (ex.:
@@ -305,14 +320,12 @@ async def _secao_comissao(client, org: dict, d: date, partido, deputado, deps) -
             tipo = ev.get("descricaoTipo") or "Reunião"
             pauta = await _get(client, f"/eventos/{ev['id']}/pauta")
 
-            # Cada item → o PROJETO (PL relatada num parecer, ou a própria
-            # proposição) + o nome do relator. Assim cobrimos AUTORIA (autor do
-            # projeto de fundo) E RELATORIA (campo relator) separadamente.
+            # Cada item → o PROJETO em deliberação + o nome do relator. Assim
+            # cobrimos AUTORIA (autor do projeto de fundo) E RELATORIA (campo
+            # relator) separadamente.
             itens = []
             for item in pauta:
-                prop = item.get("proposicao_") or {}
-                rel_prop = item.get("proposicaoRelacionada_") or {}
-                projeto = rel_prop if rel_prop.get("id") else prop
+                projeto, prop = _projeto_do_item(item)
                 relator = item.get("relator")
                 if isinstance(relator, dict):
                     relator = relator.get("nome")
