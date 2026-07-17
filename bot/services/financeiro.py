@@ -1570,6 +1570,8 @@ async def consultar_lancamentos(
                 parts.append(f"{header}: sem compras")
             else:
                 lines = [header + ":"]
+                if len(card_items) > 30:  # corte com aviso (nunca silencioso)
+                    lines.append(f"… ({len(card_items) - 30} itens mais antigos omitidos, incluídos no total)")
                 for it, info in card_items[-30:]:
                     lines.append(_card_line(it, info))
                 total = sum(float(i.get("value") or 0) for _, i in card_items)
@@ -1617,7 +1619,19 @@ async def consultar_lancamentos(
             if not open_items:
                 lines.append("• (sem gastos ainda nesta fatura)")
             else:
-                for it, info in open_items[-30:]:
+                # Ordena por data da compra. SEM corte silencioso: o array vem
+                # em ordem de inserção e o antigo [-30:] derrubava exatamente
+                # as PARCELAS de compras de meses anteriores (inseridas há
+                # tempo), que continuavam no total — lista e total divergiam.
+                open_items.sort(key=lambda t: str(t[0].get("date") or ""))
+                ocultos = 0
+                mostrar = open_items
+                if len(mostrar) > 80:  # guarda-corpo, com aviso explícito
+                    ocultos = len(mostrar) - 80
+                    mostrar = mostrar[-80:]
+                if ocultos:
+                    lines.append(f"… ({ocultos} itens mais antigos omitidos, incluídos no total)")
+                for it, info in mostrar:
                     lines.append(_card_line(it, info))
                 open_total = sum(float(i.get("value") or 0) for _, i in open_items)
                 lines.append(
