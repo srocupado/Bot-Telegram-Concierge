@@ -1619,11 +1619,15 @@ async def consultar_lancamentos(
             if not open_items:
                 lines.append("• (sem gastos ainda nesta fatura)")
             else:
-                # Ordena por data da compra. SEM corte silencioso: o array vem
-                # em ordem de inserção e o antigo [-30:] derrubava exatamente
+                # PARCELADOS/RECORRENTES agrupados no INÍCIO (por data), depois
+                # as compras à vista (por data). SEM corte silencioso: o array
+                # vem em ordem de inserção e o antigo [-30:] derrubava exatamente
                 # as PARCELAS de compras de meses anteriores (inseridas há
                 # tempo), que continuavam no total — lista e total divergiam.
-                open_items.sort(key=lambda t: str(t[0].get("date") or ""))
+                open_items.sort(key=lambda t: (
+                    0 if t[1].get("kind") in ("parcela", "recorrente") else 1,
+                    str(t[0].get("date") or ""),
+                ))
                 ocultos = 0
                 mostrar = open_items
                 if len(mostrar) > 80:  # guarda-corpo, com aviso explícito
