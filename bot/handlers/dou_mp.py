@@ -1,11 +1,13 @@
 """Comandos do monitor de MPs no Diário Oficial (Inlabs/DOU).
 
 /mp_dou_on  /mp_dou_off  — assina/desassina o digest diário (18h BRT).
-/mp_dou_agora [AAAA-MM-DD] — força a busca de hoje (ou data dada).
+/mp_dou_agora [data] — força a busca de hoje (ou data: DD/MM/AAAA,
+DD-MM-AA, AAAA-MM-DD…).
 """
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -296,6 +298,26 @@ async def cmd_off(message: Message, user: User, session: AsyncSession) -> None:
     await message.answer("🔕 Monitor de MPs no DOU desativado.", parse_mode=None)
 
 
+def _parse_data_arg(arg: str, hoje: date) -> date | None:
+    """Data do /mp_dou_agora: AAAA-MM-DD, DD/MM/AAAA, DD/MM/AA, DD-MM-AAAA,
+    DD-MM-AA ou DD/MM (ano atual). SEM rolagem pro futuro — DOU é hoje/passado."""
+    try:
+        return date.fromisoformat(arg)
+    except ValueError:
+        pass
+    m = re.fullmatch(r"(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?", arg)
+    if not m:
+        return None
+    d_, mo = int(m[1]), int(m[2])
+    yr = int(m[3]) if m[3] else hoje.year
+    if yr < 100:
+        yr += 2000
+    try:
+        return date(yr, mo, d_)
+    except ValueError:
+        return None
+
+
 @router.message(Command("mp_dou_agora"))
 async def cmd_agora(
     message: Message, command: CommandObject, user: User, session: AsyncSession,
@@ -303,14 +325,17 @@ async def cmd_agora(
     if not user.is_authorized:
         return
     arg = (command.args or "").strip()
+    hoje = datetime.now(ZoneInfo(user.timezone)).date()
     if arg:
-        try:
-            target = date.fromisoformat(arg)
-        except ValueError:
-            await message.answer("Data inválida. Use AAAA-MM-DD.", parse_mode=None)
+        target = _parse_data_arg(arg, hoje)
+        if target is None:
+            await message.answer(
+                "Data inválida. Use DD/MM/AAAA (ex: 16/07/2026), DD-MM-AA ou AAAA-MM-DD.",
+                parse_mode=None,
+            )
             return
     else:
-        target = datetime.now(ZoneInfo(user.timezone)).date()
+        target = hoje
 
     await message.answer(
         f"🔎 Buscando MPs publicadas no DOU em {target.strftime('%d/%m/%Y')}…",
