@@ -108,7 +108,18 @@ async def cb_nota_sim(query: CallbackQuery, user: User, session: AsyncSession) -
         n = await deliver_to_user(query.bot, session, user, target,
                                   force=True, only_numeros=only_numeros)
     except DouError as e:
-        await query.message.answer(f"⚠️ {e}", parse_mode=None)
+        # MP já DETECTADA mas a nota não saiu (Inlabs fora na hora de re-baixar
+        # o DOU) → entra na FILA: o proativo re-tenta sozinho a cada janela e
+        # entrega quando o Inlabs voltar (kind nota_pendente).
+        from bot.services.proactive import already_notified, mark_notified
+        key = f"{target.isoformat()}:{','.join(only_numeros) if only_numeros else 'all'}"
+        if not await already_notified(session, user.id, "nota_pendente", key):
+            await mark_notified(session, user.id, "nota_pendente", key)
+        await query.message.answer(
+            f"⚠️ {e}\n📄 Deixei a nota na fila: assim que o Inlabs voltar, "
+            "gero e te envio automaticamente (sem precisar pedir de novo).",
+            parse_mode=None,
+        )
         return
     except Exception:
         logger.exception("doump callback failed")

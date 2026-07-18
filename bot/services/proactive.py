@@ -155,6 +155,53 @@ async def collect_vencimentos(
 _MP_RETRO_MAX_POR_JANELA = 2
 _MP_RETRO_EXPIRA_DIAS = 14
 
+# Fila de NOTA TÉCNICA pendente: MP detectada, usuário pediu a nota (botão) e o
+# Inlabs caiu na hora de gerar — o pedido fica na fila (kind nota_pendente,
+# key "AAAA-MM-DD:num1,num2|all") e é re-tentado silenciosamente a cada janela
+# até sair. Teto 1/janela (nota é cara: web search + LLM + DOCX).
+_NOTA_MAX_POR_JANELA = 1
+_NOTA_PENDENTE_EXPIRA_DIAS = 14
+
+
+async def _processar_notas_pendentes(bot, session: AsyncSession, user: User) -> None:
+    """Re-tenta gerar/entregar notas pendentes. Sucesso → sai da fila (a
+    entrega do deliver_to_user É a notificação); falha do Inlabs → silêncio
+    (o usuário já foi avisado da fila no momento do pedido)."""
+    from bot.services.dou_monitor import DouError, deliver_to_user
+    rows = list(await session.scalars(
+        select(ProactiveNotice).where(
+            ProactiveNotice.user_id == user.id,
+            ProactiveNotice.kind == "nota_pendente",
+        )
+    ))
+    if not rows:
+        return
+    hoje = datetime.now(BRT).date()
+    fila: list[tuple[date, list[str] | None, str]] = []
+    for r in rows:
+        date_part, _, nums = r.key.partition(":")
+        try:
+            d = date.fromisoformat(date_part)
+        except ValueError:
+            await unmark_notified(session, user.id, "nota_pendente", r.key)
+            continue
+        if (hoje - d).days > _NOTA_PENDENTE_EXPIRA_DIAS:
+            await unmark_notified(session, user.id, "nota_pendente", r.key)
+            continue
+        numeros = [n for n in nums.split(",") if n and n != "all"] or None
+        fila.append((d, numeros, r.key))
+    for d, numeros, key in sorted(fila, key=lambda t: t[0])[:_NOTA_MAX_POR_JANELA]:
+        try:
+            await deliver_to_user(bot, session, user, d, force=True, only_numeros=numeros)
+        except DouError as e:
+            logger.warning("nota pendente %s: Inlabs ainda fora (%s)", key, e)
+            continue
+        except Exception:
+            logger.exception("nota pendente %s: falha inesperada", key)
+            continue
+        await unmark_notified(session, user.id, "nota_pendente", key)
+        logger.info("nota pendente %s entregue", key)
+
 
 async def _mp_dias_pendentes(session: AsyncSession, user_id: int, hoje: date) -> list[date]:
     """Dias de DOU pendentes de checagem (antigos primeiro). Limpa do banco
@@ -262,6 +309,28 @@ async def collect_mp(
         facts.append(ProactiveFact(
             "mp", "mp_retro", f"retro:{d.isoformat()}",
             f"✅ Checagem retroativa do DOU de {d.strftime('%d/%m')} concluída — {detalhe}.",
+            date_iso=None,
+        ))
+
+    # NOTAS na fila (pedidas com o Inlabs fora): linha de status em TODA janela
+    # (kind nota_fila não é dedupado no run) até a entrega dar baixa.
+    rows = list(await session.scalars(
+        select(ProactiveNotice).where(
+            ProactiveNotice.user_id == user.id,
+            ProactiveNotice.kind == "nota_pendente",
+        )
+    ))
+    for r in rows:
+        date_part, _, nums = r.key.partition(":")
+        try:
+            d = date.fromisoformat(date_part)
+        except ValueError:
+            continue
+        alvo = "todas as MPs" if (not nums or nums == "all") else f"MP {nums.replace(',', ', ')}"
+        facts.append(ProactiveFact(
+            "mp", "nota_fila", r.key,
+            f"📄 Nota técnica na fila ({alvo} de {d.strftime('%d/%m')}) — "
+            "Inlabs instável; tento gerar a cada janela e envio assim que sair.",
             date_iso=None,
         ))
     return facts
@@ -577,6 +646,10 @@ async def run_for_user(
             # até pagar).
             if f.category in ("clima", "transito", "venc", "tarefas"):
                 continue
+            # nota_fila é linha de STATUS: repete a cada janela até a entrega
+            # dar baixa na pendência (sem dedup).
+            if f.kind == "nota_fila":
+                continue
             await mark_notified(session, user.id, f.kind, f.key)
             # Retroativa do DOU ENTREGUE → o dia sai da pendência. Se o envio
             # falhar, a pendência fica e a retro repete na próxima janela.
@@ -584,6 +657,14 @@ async def run_for_user(
                 await unmark_notified(
                     session, user.id, "mp_pendente", f.key.removeprefix("retro:"),
                 )
+
+    # Fila de notas técnicas pendentes (pedidas com Inlabs fora): re-tenta por
+    # último — a geração é lenta/cara e não pode atrasar a mensagem da janela.
+    if user.dou_mp_subscribed:
+        try:
+            await _processar_notas_pendentes(bot, session, user)
+        except Exception:
+            logger.exception("proactive: fila de notas pendentes falhou p/ user %s", user.id)
     return sent
 
 
