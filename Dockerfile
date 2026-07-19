@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
         openssh-client \
         rsync \
+        ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Node 22 LTS (NodeSource, arm64 ok) + Claude Code CLI pinado + gh CLI —

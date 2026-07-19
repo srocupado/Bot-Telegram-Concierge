@@ -54,6 +54,8 @@ HELP_TEXT = (
     "• <code>/provider modelos [provider]</code> — lista dinâmica dos modelos (vem da API; modelo novo aparece sozinho)\n"
     "• <code>/provider_visao anthropic|openai|gemini|auto</code> — provider só pra fotos (auto = segue /provider). <code>/provider_visao modelos</code> lista só modelos com entrada de imagem\n"
     "• <code>/voice gemini|openai</code> — provider da transcrição de voz. Gemini converte voz→/comando; OpenAI (Whisper) é literal mas mais estável. <code>/voice modelos</code> lista só modelos com entrada de áudio\n"
+    "• <code>/tradutor &lt;idioma&gt;</code> — modo tradutor: manda áudio, recebe a tradução em texto e voz (ex.: <code>/tradutor inglês</code>). <code>/tradutor off</code> desliga\n"
+    "• <code>/tradutor_provider openai|gemini</code> — motor do tradutor (openai não treina com seu dado; gemini grátis pode)\n"
     "• <code>/reset</code> — limpa o contexto da conversa livre\n"
     "• <code>/reset_memoria [tudo]</code> — zera a memória de longo prazo "
     "(resumo automático; com <code>tudo</code>, também o histórico pesquisável)\n"

@@ -19,6 +19,7 @@ from bot.handlers import agent as agent_handler
 from bot.handlers import chat as chat_handler
 from bot.handlers import congress as congress_handler
 from bot.handlers import dou_mp as dou_mp_handler
+from bot.handlers import translator as translator_handler
 from bot.handlers import proactive as proactive_handler
 from bot.handlers import ping as ping_handler
 from bot.handlers import provider as provider_handler
@@ -61,6 +62,7 @@ def _build_dispatcher() -> Dispatcher:
     dp.include_router(traffic_handler.router)
     dp.include_router(congress_handler.router)
     dp.include_router(dou_mp_handler.router)
+    dp.include_router(translator_handler.router)  # /tradutor + /tradutor_provider
     dp.include_router(proactive_handler.router)
     dp.include_router(tasks_handler.router)
     dp.include_router(reminders_handler.router)

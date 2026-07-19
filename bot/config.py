@@ -120,6 +120,18 @@ class Settings(BaseSettings):
         "gpt-4o-mini-transcribe", alias="VOICE_STT_OPENAI_MODEL"
     )
 
+    # Modo tradutor (/tradutor + /tradutor_provider). O provider governa
+    # entendimento E voz juntos: openai (Whisper+GPT+TTS, não treina) ou
+    # gemini (multimodal+TTS, tier grátis pode treinar). Modelos/vozes são
+    # overridáveis por .env caso um nome mude na API.
+    translator_tts_provider: str = Field("openai", alias="TRANSLATOR_TTS_PROVIDER")
+    translator_tts_openai_model: str = Field("gpt-4o-mini-tts", alias="TRANSLATOR_TTS_OPENAI_MODEL")
+    translator_tts_openai_voice: str = Field("alloy", alias="TRANSLATOR_TTS_OPENAI_VOICE")
+    translator_openai_chat_model: str = Field("gpt-4o-mini", alias="TRANSLATOR_OPENAI_CHAT_MODEL")
+    translator_tts_gemini_model: str = Field("gemini-2.5-flash-preview-tts", alias="TRANSLATOR_TTS_GEMINI_MODEL")
+    translator_tts_gemini_voice: str = Field("Kore", alias="TRANSLATOR_TTS_GEMINI_VOICE")
+    translator_stt_gemini_model: str = Field("gemini-3.5-flash", alias="TRANSLATOR_STT_GEMINI_MODEL")
+
     # Agente de execução (Claude Code headless via claude-agent-sdk).
     # Owner-only: só o usuário com este ID Telegram vê/usa o recurso.
     # Vazio = agente desabilitado. Os AGENT_* abaixo são defaults iniciais —

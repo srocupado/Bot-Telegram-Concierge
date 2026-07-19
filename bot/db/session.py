@@ -123,6 +123,12 @@ async def _ensure_columns(conn) -> None:
     if "openai_model" not in cols:
         await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN openai_model VARCHAR(64)")
         logger.info("migrated: added users.openai_model")
+    if "translator_lang" not in cols:
+        await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN translator_lang VARCHAR(32)")
+        logger.info("migrated: added users.translator_lang")
+    if "translator_tts_provider" not in cols:
+        await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN translator_tts_provider VARCHAR(16)")
+        logger.info("migrated: added users.translator_tts_provider")
 
     rem_cols = await conn.exec_driver_sql("PRAGMA table_info(reminders)")
     cols = {row[1] for row in rem_cols.fetchall()}

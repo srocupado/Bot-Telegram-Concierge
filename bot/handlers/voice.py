@@ -37,6 +37,7 @@ from bot.handlers.agent import (
 from bot.handlers.ping import cmd_ping
 from bot.handlers.provider import cmd_provider
 from bot.handlers.dou_mp import cmd_dou_provider
+from bot.handlers.translator import cmd_tradutor, cmd_tradutor_provider
 from bot.handlers.reminders import cmd_lembrar, cmd_lembretes
 from bot.handlers.reset import cmd_reset
 from bot.handlers.route import cmd_rota
@@ -166,6 +167,14 @@ async def _w_dou_provider(message: Message, args: str, user: User, session: Asyn
     await cmd_dou_provider(message, _cmd("dou_provider", args), user, session)
 
 
+async def _w_tradutor(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_tradutor(message, _cmd("tradutor", args), user, session)
+
+
+async def _w_tradutor_provider(message: Message, args: str, user: User, session: AsyncSession) -> None:
+    await cmd_tradutor_provider(message, _cmd("tradutor_provider", args), user, session)
+
+
 async def _w_reset(message: Message, args: str, user: User, session: AsyncSession) -> None:
     await cmd_reset(message)
 
@@ -219,6 +228,8 @@ _DISPATCH: dict[str, callable] = {
     "ping": _w_ping,
     "provider": _w_provider,
     "dou_provider": _w_dou_provider,
+    "tradutor": _w_tradutor,
+    "tradutor_provider": _w_tradutor_provider,
     "reset": _w_reset,
     "start": _w_start,
     "help": _w_help,
@@ -280,6 +291,12 @@ async def cmd_voice(message: Message, user: User, session: AsyncSession) -> None
         await message.answer(_STT_ERROR)
         return
 
+    # MODO TRADUTOR: se ligado, o áudio é traduzido (texto + voz) em vez de
+    # transcrito/roteado. Bypassa o STT normal (que força PT e vira comando).
+    if user.translator_lang:
+        await _handle_translation(message, user, audio_bytes, mime_type)
+        return
+
     stt_provider = user.voice_stt_provider or settings.voice_stt_provider
     stt_model = user.voice_stt_model or settings.voice_stt_model
     try:
@@ -334,6 +351,53 @@ async def cmd_voice(message: Message, user: User, session: AsyncSession) -> None
         await _dispatch_command(message, user, session, transcribed)
     else:
         await _dispatch_chat(message, user, session, transcribed)
+
+
+async def _handle_translation(
+    message: Message, user: User, audio_bytes: bytes, mime_type: str,
+) -> None:
+    """Modo tradutor: áudio → {original, tradução} → responde texto + nota de voz."""
+    from aiogram.types import BufferedInputFile
+
+    from bot.services.translator import TranslateError, translate_audio
+    from bot.services.tts import TTSError, synthesize
+
+    prov = user.translator_tts_provider or settings.translator_tts_provider
+    lang = user.translator_lang
+
+    try:
+        res = await asyncio.wait_for(
+            translate_audio(audio_bytes, mime_type, lang, provider=prov), timeout=90,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("tradutor: tradução estourou o tempo")
+        await message.answer("⚠️ A tradução demorou demais. Tenta um trecho menor.", parse_mode=None)
+        return
+    except (TranslateError, Exception):
+        logger.exception("tradutor: falha na tradução")
+        await message.answer("⚠️ Não consegui traduzir o áudio agora. Tenta de novo.", parse_mode=None)
+        return
+
+    original = (res.get("original") or "").strip()
+    translation = (res.get("translation") or "").strip()
+    if not translation:
+        await message.answer(_EMPTY)
+        return
+
+    await message.answer(
+        f"🗣️ <i>{html.escape(original)}</i>\n\n🌐 <b>{html.escape(translation)}</b>",
+        parse_mode="HTML",
+    )
+
+    try:
+        ogg = await asyncio.wait_for(synthesize(translation, provider=prov), timeout=60)
+        await message.answer_voice(BufferedInputFile(ogg, filename="traducao.ogg"))
+    except asyncio.TimeoutError:
+        logger.warning("tradutor: TTS estourou o tempo")
+        await message.answer("(áudio demorou — segue a tradução em texto acima)", parse_mode=None)
+    except (TTSError, Exception):
+        logger.exception("tradutor: TTS falhou")
+        await message.answer("(áudio indisponível agora — segue a tradução em texto acima)", parse_mode=None)
 
 
 async def _dispatch_command(

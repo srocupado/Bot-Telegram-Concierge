@@ -40,6 +40,10 @@ class User(Base):
     # VOICE_STT_MODEL do .env. Só vale quando voice_stt_provider="gemini" ou
     # quando o provider efetivo for gemini (default).
     voice_stt_model: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    # Modo tradutor: idioma-alvo (NULL = desligado) e motor de voz/tradução
+    # ("gemini"|"openai"; NULL = TRANSLATOR_TTS_PROVIDER do .env).
+    translator_lang: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    translator_tts_provider: Mapped[str | None] = mapped_column(String(16), nullable=True)
     timezone: Mapped[str] = mapped_column(String(64), default="America/Sao_Paulo", nullable=False)
 
     # Trânsito (replicado do Telegram-Travels)
