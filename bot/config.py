@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     # Agente proativo (opt-in por usuário via /proativo_on). Gate global +
     # janelas de checagem (BRT, CSV) + limiares dos nudges e antecedência.
     proactive_enabled: bool = Field(True, alias="PROACTIVE_ENABLED")
+    # Aniversário do dono (DD/MM). Mensagem calorosa 1x/ano, na hora do briefing,
+    # INDEPENDENTE do proactive_enabled. Vazio = desligado.
+    owner_birthday: str = Field("24/08", alias="OWNER_BIRTHDAY")
     proactive_hours: str = Field("7,13,19", alias="PROACTIVE_HOURS")
     proactive_briefing_hour: int = Field(7, alias="PROACTIVE_BRIEFING_HOUR")
     proactive_lookahead_hours: int = Field(48, alias="PROACTIVE_LOOKAHEAD_HOURS")

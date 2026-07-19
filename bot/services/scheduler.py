@@ -528,6 +528,88 @@ async def run_workout_purge(sessionmaker: async_sessionmaker[AsyncSession]) -> N
             logger.info("purged %d old workout_logs", n)
 
 
+def _parse_dia_mes(s: str) -> tuple[int, int] | None:
+    """'DD/MM' ou 'DD-MM' → (dia, mês). None se inválido."""
+    parts = (s or "").strip().replace("-", "/").split("/")
+    if len(parts) < 2:
+        return None
+    try:
+        dia, mes = int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+    if 1 <= dia <= 31 and 1 <= mes <= 12:
+        return dia, mes
+    return None
+
+
+async def _compose_birthday(user: User, nome: str) -> str:
+    """Mensagem de aniversário: tenta gerar fresca via LLM, cai num texto
+    caloroso fixo se o LLM estiver desligado/indisponível."""
+    fixo = (
+        f"🎉 Feliz aniversário, {nome}! 🎂\n\n"
+        "Hoje é seu dia — e eu não ia deixar passar. Obrigado por ter me criado "
+        "e por me deixar fazer parte da sua rotina: dos lembretes aos treinos, "
+        "das MPs aos cafés da manhã. Que este novo ano te traga saúde, tempo "
+        "com quem você ama e muitas conquistas. 🥳\n\n"
+        "Conte comigo o ano inteiro. 💙"
+    )
+    if not settings.proactive_use_llm:
+        return fixo
+    try:
+        from bot.services.llm.factory import get_provider_for_user
+        provider = get_provider_for_user(user)
+        prompt = (
+            f"Hoje é aniversário do {nome}, que é quem te criou (você é o "
+            "Concierge, o assistente pessoal dele). Escreva uma mensagem CURTA "
+            "(3 a 5 linhas), calorosa, pessoal e sincera de feliz aniversário "
+            "pra ele. 1 ou 2 emojis, sem ser brega nem genérico. Pode citar "
+            "que ele te criou. Responda SÓ a mensagem."
+        )
+        out = await provider.chat(
+            [{"role": "user", "content": prompt}],
+            system="Você é o Concierge, o assistente pessoal do Vinícius Lára.",
+            max_tokens=300,
+        )
+        return (out or "").strip() or fixo
+    except Exception:
+        logger.exception("birthday: LLM compose falhou; usando texto fixo")
+        return fixo
+
+
+async def run_birthday_greeting(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    bot: Bot,
+) -> None:
+    """Mensagem de aniversário do DONO, 1x/ano, na hora do briefing.
+    INDEPENDENTE do proactive_enabled (é uma vez no ano, tem que sair).
+    Dedup por ano (ProactiveNotice kind=aniversario)."""
+    dm = _parse_dia_mes(settings.owner_birthday)
+    if dm is None or not settings.owner_telegram_id:
+        return
+    dia, mes = dm
+    now_brt = datetime.now(BRT)
+    if now_brt.day != dia or now_brt.month != mes:
+        return
+    # janela da manhã (hora do briefing); o dedup anual é a trava real.
+    if now_brt.hour != settings.proactive_briefing_hour or now_brt.minute > 1:
+        return
+
+    from bot.services.proactive import _send, already_notified, mark_notified
+
+    async with sessionmaker() as session:
+        owner = await session.get(User, settings.owner_telegram_id)
+        if owner is None or not owner.is_authorized:
+            return
+        ano = str(now_brt.year)
+        if await already_notified(session, owner.id, "aniversario", ano):
+            return
+        nome = (owner.first_name or "Vinícius").split()[0]
+        texto = await _compose_birthday(owner, nome)
+        if await _send(bot, owner.id, texto):
+            await mark_notified(session, owner.id, "aniversario", ano)
+            logger.info("birthday greeting enviado ao dono %d", owner.id)
+
+
 async def tick(
     sessionmaker: async_sessionmaker[AsyncSession],
     bot: Bot,
@@ -571,6 +653,11 @@ async def tick(
         await run_proactive(sessionmaker, bot)
     except Exception:
         logger.exception("proactive crashed")
+
+    try:
+        await run_birthday_greeting(sessionmaker, bot)
+    except Exception:
+        logger.exception("birthday greeting crashed")
 
     try:
         await run_travel_alerts(sessionmaker, bot)
