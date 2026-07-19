@@ -41,7 +41,13 @@ HELP_TEXT = (
     "calcula a rota até o destino\n\n"
     "<b>Busca web</b>:\n"
     "• <code>/buscar &lt;termo&gt;</code> — pesquisa na web. Usa Anthropic se o "
-    "provider ativo for Anthropic, senão cai pro Gemini. Cita fontes.\n\n"
+    "provider ativo for Anthropic, senão cai pro Gemini. Cita fontes.\n"
+    "• Preço de produto: <i>\"quanto custa uma GoPro Hero 13?\"</i>, "
+    "<i>\"preço do iPhone 16\"</i>, <i>\"onde compro um monitor 4k?\"</i> → "
+    "acha o preço e onde comprar (não precisa de comando).\n"
+    "• Lugar/estabelecimento: <i>\"telefone da farmácia X\"</i>, <i>\"que horas "
+    "abre o shopping Y\"</i>, <i>\"endereço da clínica Z\"</i> → dados oficiais "
+    "do Google.\n\n"
     "<b>Tarefas e lembretes</b>:\n"
     "• <code>/nova &lt;texto&gt;</code> — cria tarefa\n"
     "• <code>/tarefas</code> — lista tarefas abertas\n"
@@ -245,10 +251,17 @@ _HELP_KEYWORDS: dict[str, str] = {
     "memoria": "llm", "lembra": "llm",
     "foto": "imagens", "imagem": "imagens", "recibo": "imagens", "boleto": "imagens",
     "proativo": "proativo", "briefing": "proativo", "aviso": "proativo",
-    "busca": "busca web", "pesquisa": "busca web", "buscar": "busca web", "google": "busca web",
+    "busca": "busca web", "pesquisa": "busca web", "pesquisar": "busca web",
+    "buscar": "busca web", "google": "busca web", "internet": "busca web",
+    # preço/produto e lugar caem na seção de Busca (buscar_preco / buscar_local)
+    "preco": "busca web", "precos": "busca web", "produto": "busca web",
+    "produtos": "busca web", "custa": "busca web", "custo": "busca web",
+    "onde comprar": "busca web", "onde compro": "busca web",
+    "telefone": "busca web", "endereco": "busca web", "horario": "busca web",
+    "horas": "busca web", "shopping": "busca web",  # pt-BR: shopping = o lugar
     "clima": "proativo", "tempo": "proativo",  # clima aparece no briefing proativo
     # inglês (a esposa fala PT, mas o LLM às vezes passa o assunto em EN)
-    "reminder": "lembrete", "task": "lembrete", "shopping": "compras",
+    "reminder": "lembrete", "task": "lembrete", "shopping list": "compras",
     "grocery": "compras", "traffic": "transito", "flight": "viagens",
     "translate": "llm", "workout": "academia",
 }

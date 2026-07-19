@@ -1501,11 +1501,13 @@ TOOLS: list[Tool] = [
                 "assunto": {
                     "type": "string",
                     "description": (
-                        "Tema da dúvida: lembrete, tarefa, compras, trânsito, "
-                        "rota, viagem/voo/hotel, MP/DOU, congresso, finanças/"
-                        "cartão, gastos, academia, tradutor, voz, foto, LLM/"
-                        "provider, proativo, busca. Vazio/genérico = lista os "
-                        "tópicos disponíveis."
+                        "As PRÓPRIAS palavras do usuário sobre o tema — repita o "
+                        "termo que ele usou, NÃO reinterprete. Ex.: 'pesquisar "
+                        "preço de produto', 'lista de compras', 'criar lembrete', "
+                        "'trânsito', 'voo'. ATENÇÃO: buscar PREÇO/PRODUTO na web "
+                        "('quanto custa', 'onde comprar') é a seção de BUSCA — "
+                        "NÃO é a lista de compras do mercado. Vazio = lista os "
+                        "tópicos."
                     ),
                 },
             },
