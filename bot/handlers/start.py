@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+import unicodedata
+
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
@@ -188,6 +191,94 @@ def _chunk_text(text: str, limit: int = 4000) -> list[str]:
     if current:
         chunks.append(current)
     return chunks
+
+
+# ─────────────── Ajuda natural (tool `ajuda`) ───────────────
+# O HELP_TEXT é a FONTE ÚNICA: fatiamos ele em seções (cada bloco começa com
+# <b>Título</b>) pra que a tool `ajuda` devolva o trecho EXATO — verbatim, sem
+# o LLM improvisar a sintaxe dos comandos (flash-lite erraria /lembrar etc.).
+
+
+def _strip_accents(s: str) -> str:
+    return "".join(
+        c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn"
+    ).lower()
+
+
+def _parse_help_sections(help_text: str) -> list[tuple[str, str]]:
+    """[(título_sem_tags, bloco_html)] das seções do HELP_TEXT (blocos separados
+    por linha em branco, começando com <b>Título</b>). Ignora o cabeçalho."""
+    out: list[tuple[str, str]] = []
+    for bloco in help_text.split("\n\n"):
+        bloco = bloco.strip()
+        m = re.match(r"<b>(.+?)</b>", bloco)
+        if not m or "•" not in bloco and "<i>" not in bloco:
+            continue  # cabeçalho "🤖 Concierge" ou bloco sem itens
+        titulo = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+        out.append((titulo, bloco))
+    return out
+
+
+_HELP_SECTIONS: list[tuple[str, str]] = _parse_help_sections(HELP_TEXT)
+
+# palavra-chave (sem acento) → fragmento do TÍTULO da seção a casar.
+_HELP_KEYWORDS: dict[str, str] = {
+    "lembrete": "lembrete", "lembrar": "lembrete", "lembretes": "lembrete",
+    "tarefa": "lembrete", "tarefas": "lembrete", "reminder": "lembrete", "afazer": "lembrete",
+    "compra": "compras", "compras": "compras", "lista": "compras",
+    "mercado": "compras", "comprar": "compras", "supermercado": "compras",
+    "transito": "transito", "trafego": "transito", "engarrafamento": "transito",
+    "rota": "rota", "chegar": "rota", "caminho": "rota", "trajeto": "rota",
+    "voo": "viagens", "voos": "viagens", "passagem": "viagens", "passagens": "viagens",
+    "hotel": "viagens", "hospedagem": "viagens", "viagem": "viagens", "viagens": "viagens",
+    "mp": "diario oficial", "dou": "diario oficial", "medida provisoria": "diario oficial",
+    "nota tecnica": "diario oficial",
+    "congresso": "pauta do congresso", "pauta": "pauta do congresso",
+    "financeiro": "gerenciador financeiro", "cartao": "gerenciador financeiro",
+    "despesa": "gerenciador financeiro", "fatura": "gerenciador financeiro",
+    "banco": "gerenciador financeiro", "salario": "gerenciador financeiro",
+    "aporte": "gerenciador financeiro", "investimento": "gerenciador financeiro",
+    "gasto": "analise de gastos", "gastos": "analise de gastos",
+    "academia": "academia", "treino": "academia", "malhar": "academia", "malho": "academia",
+    "tradutor": "llm", "traduzir": "llm", "traducao": "llm",
+    "provider": "llm", "modelo": "llm", "llm": "llm", "voz": "voz", "audio": "voz",
+    "memoria": "llm", "lembra": "llm",
+    "foto": "imagens", "imagem": "imagens", "recibo": "imagens", "boleto": "imagens",
+    "proativo": "proativo", "briefing": "proativo", "aviso": "proativo",
+    "busca": "busca web", "pesquisa": "busca web", "buscar": "busca web", "google": "busca web",
+    "clima": "proativo", "tempo": "proativo",  # clima aparece no briefing proativo
+    # inglês (a esposa fala PT, mas o LLM às vezes passa o assunto em EN)
+    "reminder": "lembrete", "task": "lembrete", "shopping": "compras",
+    "grocery": "compras", "traffic": "transito", "flight": "viagens",
+    "translate": "llm", "workout": "academia",
+}
+
+
+def find_help_sections(query: str) -> list[str]:
+    """Blocos HTML do HELP_TEXT que casam com o assunto perguntado. Casa por
+    palavra-chave (LIMITE DE PALAVRA — senão 'mp' casaria dentro de 'co-mp-ras')
+    e também direto contra o título da seção. Vazio se nada bate."""
+    q = _strip_accents(query or "")
+    alvos: set[str] = set()
+    for kw, alvo in _HELP_KEYWORDS.items():
+        if re.search(rf"\b{re.escape(kw)}\b", q):
+            alvos.add(alvo)
+    if not alvos:  # tenta casar o texto direto contra os títulos
+        for titulo, _bloco in _HELP_SECTIONS:
+            if _strip_accents(titulo) in q or q in _strip_accents(titulo):
+                alvos.add(_strip_accents(titulo))
+    out: list[str] = []
+    for titulo, bloco in _HELP_SECTIONS:
+        nt = _strip_accents(titulo)
+        if any(a in nt for a in alvos):
+            out.append(bloco)
+    return out
+
+
+def help_topic_list() -> str:
+    """Lista curta dos tópicos (títulos das seções) pro caso 'sem match'."""
+    titulos = [t for t, _ in _HELP_SECTIONS]
+    return "\n".join(f"• {t}" for t in titulos)
 
 
 @router.message(Command("help"))

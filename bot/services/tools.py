@@ -128,6 +128,32 @@ async def _h_listar_arquivos(_args: dict, ctx: ToolContext) -> str:
     return "ok: " + format_listing()
 
 
+async def _h_ajuda(args: dict, ctx: ToolContext) -> str:
+    """Explica COMO USAR o bot: devolve o trecho EXATO do guia (verbatim), sem
+    o LLM improvisar a sintaxe dos comandos."""
+    from bot.handlers.start import find_help_sections, help_topic_list
+
+    assunto = (args.get("assunto") or "").strip()
+    blocos = find_help_sections(assunto)
+    if not blocos:
+        ctx.direct_html = (
+            "Posso te explicar como usar qualquer parte do bot 🙂 "
+            "Sobre o que você quer saber?\n\n"
+            + help_topic_list()
+            + "\n\nOu digite /help pra ver tudo."
+        )
+        ctx.short_circuit = True
+        return "ok: lista de tópicos enviada verbatim (não escreva nada)"
+    # blocos JÁ são HTML (do HELP_TEXT) — NÃO escapar.
+    ctx.direct_html = (
+        "Claro! 👇\n\n"
+        + "\n\n".join(blocos)
+        + "\n\n💡 É só me dizer em linguagem natural que eu faço pra você."
+    )
+    ctx.short_circuit = True
+    return "ok: ajuda enviada verbatim ao usuário (não escreva nada, a mensagem já foi enviada)"
+
+
 async def _h_buscar_web(args: dict, ctx: ToolContext) -> str:
     from bot.services.websearch import WebSearchError, search_and_read
 
@@ -1457,6 +1483,36 @@ async def _h_melhor_horario_sair(args: dict, ctx: ToolContext) -> str:
 
 
 TOOLS: list[Tool] = [
+    Tool(
+        name="ajuda",
+        description=(
+            "Explica COMO USAR o bot quando o usuário faz uma META-pergunta "
+            "sobre o próprio funcionamento — 'como crio um lembrete?', 'como "
+            "coloco algo na lista de compras?', 'como funciona X?', 'o que você "
+            "faz?', 'não sei mexer nisso', 'que comandos existem?'. Devolve o "
+            "trecho EXATO do guia (verbatim, com exemplos). USE SÓ quando a "
+            "pessoa pergunta COMO fazer — NÃO quando ela pede pra FAZER (pra "
+            "criar um lembrete de verdade use criar_lembrete, etc.). NÃO "
+            "responda sobre comandos do bot de cabeça: você erra a sintaxe."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "assunto": {
+                    "type": "string",
+                    "description": (
+                        "Tema da dúvida: lembrete, tarefa, compras, trânsito, "
+                        "rota, viagem/voo/hotel, MP/DOU, congresso, finanças/"
+                        "cartão, gastos, academia, tradutor, voz, foto, LLM/"
+                        "provider, proativo, busca. Vazio/genérico = lista os "
+                        "tópicos disponíveis."
+                    ),
+                },
+            },
+            "required": [],
+        },
+        handler=_h_ajuda,
+    ),
     Tool(
         name="criar_tarefa",
         description="Cria uma nova tarefa pendente para o usuário.",
