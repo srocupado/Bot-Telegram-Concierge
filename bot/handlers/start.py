@@ -20,12 +20,17 @@ HELP_TEXT = (
     "• <code>/transito_on</code> / <code>/transito_off</code> — assina/desassina digest diário (seg-sex)\n"
     "• <code>/transito_at HH:MM</code> — muda horário do digest (sem arg volta ao default)\n"
     "• <code>/transito_reset</code> — zera marca de envio de hoje\n"
-    "• <code>/transito_alerta_on</code> / <code>/transito_alerta_off</code> — alerta proativo se rota estiver ≥30% acima do habitual\n\n"
+    "• <code>/transito_alerta_on</code> / <code>/transito_alerta_off</code> — alerta proativo se rota estiver ≥30% acima do habitual\n"
+    "• <i>\"que horas é melhor sair pro trabalho?\"</i> — testa várias janelas de saída e diz a melhor pra pegar menos trânsito.\n\n"
     "<b>Medidas Provisórias — pauta do Congresso</b>:\n"
     "• <code>/congresso_agora</code> — força resumo da semana agora\n"
     "• <code>/congresso_on</code> / <code>/congresso_off</code> — assina/desassina digest semanal (segunda)\n"
     "• <code>/congresso_at HH:MM</code> — muda horário do digest\n"
     "• <code>/congresso_reset</code> — zera marca de envio da semana\n\n"
+    "<b>Câmara — comissões e pautas</b>:\n"
+    "• <i>\"quais comissões têm reunião deliberativa hoje?\"</i> → nomes e horários das reuniões.\n"
+    "• <i>\"pauta da CCJ hoje\"</i> / <i>\"o que a comissão de Saúde vota amanhã?\"</i> → pauta oficial da comissão (dado da Câmara).\n"
+    "• <i>\"quais comissões com reunião hoje têm projeto do Podemos?\"</i> → varre as comissões e cruza autoria/relatoria de um partido/deputado (leva alguns segundos).\n\n"
     "<b>Medidas Provisórias — publicação no Diário Oficial</b>:\n"
     "• <code>/mp_dou_on</code> / <code>/mp_dou_off</code> — assina/desassina o digest diário de MPs novas no DOU\n"
     "• <code>/mp_dou_agora [AAAA-MM-DD]</code> — busca agora; entrega nota técnica (gerada por IA) + DOCX\n"
@@ -48,6 +53,17 @@ HELP_TEXT = (
     "• Lugar/estabelecimento: <i>\"telefone da farmácia X\"</i>, <i>\"que horas "
     "abre o shopping Y\"</i>, <i>\"endereço da clínica Z\"</i> → dados oficiais "
     "do Google.\n\n"
+    "<b>Cinema</b> (rede Cinemark):\n"
+    "• <i>\"que horas passa o filme X no Iguatemi Brasília?\"</i> / "
+    "<i>\"programação do Pier 21 amanhã\"</i> → sessões oficiais (2D/3D, "
+    "dublado/legendado), qualquer data.\n\n"
+    "<b>Clima</b>:\n"
+    "• <i>\"qual a previsão pra hoje?\"</i> / <i>\"vai chover essa semana?\"</i> "
+    "→ previsão do tempo (hoje ou próximos 7 dias, dia a dia).\n\n"
+    "<b>Cotações</b> (ao vivo):\n"
+    "• <i>\"quanto está o dólar?\"</i>, <i>\"cotação da PETR4\"</i>, "
+    "<i>\"quanto tá o HGLG11 / bitcoin?\"</i> → preço atual de moeda, ação, "
+    "FII, ETF ou cripto (B3 e mercados).\n\n"
     "<b>Tarefas e lembretes</b>:\n"
     "• <code>/nova &lt;texto&gt;</code> — cria tarefa\n"
     "• <code>/tarefas</code> — lista tarefas abertas\n"
@@ -84,7 +100,8 @@ HELP_TEXT = (
     "• <i>\"lança 250 no cartão de crédito, mercado, hoje\"</i> → cria compra no cartão.\n"
     "• <i>\"paguei conta de luz 180\"</i> / <i>\"recebi 5 mil de salário\"</i> → lançamento no banco.\n"
     "• <i>\"aportei 1000 no Tesouro IPCA+ 2035\"</i> → contribuição em título existente.\n"
-    "• <i>\"como tá meu cartão esse mês?\"</i> → consulta os últimos lançamentos.\n\n"
+    "• <i>\"como tá meu cartão esse mês?\"</i> → consulta os últimos lançamentos.\n"
+    "• <i>\"qual meu saldo?\"</i> / <i>\"quanto tá a fatura em aberto?\"</i> → saldo bancário atual e total da fatura do ciclo.\n\n"
     "<b>Análise de gastos</b>:\n"
     "• <i>\"quanto gastei com alimentação em maio?\"</i> / <i>\"maior categoria do trimestre\"</i>\n"
     "• <i>\"evolução dos meus gastos mês a mês\"</i> / <i>\"compara maio e junho\"</i>\n"
@@ -245,6 +262,22 @@ _HELP_KEYWORDS: dict[str, str] = {
     "banco": "gerenciador financeiro", "salario": "gerenciador financeiro",
     "aporte": "gerenciador financeiro", "investimento": "gerenciador financeiro",
     "gasto": "analise de gastos", "gastos": "analise de gastos",
+    "saldo": "gerenciador financeiro", "extrato": "gerenciador financeiro",
+    # câmara — comissões/pautas (consultar_pauta_camara / varrer_comissoes_partido)
+    "comissao": "camara", "comissoes": "camara", "camara": "camara",
+    "deliberativa": "camara", "relatoria": "camara", "autoria": "camara",
+    "ccj": "camara",
+    # cinema (consultar_sessoes_cinema)
+    "cinema": "cinema", "filme": "cinema", "filmes": "cinema",
+    "sessao": "cinema", "sessoes": "cinema", "programacao": "cinema",
+    # clima (consultar_clima)
+    "chuva": "clima", "chover": "clima", "previsao": "clima",
+    # cotações (consultar_cotacao)
+    "cotacao": "cotacoes", "cotacoes": "cotacoes", "dolar": "cotacoes",
+    "euro": "cotacoes", "bitcoin": "cotacoes", "cripto": "cotacoes",
+    "acoes": "cotacoes", "fii": "cotacoes", "bolsa": "cotacoes",
+    # melhor horário de sair (melhor_horario_sair) — é trânsito
+    "melhor horario": "transito", "melhor hora": "transito", "sair": "transito",
     "academia": "academia", "treino": "academia", "malhar": "academia", "malho": "academia",
     "tradutor": "llm", "traduzir": "llm", "traducao": "llm",
     "provider": "llm", "modelo": "llm", "llm": "llm", "voz": "voz", "audio": "voz",
@@ -258,8 +291,8 @@ _HELP_KEYWORDS: dict[str, str] = {
     "produtos": "busca web", "custa": "busca web", "custo": "busca web",
     "onde comprar": "busca web", "onde compro": "busca web",
     "telefone": "busca web", "endereco": "busca web", "horario": "busca web",
-    "horas": "busca web", "shopping": "busca web",  # pt-BR: shopping = o lugar
-    "clima": "proativo", "tempo": "proativo",  # clima aparece no briefing proativo
+    "shopping": "busca web",  # pt-BR: shopping = o lugar (não a lista)
+    "clima": "clima", "tempo": "clima",  # seção Clima dedicada (consultar_clima)
     # inglês (a esposa fala PT, mas o LLM às vezes passa o assunto em EN)
     "reminder": "lembrete", "task": "lembrete", "shopping list": "compras",
     "grocery": "compras", "traffic": "transito", "flight": "viagens",
