@@ -60,7 +60,9 @@ async def cmd_tradutor(
     prov = user.translator_tts_provider or settings.translator_tts_provider
     await message.answer(
         f"🎙️ Modo tradutor LIGADO → {lang} (voz: {prov}).\n"
-        "Mande um áudio; devolvo a tradução em texto e em voz.\n"
+        f"Mande um áudio; devolvo a tradução em texto e em voz.\n"
+        f"↔️ Via dupla: áudio já em {lang} (ex.: a resposta do atendente) "
+        "volta traduzido pro português.\n"
         "Pra sair: /tradutor off",
         parse_mode=None,
     )

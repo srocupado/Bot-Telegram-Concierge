@@ -54,6 +54,7 @@ from bot.handlers.traffic import (
 from bot.services.chat_memory import memory
 from bot.services.llm.factory import get_provider_for_user
 from bot.services.voice import VoiceTranscribeError, transcribe
+from bot.services.viagem import effective_tz
 
 logger = logging.getLogger(__name__)
 
@@ -448,7 +449,7 @@ async def _dispatch_chat(
         format_pending_list, is_list_reminders_request, list_pending,
     )
     if is_list_reminders_request(text):
-        out = format_pending_list(await list_pending(session, user.id), user.timezone)
+        out = format_pending_list(await list_pending(session, user.id), effective_tz(user))
         memory.append(chat_id, "user", text)
         memory.append(chat_id, "assistant", out)
         await message.answer(out, parse_mode=None)
@@ -462,9 +463,9 @@ async def _dispatch_chat(
 
     try:
         provider = get_provider_for_user(user)
-        ctx = ToolContext(user=user, session=session, tz=user.timezone, user_text=text)
+        ctx = ToolContext(user=user, session=session, tz=effective_tz(user), user_text=text)
         reply = await provider.chat_with_tools(
-            inject_context(history, user.timezone, summary), tools=TOOLS, ctx=ctx,
+            inject_context(history, effective_tz(user), summary), tools=TOOLS, ctx=ctx,
             system=_build_system_prompt(),
             max_tokens=600,
         )

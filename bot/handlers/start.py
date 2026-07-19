@@ -79,7 +79,7 @@ HELP_TEXT = (
     "• <code>/provider modelos [provider]</code> — lista dinâmica dos modelos (vem da API; modelo novo aparece sozinho)\n"
     "• <code>/provider_visao anthropic|openai|gemini|auto</code> — provider só pra fotos (auto = segue /provider). <code>/provider_visao modelos</code> lista só modelos com entrada de imagem\n"
     "• <code>/voice gemini|openai</code> — provider da transcrição de voz. Gemini converte voz→/comando; OpenAI (Whisper) é literal mas mais estável. <code>/voice modelos</code> lista só modelos com entrada de áudio\n"
-    "• <code>/tradutor &lt;idioma&gt;</code> — modo tradutor: manda áudio, recebe a tradução em texto e voz (ex.: <code>/tradutor inglês</code>). <code>/tradutor off</code> desliga\n"
+    "• <code>/tradutor &lt;idioma&gt;</code> — modo tradutor de VIA DUPLA: manda áudio, recebe a tradução em texto e voz; áudio já no idioma-alvo (a resposta do atendente) volta em português (ex.: <code>/tradutor japonês</code>). <code>/tradutor off</code> desliga\n"
     "• <code>/tradutor_provider openai|gemini [id]</code> — motor do tradutor (openai não treina; gemini grátis pode). Fixa o modelo por id (ex.: <code>gemini gemini-3.1-flash-lite</code>); <code>/tradutor_provider modelos</code> lista os de áudio\n"
     "• <code>/reset</code> — limpa o contexto da conversa livre\n"
     "• <code>/reset_memoria [tudo]</code> — zera a memória de longo prazo "
@@ -254,6 +254,7 @@ _HELP_KEYWORDS: dict[str, str] = {
     "rota": "rota", "chegar": "rota", "caminho": "rota", "trajeto": "rota",
     "voo": "viagens", "voos": "viagens", "passagem": "viagens", "passagens": "viagens",
     "hotel": "viagens", "hospedagem": "viagens", "viagem": "viagens", "viagens": "viagens",
+    "fuso": "viagens", "modo viagem": "viagens",
     "mp": "diario oficial", "dou": "diario oficial", "medida provisoria": "diario oficial",
     "nota tecnica": "diario oficial",
     "congresso": "pauta do congresso", "pauta": "pauta do congresso",

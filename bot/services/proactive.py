@@ -429,23 +429,45 @@ async def collect_tarefas(
 
 
 async def collect_clima(user: User, now_brt: datetime) -> list[ProactiveFact]:
-    """Previsão do tempo do dia (Open-Meteo, HOME_COORDS) pro briefing
-    matinal. Roda todo dia (clima interessa também no fim de semana). Sem
-    dedup (leitura fresca a cada manhã); falha silenciosa não derruba o
-    briefing."""
-    if not settings.home_coords:
+    """Previsão do tempo do dia (Open-Meteo) pro briefing matinal. Em MODO
+    VIAGEM ativo, usa as coords/fuso do DESTINO (com rótulo); senão HOME_COORDS.
+    Roda todo dia; sem dedup (leitura fresca); falha não derruba o briefing."""
+    from bot.services.viagem import effective_coords, effective_tz
+    coords = effective_coords(user)
+    label = f" em {user.viagem_destino}" if coords else ""
+    tz = effective_tz(user) if coords else settings.timezone
+    if not coords:
+        coords = settings.home_coords
+    if not coords:
         return []
     import httpx
     from bot.services.weather import fetch_today_weather, format_weather_line
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            w = await fetch_today_weather(
-                client, settings.home_coords, tz=settings.timezone,
-            )
+            w = await fetch_today_weather(client, coords, tz=tz)
     except Exception:
         logger.warning("proactive: previsão do tempo falhou", exc_info=True)
         return []
-    return [ProactiveFact("clima", "clima_hoje", "", format_weather_line(w))]
+    linha = format_weather_line(w)
+    if label:
+        linha = f"✈️ {label.strip()}: {linha}"
+    return [ProactiveFact("clima", "clima_hoje", "", linha)]
+
+
+async def collect_moeda_viagem(user: User) -> list[ProactiveFact]:
+    """Cotação da moeda local no briefing DURANTE a viagem (se configurada
+    com 'moeda X'). Sem dedup (leitura fresca por dia)."""
+    from bot.services.viagem import viagem_ativa
+    moeda = getattr(user, "viagem_moeda", None)
+    if not moeda or not viagem_ativa(user):
+        return []
+    try:
+        from bot.services.cotacao import consultar_cotacao
+        linha = await consultar_cotacao(moeda)
+    except Exception:
+        logger.warning("proactive: cotação da moeda da viagem falhou", exc_info=True)
+        return []
+    return [ProactiveFact("clima", "moeda_viagem", "", f"💱 {linha}")]
 
 
 async def collect_transito(user: User, now_brt: datetime) -> list[ProactiveFact]:
@@ -608,6 +630,7 @@ async def run_for_user(
     if briefing:
         facts += await collect_clima(user, now_brt)
         facts += await collect_transito(user, now_brt)
+        facts += await collect_moeda_viagem(user)
     facts += await collect_vencimentos(session, user, now_brt, force=force)
     # Tarefas abertas no briefing matinal e no resumo do fim do dia.
     if briefing or end_of_day:

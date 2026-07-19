@@ -47,6 +47,15 @@ class User(Base):
     translator_lang: Mapped[str | None] = mapped_column(String(32), nullable=True)
     translator_tts_provider: Mapped[str | None] = mapped_column(String(16), nullable=True)
     translator_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Modo viagem (/viagem): destino + período (ISO), fuso/coords resolvidos no
+    # set, moeda local opcional. Fora do período viagem_ativa() é falsa — os
+    # campos podem ficar gravados sem efeito.
+    viagem_destino: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    viagem_inicio: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    viagem_fim: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    viagem_tz: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    viagem_coords: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    viagem_moeda: Mapped[str | None] = mapped_column(String(16), nullable=True)
     timezone: Mapped[str] = mapped_column(String(64), default="America/Sao_Paulo", nullable=False)
 
     # Trânsito (replicado do Telegram-Travels)

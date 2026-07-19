@@ -132,6 +132,14 @@ async def _ensure_columns(conn) -> None:
     if "translator_model" not in cols:
         await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN translator_model VARCHAR(64)")
         logger.info("migrated: added users.translator_model")
+    for col, ddl in (
+        ("viagem_destino", "VARCHAR(64)"), ("viagem_inicio", "VARCHAR(10)"),
+        ("viagem_fim", "VARCHAR(10)"), ("viagem_tz", "VARCHAR(64)"),
+        ("viagem_coords", "VARCHAR(64)"), ("viagem_moeda", "VARCHAR(16)"),
+    ):
+        if col not in cols:
+            await conn.exec_driver_sql(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
+            logger.info("migrated: added users.%s", col)
 
     rem_cols = await conn.exec_driver_sql("PRAGMA table_info(reminders)")
     cols = {row[1] for row in rem_cols.fetchall()}

@@ -94,9 +94,11 @@ async def _translate_openai(
             temperature=0.2,
             messages=[
                 {"role": "system", "content": (
-                    f"Traduza o texto do usuário para {target_lang}. Responda "
-                    "SOMENTE com a tradução — sem aspas, sem comentários, sem "
-                    "o texto original."
+                    f"Traduza o texto do usuário para {target_lang}. "
+                    f"BIDIRECIONAL: se o texto JÁ estiver em {target_lang} "
+                    "(ex.: a resposta de um atendente local), traduza para "
+                    "português brasileiro. Responda SOMENTE com a tradução — "
+                    "sem aspas, sem comentários, sem o texto original."
                 )},
                 {"role": "user", "content": original},
             ],
@@ -127,7 +129,9 @@ async def _translate_gemini(
             "<<<ORIGINAL>>>\n"
             "a transcrição literal do que foi dito, no idioma original\n"
             "<<<TRADUCAO>>>\n"
-            f"a tradução para {target_lang}"
+            f"a tradução para {target_lang}. BIDIRECIONAL: se a fala JÁ "
+            f"estiver em {target_lang} (ex.: a resposta de um atendente "
+            "local), a tradução deve ser para português brasileiro"
         )
         # Desliga o thinking: gemini-3.x é 'thinking' e o texto de pensamento
         # contaminava resp.text (a outra metade do bug). flash aceita 0; pro

@@ -485,12 +485,19 @@ async def run_proactive(
     18h — MP agora é avisada aqui (leve + nota sob demanda)."""
     if not settings.proactive_enabled:
         return
-    now_brt = datetime.now(BRT)
+    now_utc = datetime.now(timezone.utc)
     from bot.services.proactive import parse_proactive_hours, run_for_user
+    from bot.services.viagem import effective_tz
 
-    if now_brt.hour not in parse_proactive_hours(settings.proactive_hours) or now_brt.minute > 1:
+    hours = parse_proactive_hours(settings.proactive_hours)
+    # Gate barato ANTES de tocar o banco: só há janela possível quando algum
+    # fuso plausível está em minute<=1 de uma hora-alvo. Como fusos são
+    # múltiplos de 15min, checa os 4 offsets de quarto de hora.
+    plausivel = any(
+        ((now_utc.minute + q * 15) % 60) <= 1 for q in range(4)
+    )
+    if not plausivel:
         return
-    window = "briefing" if now_brt.hour == settings.proactive_briefing_hour else "regular"
 
     async with sessionmaker() as session:
         users = list((await session.scalars(
@@ -500,11 +507,21 @@ async def run_proactive(
             )
         )).all())
     for u in users:
+        # Janela avaliada no FUSO EFETIVO do usuário (viagem ativa → fuso do
+        # destino: no Japão o briefing sai às 7h de Tóquio, não de Brasília).
+        try:
+            tz = ZoneInfo(effective_tz(u))
+        except Exception:
+            tz = BRT
+        now_local = now_utc.astimezone(tz)
+        if now_local.hour not in hours or now_local.minute > 1:
+            continue
+        window = "briefing" if now_local.hour == settings.proactive_briefing_hour else "regular"
         async with sessionmaker() as session:
             try:
                 fresh = await session.get(User, u.id)
                 if fresh is not None:
-                    await run_for_user(bot, session, fresh, now_brt, window=window)
+                    await run_for_user(bot, session, fresh, now_local, window=window)
             except Exception:
                 logger.exception("proactive failed for user %d", u.id)
 

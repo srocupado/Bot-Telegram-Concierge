@@ -15,6 +15,7 @@ from bot.services.chat_memory import memory
 from bot.services.llm.base import ToolContext
 from bot.services.llm.factory import get_provider_for_user
 from bot.services.tools import TOOLS
+from bot.services.viagem import effective_tz
 from bot.utils import chunk_text
 
 router = Router(name=__name__)
@@ -479,7 +480,7 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
         format_pending_list, is_list_reminders_request, list_pending,
     )
     if is_list_reminders_request(user_text):
-        out = format_pending_list(await list_pending(session, user.id), user.timezone)
+        out = format_pending_list(await list_pending(session, user.id), effective_tz(user))
         memory.append(chat_id, "user", user_text)
         memory.append(chat_id, "assistant", out)
         await message.answer(out, parse_mode=None)
@@ -493,9 +494,9 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
 
     try:
         provider = get_provider_for_user(user)
-        ctx = ToolContext(user=user, session=session, tz=user.timezone, user_text=user_text)
+        ctx = ToolContext(user=user, session=session, tz=effective_tz(user), user_text=user_text)
         reply = await provider.chat_with_tools(
-            inject_context(history, user.timezone, summary), tools=TOOLS, ctx=ctx,
+            inject_context(history, effective_tz(user), summary), tools=TOOLS, ctx=ctx,
             system=_build_system_prompt(),
             max_tokens=800,
         )
