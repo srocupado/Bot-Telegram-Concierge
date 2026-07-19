@@ -66,29 +66,59 @@ async def cmd_tradutor(
     )
 
 
+def _cur_model_label(user: User) -> str:
+    prov = user.translator_tts_provider or settings.translator_tts_provider
+    if user.translator_model:
+        return f"{prov} · <code>{user.translator_model}</code>"
+    default_id = (
+        settings.translator_stt_gemini_model if prov == "gemini"
+        else settings.voice_stt_openai_model
+    )
+    return f"{prov} · {default_id} <i>(default)</i>"
+
+
 @router.message(Command("tradutor_provider"))
 async def cmd_tradutor_provider(
     message: Message, command: CommandObject, user: User, session: AsyncSession,
 ) -> None:
     if not user.is_authorized:
         return
-    arg = (command.args or "").strip().lower()
+    # Reuso da maquinaria do /provider (lista viva da Models API + aliases).
+    from bot.handlers.provider import _GEMINI_VARIANTS, _format_model_lists
 
-    if not arg:
-        cur = user.translator_tts_provider or settings.translator_tts_provider
+    tokens = (command.args or "").strip().split()
+
+    if not tokens:  # status + ajuda
         await message.answer(
-            f"Motor do tradutor: <b>{cur}</b>\n\n"
-            "<code>/tradutor_provider openai</code> · Whisper + GPT + TTS "
-            "(não treina com seu dado)\n"
-            "<code>/tradutor_provider gemini</code> · multimodal + TTS "
-            "(tier grátis pode treinar)\n"
+            f"Motor do tradutor: <b>{_cur_model_label(user)}</b>\n\n"
+            "<code>/tradutor_provider openai [id]</code> · Whisper+GPT+TTS "
+            "(não treina)\n"
+            "<code>/tradutor_provider gemini [id]</code> · multimodal+TTS "
+            "(tier grátis pode treinar) — ex.: "
+            "<code>/tradutor_provider gemini gemini-3.1-flash-lite</code>\n"
+            "<code>/tradutor_provider modelos [gemini|openai]</code> · lista "
+            "modelos que aceitam áudio (da API)\n"
             "<code>/tradutor_provider padrao</code> · volta ao .env",
             parse_mode="HTML",
         )
         return
 
-    if arg in ("padrao", "padrão", "default", "reset"):
+    head = tokens[0].lower()
+
+    # /tradutor_provider modelos [provider] — só modelos que ACEITAM ÁUDIO.
+    if head in ("modelos", "models", "lista"):
+        alvo = tokens[1].lower() if len(tokens) > 1 else None
+        provs = [alvo] if alvo in _PROVIDERS else list(_PROVIDERS)
+        texto = await _format_model_lists(provs, modality="audio")
+        await message.answer(
+            texto + "\n\nPra usar: <code>/tradutor_provider &lt;provider&gt; &lt;id&gt;</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    if head in ("padrao", "padrão", "default", "reset"):
         user.translator_tts_provider = None
+        user.translator_model = None
         await session.commit()
         await message.answer(
             f"Motor do tradutor: padrão do .env ({settings.translator_tts_provider}).",
@@ -96,23 +126,51 @@ async def cmd_tradutor_provider(
         )
         return
 
-    if arg not in _PROVIDERS:
+    if head not in _PROVIDERS:
         await message.answer(
-            "Use: /tradutor_provider openai | gemini | padrao", parse_mode=None,
+            "Use: /tradutor_provider openai|gemini [id] | modelos | padrao",
+            parse_mode=None,
         )
         return
 
-    if arg == "openai" and not settings.openai_api_key:
-        await message.answer(
-            "⚠️ OPENAI_API_KEY não configurada — não dá pra usar openai.", parse_mode=None,
-        )
+    # valida a chave do provider
+    if head == "openai" and not settings.openai_api_key:
+        await message.answer("⚠️ OPENAI_API_KEY não configurada.", parse_mode=None)
         return
-    if arg == "gemini" and not settings.gemini_api_key:
-        await message.answer(
-            "⚠️ GEMINI_API_KEY não configurada — não dá pra usar gemini.", parse_mode=None,
-        )
+    if head == "gemini" and not settings.gemini_api_key:
+        await message.answer("⚠️ GEMINI_API_KEY não configurada.", parse_mode=None)
         return
 
-    user.translator_tts_provider = arg
+    # id do modelo (opcional). Sem id → limpa o override (volta ao default).
+    model_id: str | None = None
+    if len(tokens) > 1:
+        raw = tokens[1]
+        if head == "gemini":
+            model_id = _GEMINI_VARIANTS.get(raw.lower(), raw)
+        else:
+            model_id = raw
+        # valida contra a lista viva de modelos de ÁUDIO (aceita se a API falhar)
+        if not await _is_valid_id_audio(head, model_id):
+            await message.answer(
+                f"⚠️ <code>{model_id}</code> não parece aceitar áudio em "
+                f"{head}. Veja <code>/tradutor_provider modelos {head}</code>.",
+                parse_mode="HTML",
+            )
+            return
+
+    user.translator_tts_provider = head
+    user.translator_model = model_id
     await session.commit()
-    await message.answer(f"Motor do tradutor: <b>{arg}</b>.", parse_mode="HTML")
+    await message.answer(
+        f"Motor do tradutor: <b>{_cur_model_label(user)}</b>.", parse_mode="HTML",
+    )
+
+
+async def _is_valid_id_audio(provider: str, model_id: str) -> bool:
+    """Confere o id contra a lista viva de modelos que aceitam ÁUDIO. Se a API
+    falhar (lista vazia), aceita pra não travar o usuário."""
+    from bot.services.llm import catalog
+    modelos = await catalog.list_models(provider, "audio")
+    if not modelos:
+        return True
+    return any(mid == model_id for mid, _ in modelos)

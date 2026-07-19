@@ -367,7 +367,11 @@ async def _handle_translation(
 
     try:
         res = await asyncio.wait_for(
-            translate_audio(audio_bytes, mime_type, lang, provider=prov), timeout=90,
+            translate_audio(
+                audio_bytes, mime_type, lang,
+                provider=prov, model=user.translator_model,
+            ),
+            timeout=90,
         )
     except asyncio.TimeoutError:
         logger.warning("tradutor: tradução estourou o tempo")

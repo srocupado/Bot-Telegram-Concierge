@@ -71,7 +71,9 @@ def _ext_from_mime(mime_type: str) -> str:
     return "ogg"
 
 
-async def _translate_openai(audio_bytes: bytes, mime_type: str, target_lang: str) -> dict:
+async def _translate_openai(
+    audio_bytes: bytes, mime_type: str, target_lang: str, *, stt_model: str | None = None,
+) -> dict:
     if not settings.openai_api_key:
         raise TranslateError("OPENAI_API_KEY ausente")
 
@@ -82,7 +84,7 @@ async def _translate_openai(audio_bytes: bytes, mime_type: str, target_lang: str
         f = io.BytesIO(audio_bytes)
         f.name = f"audio.{_ext_from_mime(mime_type)}"
         tr = client.audio.transcriptions.create(
-            model=settings.voice_stt_openai_model, file=f,
+            model=stt_model or settings.voice_stt_openai_model, file=f,
         )
         original = (getattr(tr, "text", "") or "").strip()
         if not original:
@@ -105,7 +107,9 @@ async def _translate_openai(audio_bytes: bytes, mime_type: str, target_lang: str
     return await asyncio.to_thread(_call)
 
 
-async def _translate_gemini(audio_bytes: bytes, mime_type: str, target_lang: str) -> dict:
+async def _translate_gemini(
+    audio_bytes: bytes, mime_type: str, target_lang: str, *, model: str | None = None,
+) -> dict:
     if not settings.gemini_api_key:
         raise TranslateError("GEMINI_API_KEY ausente")
 
@@ -113,7 +117,7 @@ async def _translate_gemini(audio_bytes: bytes, mime_type: str, target_lang: str
         from google import genai
         from google.genai import types
         client = genai.Client(api_key=settings.gemini_api_key)
-        model = settings.translator_stt_gemini_model or settings.voice_stt_model
+        model_id = model or settings.translator_stt_gemini_model or settings.voice_stt_model
         # Formato DELIMITADO em vez de JSON: transcrição/tradução têm aspas,
         # apóstrofos e quebras de linha que arrebentam JSON quando o modelo não
         # escapa (o bug real observado: JSONDecodeError). Sentinela é imune.
@@ -130,12 +134,12 @@ async def _translate_gemini(audio_bytes: bytes, mime_type: str, target_lang: str
         # exige mínimo ~128. Espelha bot/services/voice._thinking_config.
         thinking = None
         try:
-            budget = 128 if "pro" in (model or "") else 0
+            budget = 128 if "pro" in (model_id or "") else 0
             thinking = types.ThinkingConfig(thinking_budget=budget)
         except Exception:
             thinking = None
         resp = client.models.generate_content(
-            model=model,
+            model=model_id,
             contents=[
                 types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
                 types.Part.from_text(text=prompt),
@@ -152,10 +156,12 @@ async def _translate_gemini(audio_bytes: bytes, mime_type: str, target_lang: str
 
 
 async def translate_audio(
-    audio_bytes: bytes, mime_type: str, target_lang: str, *, provider: str,
+    audio_bytes: bytes, mime_type: str, target_lang: str, *,
+    provider: str, model: str | None = None,
 ) -> dict:
-    """Áudio → {original, translation}. `provider` = 'openai' | 'gemini'."""
+    """Áudio → {original, translation}. `provider` = 'openai' | 'gemini'.
+    `model` sobrepõe o modelo de entendimento (id do provider; None = default)."""
     prov = (provider or settings.translator_tts_provider or "openai").lower()
     if prov == "gemini":
-        return await _translate_gemini(audio_bytes, mime_type, target_lang)
-    return await _translate_openai(audio_bytes, mime_type, target_lang)
+        return await _translate_gemini(audio_bytes, mime_type, target_lang, model=model)
+    return await _translate_openai(audio_bytes, mime_type, target_lang, stt_model=model)
