@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-import json
 import logging
 
 from bot.config import settings
@@ -45,6 +44,25 @@ def normalize_lang(raw: str) -> str | None:
     if not key:
         return None
     return _LANG_ALIASES.get(key, (raw or "").strip())
+
+
+def _parse_delimited(text: str) -> dict:
+    """Extrai {original, translation} do formato <<<ORIGINAL>>>/<<<TRADUCAO>>>.
+    Tolerante: sem o delimitador, usa o texto todo como tradução (melhor
+    entregar a tradução sem o original do que falhar). Imune a aspas/quebras."""
+    t = (text or "").strip()
+    if t.startswith("```"):  # modelo insistiu em cerca markdown
+        t = t.strip("`").strip()
+        if t.lower().startswith("json"):
+            t = t[4:].strip()
+    if "<<<TRADUCAO>>>" in t:
+        head, _, tail = t.partition("<<<TRADUCAO>>>")
+        original = head.replace("<<<ORIGINAL>>>", "").strip()
+        translation = tail.strip()
+    else:
+        original = ""
+        translation = t.replace("<<<ORIGINAL>>>", "").strip()
+    return {"original": original, "translation": translation}
 
 
 def _ext_from_mime(mime_type: str) -> str:
@@ -95,14 +113,29 @@ async def _translate_gemini(audio_bytes: bytes, mime_type: str, target_lang: str
         from google import genai
         from google.genai import types
         client = genai.Client(api_key=settings.gemini_api_key)
+        model = settings.translator_stt_gemini_model or settings.voice_stt_model
+        # Formato DELIMITADO em vez de JSON: transcrição/tradução têm aspas,
+        # apóstrofos e quebras de linha que arrebentam JSON quando o modelo não
+        # escapa (o bug real observado: JSONDecodeError). Sentinela é imune.
         prompt = (
-            "O áudio contém fala em algum idioma. Faça DUAS coisas:\n"
-            "1) transcreva LITERALMENTE o que foi dito, no idioma original;\n"
-            f"2) traduza para {target_lang}.\n"
-            'Responda SOMENTE JSON: {"original": "...", "traducao": "..."}'
+            "O áudio contém fala em algum idioma. Responda EXATAMENTE neste "
+            "formato, sem comentários, sem markdown, sem mais nada:\n"
+            "<<<ORIGINAL>>>\n"
+            "a transcrição literal do que foi dito, no idioma original\n"
+            "<<<TRADUCAO>>>\n"
+            f"a tradução para {target_lang}"
         )
+        # Desliga o thinking: gemini-3.x é 'thinking' e o texto de pensamento
+        # contaminava resp.text (a outra metade do bug). flash aceita 0; pro
+        # exige mínimo ~128. Espelha bot/services/voice._thinking_config.
+        thinking = None
+        try:
+            budget = 128 if "pro" in (model or "") else 0
+            thinking = types.ThinkingConfig(thinking_budget=budget)
+        except Exception:
+            thinking = None
         resp = client.models.generate_content(
-            model=settings.translator_stt_gemini_model or settings.voice_stt_model,
+            model=model,
             contents=[
                 types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
                 types.Part.from_text(text=prompt),
@@ -110,17 +143,10 @@ async def _translate_gemini(audio_bytes: bytes, mime_type: str, target_lang: str
             config=types.GenerateContentConfig(
                 temperature=0.2,
                 max_output_tokens=2048,
-                response_mime_type="application/json",
+                thinking_config=thinking,
             ),
         )
-        try:
-            data = json.loads(resp.text or "{}")
-        except json.JSONDecodeError as e:
-            raise TranslateError(f"JSON inválido do Gemini: {e}") from e
-        return {
-            "original": (data.get("original") or "").strip(),
-            "translation": (data.get("traducao") or data.get("translation") or "").strip(),
-        }
+        return _parse_delimited(resp.text or "")
 
     return await asyncio.to_thread(_call)
 
