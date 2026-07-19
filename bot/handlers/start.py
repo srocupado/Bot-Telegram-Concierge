@@ -256,6 +256,7 @@ _HELP_KEYWORDS: dict[str, str] = {
     "voo": "viagens", "voos": "viagens", "passagem": "viagens", "passagens": "viagens",
     "hotel": "viagens", "hospedagem": "viagens", "viagem": "viagens", "viagens": "viagens",
     "fuso": "viagens", "modo viagem": "viagens",
+    "viajar": "viagens", "viajo": "viagens", "viajando": "viagens",
     "mp": "diario oficial", "dou": "diario oficial", "medida provisoria": "diario oficial",
     "nota tecnica": "diario oficial",
     "congresso": "pauta do congresso", "pauta": "pauta do congresso",
