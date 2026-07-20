@@ -5,7 +5,9 @@ proativo opt-in** (avisa por conta própria), digests de **trânsito + clima**
 (rota casa↔trabalho), **Medidas Provisórias** (pauta do Congresso + publicação
 no Diário Oficial com nota técnica gerada por IA), **gerenciador financeiro**
 (Firestore), **academia**, **cinema** (sessões Cinemark via API), **lista de
-compras**, **tarefas/lembretes** e
+compras**, **tarefas/lembretes**, **viagens** (voos/hotéis com watches, modo
+viagem com fuso/clima do destino), **modo tradutor** por voz (bidirecional,
+com resposta falada) e
 **chat livre com LLM** multi-provider (Anthropic/OpenAI/Gemini) com troca de
 provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
 
@@ -58,11 +60,15 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   23/dez–1º/fev), como o Congresso adota — não são dias corridos. A detecção de
   MP nova está integrada ao **agente proativo** (avisa nas janelas do dia e
   cobre a véspera no briefing); a nota completa vem sob demanda (`/mp_dou_agora`
-  ou botão "gerar nota"). Se o Inlabs estiver fora, o bot **avisa** que não
+  — aceita `DD/MM/AAAA`, `DD-MM-AA`, `DD/MM` e ISO — ou botão "gerar nota").
+  Se o Inlabs estiver fora, o bot **avisa** que não
   conseguiu checar (nunca um falso "sem MP"), registra o dia como pendente e
   faz **checagem retroativa automática** quando o Inlabs volta (incl. edições
   extras dos dias perdidos), anunciando o resultado — máx. 2 dias por janela,
-  pendência expira em 14 dias.
+  pendência expira em 14 dias. Se a **nota técnica** for pedida com o Inlabs
+  fora, o pedido entra numa **fila** (aviso "deixei na fila"): o proativo
+  mostra o status em toda janela e **re-tenta sozinho** até gerar e entregar
+  (1 nota/janela, expira em 14 dias) — dá baixa na entrega.
 - **Gerenciador financeiro** (Firestore, integra com o app externo
   *gerenciador-financeiro*): lança compras no cartão, movimentos no banco,
   aportes em Tesouro Direto e **operações de compra/venda em ações, FIIs,
@@ -71,7 +77,11 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   investimentos** num só lugar; análise de gastos por categoria/período.
   Por voz/texto: *"qual meu saldo?"*, *"lança 250 no cartão, mercado, hoje"*,
   *"comprei 10 HGLG11 a 168,50"*, *"como tá meu cartão esse mês?"*,
-  *"lista meus investimentos"*.
+  *"lista meus investimentos"*. A **fatura em aberto** replica o cálculo do
+  app (parcelas projetadas por `currentInstallment`), lista **tudo** com
+  parcelados/recorrentes agrupados no início — sem corte silencioso: se passar
+  do teto, avisa "N itens antigos omitidos, incluídos no total". Cada
+  lançamento confirma com **saldo atual / fatura aberta** de brinde.
 - **Academia**: registra treino por voz/texto (*"hoje malhei peito e fiz
   cardio"*), resumo semanal (dom→sáb), correção/apagamento do dia. Categorias
   peito/costas/pernas/cardio normalizadas.
@@ -89,7 +99,27 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   bot verifica o preço 1x/dia (8h BRT por padrão) e avisa quando cair abaixo do
   mínimo histórico ou de um teto que você definir — *"monitora esse voo e me
   avisa se ficar abaixo de 800"*. Gestão por texto: *"lista meus watches"*,
-  *"cancela o watch 3"*. Requer `SERPAPI_KEY`.
+  *"cancela o watch 3"*. Hotel nomeado (*"verifica o hotel Gran Marquise em
+  Fortaleza"*) usa query de entidade e filtra ofertas às **fontes confiáveis**
+  (Booking.com / Hoteis.com). Requer `SERPAPI_KEY`.
+- **Modo viagem** (`/viagem <destino> DD/MM a DD/MM [moeda <nome>]`): geocoda o
+  destino e resolve o **fuso** (Google Time Zone API). Durante o período, o
+  clima do briefing vira o do **destino** ("✈️ em Tóquio: …"), lembretes e
+  janelas do proativo passam a valer no **horário local** (no Japão o briefing
+  sai às 7h de Tóquio, não 19h de Brasília) e, com `moeda iene`, a cotação da
+  moeda local entra no briefing. Por usuário; desliga sozinho no fim do
+  período (`/viagem off` encerra antes).
+- **Modo tradutor** (`/tradutor <idioma>`): mande um áudio e receba a tradução
+  em **texto + nota de voz** (TTS→OGG/Opus via ffmpeg). **Via dupla**: áudio já
+  no idioma-alvo (a resposta do atendente japonês) volta traduzido pro
+  português. Motor selecionável por `/tradutor_provider openai|gemini [id]` —
+  openai (Whisper+GPT+TTS, não treina com o dado) é o default; o modelo de
+  entendimento é escolhível por id com lista dinâmica (`/tradutor_provider
+  modelos` mostra só modelos com entrada de áudio). `/tradutor off` desliga.
+- **Ajuda natural** (tool `ajuda`): *"como crio um lembrete?"*, *"como coloco
+  algo na lista de compras?"* → o bot responde com o **trecho exato do guia**
+  (verbatim do `/help`, sem o LLM improvisar sintaxe de comando), com exemplos
+  prontos pra usar. Sem match, lista os tópicos disponíveis.
 - **Memória persistente de fatos**: o LLM salva automaticamente — ou você pede
   explicitamente — qualquer informação pessoal que queira que o bot lembre entre
   sessões: preferências, nomes de família, alergias, hábitos, configurações
@@ -419,6 +449,43 @@ Atalhos de comando por voz (provider `gemini`):
 O bot ecoa a transcrição antes da resposta. Áudios acima de `VOICE_MAX_SECONDS`
 (default 120s) são rejeitados. Para desativar: `VOICE_ENABLED=false`.
 
+### Modo tradutor (voz ↔ voz)
+
+| Comando | Ação |
+|---|---|
+| `/tradutor <idioma>` | liga o modo (ex.: `/tradutor japonês`, `/tradutor en`) |
+| `/tradutor off` | desliga |
+| `/tradutor` | status |
+| `/tradutor_provider` | mostra motor + modelo atual |
+| `/tradutor_provider openai\|gemini [id]` | escolhe o motor (e opcionalmente o modelo de entendimento por id; aliases do Gemini valem: `3.1-lite`) |
+| `/tradutor_provider modelos [provider]` | lista dinâmica só de modelos com **entrada de áudio** |
+| `/tradutor_provider padrao` | volta ao `.env` |
+
+Com o modo ligado, **todo áudio** vira tradução (texto + nota de voz); a
+transcrição normal/atalhos ficam suspensos até o `off`. Cada áudio é avaliado
+sozinho: fala em português → sai no idioma-alvo; fala **já no idioma-alvo** →
+volta em **português** (via dupla, sem regra de alternância). O motor governa
+entendimento **e** voz juntos por coerência de privacidade: `openai`
+(Whisper + GPT + `gpt-4o-mini-tts`; não treina com o dado — default) ou
+`gemini` (multimodal + TTS; tier grátis pode treinar). A voz sai como bolha
+de nota de voz do Telegram (OGG/Opus via ffmpeg, incluído na imagem Docker).
+
+### Modo viagem
+
+| Comando | Ação |
+|---|---|
+| `/viagem <destino> DD/MM a DD/MM [moeda <nome>]` | configura (ex.: `/viagem Tóquio 01/11 a 15/11 moeda iene`) |
+| `/viagem` | status |
+| `/viagem off` | desliga antes do fim |
+
+Na configuração o bot geocoda o destino (Google) e resolve o **fuso** (Time
+Zone API, mesma chave do Maps). Durante o período: clima do briefing = destino;
+lembretes, `ToolContext` e **janelas do proativo** no horário local (cada
+usuário é avaliado no seu fuso efetivo); cotação da moeda local no briefing
+(se configurada). Período sem ano rola pro futuro (`28/12 a 03/01` cruza o
+ano). No fim do período desliga sozinho. Sem chave do Maps, avisa e mantém
+clima/fuso de casa. Por usuário (casal: cada um ativa o seu).
+
 ## Stack
 
 - Python 3.12, aiogram 3 (long polling)
@@ -432,6 +499,8 @@ O bot ecoa a transcrição antes da resposta. Áudios acima de `VOICE_MAX_SECOND
 - `firebase-admin` (gerenciador financeiro / Firestore)
 - `python-docx` (nota técnica das MPs no template institucional)
 - `dateparser` (lembretes em português)
+- `ffmpeg` (na imagem Docker — converte o TTS do modo tradutor pra OGG/Opus,
+  a bolha de nota de voz do Telegram)
 
 ## Configuração
 
@@ -529,6 +598,28 @@ VOICE_MAX_SECONDS=120
 VOICE_STT_MODEL=gemini-3.5-flash         # geração nova, estável
 VOICE_STT_PROVIDER=gemini                # gemini | openai
 VOICE_STT_OPENAI_MODEL=gpt-4o-mini-transcribe
+```
+
+### Modo tradutor (TTS)
+
+```bash
+TRANSLATOR_TTS_PROVIDER=openai                     # openai | gemini (default por usuário via /tradutor_provider)
+TRANSLATOR_TTS_OPENAI_MODEL=gpt-4o-mini-tts
+TRANSLATOR_TTS_OPENAI_VOICE=alloy
+TRANSLATOR_OPENAI_CHAT_MODEL=gpt-4o-mini           # tradução do texto no caminho openai
+TRANSLATOR_TTS_GEMINI_MODEL=gemini-2.5-flash-preview-tts
+TRANSLATOR_TTS_GEMINI_VOICE=Kore
+TRANSLATOR_STT_GEMINI_MODEL=gemini-3.5-flash       # entendimento no caminho gemini
+```
+
+Todos overridáveis por `.env` (nomes de modelo de TTS mudam com frequência);
+o provider/modelo por usuário se ajusta em runtime via `/tradutor_provider`.
+
+### Aniversário do dono
+
+```bash
+OWNER_BIRTHDAY=24/08   # DD/MM; mensagem calorosa 1x/ano na hora do briefing
+                       # (independe do proativo; vazio desliga)
 ```
 
 ### Monitor de MPs no DOU
@@ -863,6 +954,8 @@ bot/
 │   ├── tasks.py, reminders.py, reminder_callbacks.py
 │   ├── route.py                  # /rota + F.location
 │   ├── voice.py                  # F.voice|F.audio → transcribe + dispatch
+│   ├── translator.py             # /tradutor + /tradutor_provider (modo tradutor)
+│   ├── viagem.py                 # /viagem (modo viagem)
 │   ├── photo.py                  # F.photo → visão multimodal
 │   ├── document.py               # F.document (PDF) → multimodal
 │   └── chat.py                   # catch-all texto livre
@@ -883,6 +976,8 @@ bot/
 │   ├── chat_memory.py            # in-memory TTL 30min
 │   ├── route_pending.py
 │   ├── voice.py                  # STT (Gemini multimodal / OpenAI Whisper)
+│   ├── translator.py, tts.py     # tradutor bidirecional + síntese de voz (OGG/Opus)
+│   ├── viagem.py                 # modo viagem (período, fuso efetivo, destino)
 │   └── scheduler.py              # loop async (trânsito, proativo, watch, lembretes, purge)
 └── assets/
     └── nota_template.docx        # template da nota técnica
