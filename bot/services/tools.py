@@ -1578,7 +1578,13 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="listar_lembretes",
-        description="Lista os lembretes pendentes do usuário.",
+        description=(
+            "Lista os lembretes pendentes do usuário. USE SOMENTE quando ele "
+            "pedir EXPLICITAMENTE os lembretes (a palavra 'lembrete(s)' ou "
+            "'compromissos' na mensagem). NUNCA chame pra pedidos vagos tipo "
+            "'verifica pra mim', 'vê isso', 'confere' — esses são follow-ups "
+            "do ASSUNTO ANTERIOR da conversa, não pedido de lembretes."
+        ),
         parameters={"type": "object", "properties": {}},
         handler=_h_listar_lembretes,
     ),
