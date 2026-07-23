@@ -305,8 +305,12 @@ def extract_best_hotel(
     candidates.extend(raw.get("ads") or [])
     candidates.extend(raw.get("featured_results") or [])
 
-    # Resposta de hotel único (q = nome específico) tem campos na raiz.
-    if not candidates and (
+    # Resposta de hotel único (q = nome específico) tem os campos na RAIZ — e
+    # pode vir ACOMPANHADA de properties/ads ("similares", às vezes sem preço).
+    # A raiz entra como candidata SEMPRE que tiver cara de preço (não só com a
+    # lista vazia): caso real — entidade na raiz + 9 similares sem preço fazia
+    # a raiz ser ignorada → "sem hotéis" falso pro Gran Marquise.
+    if (
         "rate_per_night" in raw
         or "total_rate" in raw
         or "prices" in raw

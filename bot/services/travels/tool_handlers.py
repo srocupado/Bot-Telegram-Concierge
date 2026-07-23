@@ -104,6 +104,10 @@ async def _h_buscar_hotel(args: dict, ctx: ToolContext) -> str:
             best = extract_best_hotel(raw, prefer_name=hotel or None)
             if best is None:
                 alvo = f"{hotel} em {location}" if hotel else location
+                logger.warning(
+                    "buscar_hotel sem resultado: q=%r ci=%s co=%s top-keys=%s",
+                    q, ci, co, list(raw.keys())[:12],
+                )
                 return f"sem hotéis pra '{alvo}' ({ci}→{co})"
             price, payload = best
             # Pediu hotel específico mas veio OUTRO → não finge: avisa e mostra
