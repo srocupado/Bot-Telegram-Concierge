@@ -59,6 +59,11 @@ transcrição literal):
      "pesquisa X", "pesquisa sobre X"                 → /buscar X
      "procura X", "procura por X"                     → /buscar X
      "google X", "googleia X"                          → /buscar X
+   EXCEÇÃO da regra 5: se o que se busca é PASSAGEM/VOO, HOTEL/hospedagem
+   ou PREÇO de produto ("busca preço de passagem pra Fortaleza", "pesquisa
+   hotel em Paris", "busca quanto custa uma GoPro") → transcrição LITERAL,
+   sem "/". O chat livre tem ferramentas dedicadas (Google Flights/Hotels/
+   Shopping) que dão preço real — o /buscar genérico dá resposta inútil.
 
 Em qualquer outro caso, transcreva literalmente o que foi dito —
 inclusive quando o usuário só MENCIONA trânsito ou congresso em uma
@@ -72,6 +77,8 @@ agir). Exemplos do que NÃO virar comando:
   "me lembre de pagar boleto amanhã"   → transcrição literal
   "apaga o lembrete 5"                 → transcrição literal
   "qual a previsão do tempo hoje"      → transcrição literal
+  "buscar preço de passagem aérea de Brasília para Fortaleza" → transcrição literal
+  "pesquisa hotel em Salvador"         → transcrição literal
   "constrói um script que baixa cotações" → transcrição literal
   (pedidos de construir/criar app/script/código em linguagem natural são
   tratados pelo chat livre; só vire /agente quando o falante disser
