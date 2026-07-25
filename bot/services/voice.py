@@ -53,17 +53,30 @@ transcrição literal):
      "como chegar até X", "trajeto até X",
      "me leva para X"                                  → /rota X
 
-5. Para pedido de busca/pesquisa na web, qualquer das formas abaixo vira
+5. Para pedido de busca/pesquisa na web GENÉRICA, as formas abaixo viram
    "/buscar <termo>" — preserve o termo exatamente como falado:
      "busca X", "busca por X", "busca X na internet"  → /buscar X
      "pesquisa X", "pesquisa sobre X"                 → /buscar X
      "procura X", "procura por X"                     → /buscar X
      "google X", "googleia X"                          → /buscar X
-   EXCEÇÃO da regra 5: se o que se busca é PASSAGEM/VOO, HOTEL/hospedagem
-   ou PREÇO de produto ("busca preço de passagem pra Fortaleza", "pesquisa
-   hotel em Paris", "busca quanto custa uma GoPro") → transcrição LITERAL,
-   sem "/". O chat livre tem ferramentas dedicadas (Google Flights/Hotels/
-   Shopping) que dão preço real — o /buscar genérico dá resposta inútil.
+
+   EXCEÇÃO IMPORTANTE da regra 5 — assuntos com FERRAMENTA DEDICADA:
+   "/buscar" é busca web pura, SEM ferramentas. Se o assunto pedido tem uma
+   ferramenta dedicada no chat livre, a transcrição é LITERAL (sem "/"),
+   MESMO que a frase comece com busca/pesquisa/procura. A ferramenta dá dado
+   oficial e ao vivo; o /buscar dá resultado errado ou velho. São eles:
+     • CINEMA / filme / sessão / programação  ("procura cinema no Iguatemi
+       hoje", "busca que horas passa o filme X")
+     • PASSAGEM / voo                          ("busca passagem pra Fortaleza")
+     • HOTEL / hospedagem / diária             ("pesquisa hotel em Paris")
+     • PREÇO de produto / onde comprar         ("busca quanto custa uma GoPro")
+     • TELEFONE / endereço / horário de LUGAR  ("procura o telefone da
+       farmácia", "busca que horas abre o shopping")
+     • COTAÇÃO de moeda/ação/cripto            ("busca a cotação do dólar")
+     • CLIMA / previsão do tempo               ("procura a previsão pra amanhã")
+     • MP / DOU / pauta do Congresso / comissão da Câmara
+   Regra de bolso: só vire /buscar quando for assunto GERAL, sem ferramenta
+   (notícia, conceito, receita, "quem ganhou o jogo", "o que é X").
 
 Em qualquer outro caso, transcreva literalmente o que foi dito —
 inclusive quando o usuário só MENCIONA trânsito ou congresso em uma
@@ -79,6 +92,8 @@ agir). Exemplos do que NÃO virar comando:
   "qual a previsão do tempo hoje"      → transcrição literal
   "buscar preço de passagem aérea de Brasília para Fortaleza" → transcrição literal
   "pesquisa hotel em Salvador"         → transcrição literal
+  "procura cinema no shopping Iguatemi hoje" → transcrição literal
+  "busca a cotação do dólar"           → transcrição literal
   "constrói um script que baixa cotações" → transcrição literal
   (pedidos de construir/criar app/script/código em linguagem natural são
   tratados pelo chat livre; só vire /agente quando o falante disser

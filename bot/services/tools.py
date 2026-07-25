@@ -2693,7 +2693,7 @@ TOOLS: list[Tool] = [
             "type": "object",
             "properties": {
                 "filme": {"type": "string", "description": "Nome do filme (ex: 'Mestres do Universo'). VAZIO/omitido = programação completa do cinema."},
-                "cinema": {"type": "string", "description": "Cinema/shopping + CIDADE (ex: 'Iguatemi Brasília', 'Eldorado São Paulo', 'Pier 21 Brasília')"},
+                "cinema": {"type": "string", "description": "Cinema/shopping + CIDADE quando o USUÁRIO disser a cidade (ex: 'Eldorado São Paulo'). Se ele NÃO disser, mande SÓ o nome do cinema/shopping ('Iguatemi', 'Pier 21') — o sistema assume Brasília, onde o usuário mora. NUNCA invente cidade: 'Iguatemi' sem cidade é o de Brasília, não o de SP."},
                 "data_iso": {"type": "string", "description": "Data AAAA-MM-DD (opcional; default hoje). Resolva 'amanhã'/dia da semana antes de passar."},
             },
             "required": ["cinema"],
