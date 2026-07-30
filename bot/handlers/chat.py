@@ -604,6 +604,8 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
 
     from bot.services.finance_guard import guard_financial_reply
     reply = guard_financial_reply(user_text, ctx.financial_logged_ok, reply)
+    from bot.services.contact_guard import guard_contact_reply
+    reply = guard_contact_reply(reply, ctx.tool_output, user_text)
 
     if ctx.direct_html:
         memory.append(chat_id, "user", user_text)
