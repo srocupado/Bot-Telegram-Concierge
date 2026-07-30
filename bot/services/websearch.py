@@ -166,7 +166,24 @@ async def _searxng_backend(query: str, limit: int, read_content: bool) -> str:
     return _format_results(query, norm)
 
 
-_MAX_PAGE_CHARS = 20000
+_MAX_PAGE_CHARS = 30000
+
+# Linha de MENU/navegação no markdown do Jina: bullet com UM link de texto
+# curto, sem imagem e sem mais nada. Produto/artigo real traz imagem
+# ([![Image N: ...]]), preço ou texto ao redor — e sobrevive ao filtro.
+# Motivo: página de loja vinha com um menu de categorias GIGANTE na frente; o
+# truncamento guardava o menu ("Parafusos, Porcas, Pregos…") e descartava os
+# produtos, e o modelo concluía "essa loja é de parafusos" (caso real).
+# Medido no site da Pires Martins: 47.687 → 19.948 chars, com os 63 preços
+# preservados.
+_NAV_LINE = re.compile(r"^\s*\*\s*\[[^\]\[]{1,45}\]\(https?://[^)]+\)\s*$")
+
+
+def _strip_nav(texto: str) -> str:
+    """Remove linhas de menu/navegação, preservando conteúdo (produtos, preços,
+    texto corrido). Reduz drasticamente o boilerplate antes do truncamento."""
+    linhas = [ln for ln in texto.split("\n") if not _NAV_LINE.match(ln)]
+    return "\n".join(linhas)
 
 # O Jina falha de forma TRANSITÓRIA sob rajada (o buscar_web lê todos os
 # resultados em paralelo e o ler_pagina pode disparar junto): observado 422 numa
@@ -235,12 +252,24 @@ async def read_url(url: str, *, max_chars: int = _MAX_PAGE_CHARS) -> str:
         raise WebSearchError(f"não consegui ler a página ({type(e).__name__})") from e
     if not texto.strip():
         raise WebSearchError("a página voltou vazia")
+    bruto = len(texto)
+    texto = _strip_nav(texto)
     cortado = len(texto) > max_chars
     if cortado:
         texto = texto[:max_chars]
-    logger.info("ler_pagina: %s (%d chars%s)", u, len(texto), ", truncado" if cortado else "")
+    logger.info(
+        "ler_pagina: %s (%d chars brutos → %d%s)",
+        u, bruto, len(texto), ", TRUNCADO" if cortado else "",
+    )
     cabec = f"Conteúdo lido de {u}:\n\n"
-    rodape = "\n\n[…página truncada — peça um trecho específico se faltar algo]" if cortado else ""
+    # Aviso forte: o modelo já concluiu "essa loja não tem o produto" a partir
+    # de página truncada — ausência em trecho parcial NÃO é ausência.
+    rodape = (
+        "\n\n[⚠️ PÁGINA TRUNCADA — este é só um TRECHO. NÃO conclua que algo "
+        "não existe/não está à venda por não aparecer aqui. Se não achou o que "
+        "procurava, leia outra URL (ex.: a busca do site com o termo exato) "
+        "antes de responder que não há.]"
+    ) if cortado else ""
     return cabec + texto + rodape
 
 
