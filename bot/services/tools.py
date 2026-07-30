@@ -162,10 +162,25 @@ async def _h_buscar_web(args: dict, ctx: ToolContext) -> str:
         return "erro: precisa de 'query'"
     rc = args.get("read_content")
     read_content = True if rc is None else bool(rc)
+    site = (args.get("site") or "").strip() or None
     try:
-        return await search_and_read(query, read_content=read_content)
+        return await search_and_read(query, read_content=read_content, site=site)
     except WebSearchError as e:
         return f"erro na busca web: {e}"
+
+
+async def _h_ler_pagina(args: dict, ctx: ToolContext) -> str:
+    from bot.services.websearch import WebSearchError, read_url
+
+    url = (args.get("url") or "").strip()
+    if not url:
+        return "erro: precisa de 'url'"
+    try:
+        return await read_url(url)
+    except WebSearchError as e:
+        # Mensagem factual — o modelo NÃO deve inventar a causa (login, fora do
+        # ar…): repassa exatamente o que aconteceu.
+        return f"erro ao ler a página: {e}"
 
 
 async def _h_buscar_local(args: dict, ctx: ToolContext) -> str:
@@ -2590,6 +2605,31 @@ TOOLS: list[Tool] = [
         handler=_h_varrer_comissoes_partido,
     ),
     Tool(
+        name="ler_pagina",
+        description=(
+            "Lê UMA página específica (URL exata) e devolve o texto renderizado. "
+            "USE quando: (a) o usuário COLAR um link ('vê o preço nesse link', "
+            "'o que diz essa matéria?'); (b) você já sabe a URL exata da página "
+            "que interessa (ex.: a busca interna de uma loja, "
+            "'loja.com.br/busca?q=produto'). Renderiza JS e atravessa proteção "
+            "anti-bot que derruba acesso comum. Pra DESCOBRIR a página (sem URL "
+            "em mãos), use buscar_web — com o parâmetro 'site' quando for dentro "
+            "de uma loja específica. Se falhar, relate só o que aconteceu; NUNCA "
+            "invente a causa ('exige login', 'fora do ar')."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "URL completa da página (ex: 'https://loja.com.br/busca?q=compressor')",
+                },
+            },
+            "required": ["url"],
+        },
+        handler=_h_ler_pagina,
+    ),
+    Tool(
         name="buscar_web",
         description=(
             "Busca na web E LÊ o conteúdo das páginas — devolve o texto "
@@ -2610,6 +2650,16 @@ TOOLS: list[Tool] = [
                 "query": {
                     "type": "string",
                     "description": "Consulta em linguagem natural (inclua local/cidade se relevante)",
+                },
+                "site": {
+                    "type": "string",
+                    "description": (
+                        "Domínio pra restringir a busca (ex: 'piresmartins.com.br'). "
+                        "USE SEMPRE que o usuário citar uma LOJA/SITE específico "
+                        "('o preço no site da Pires Martins', 'busca isso no site X') "
+                        "— sem ele o buscador pode nunca devolver a página daquela "
+                        "loja. Só o domínio, sem https:// nem caminho."
+                    ),
                 },
                 "read_content": {
                     "type": "boolean",

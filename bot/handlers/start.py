@@ -52,7 +52,14 @@ HELP_TEXT = (
     "acha o preço e onde comprar (não precisa de comando).\n"
     "• Lugar/estabelecimento: <i>\"telefone da farmácia X\"</i>, <i>\"que horas "
     "abre o shopping Y\"</i>, <i>\"endereço da clínica Z\"</i> → dados oficiais "
-    "do Google.\n\n"
+    "do Google.\n"
+    "• Preço <b>numa loja específica</b>: <i>\"quanto custa o compressor X no "
+    "site da Pires Martins?\"</i> — lê a página da própria loja (atravessa "
+    "proteção anti-bot). Pra comparar: <i>\"compara o preço dessa loja com o "
+    "mercado\"</i> → preço da loja + Google Shopping lado a lado, com a fonte "
+    "de cada um.\n"
+    "• <b>Link colado</b>: <i>\"vê o preço nesse link: …\"</i>, <i>\"resume "
+    "essa matéria: …\"</i> → o bot lê a página inteira e responde.\n\n"
     "<b>Cinema</b> (rede Cinemark):\n"
     "• <i>\"que horas passa o filme X no Iguatemi Brasília?\"</i> / "
     "<i>\"programação do Pier 21 amanhã\"</i> → sessões oficiais (2D/3D, "
@@ -293,6 +300,7 @@ _HELP_KEYWORDS: dict[str, str] = {
     "preco": "busca web", "precos": "busca web", "produto": "busca web",
     "produtos": "busca web", "custa": "busca web", "custo": "busca web",
     "onde comprar": "busca web", "onde compro": "busca web",
+    "link": "busca web", "pagina": "busca web", "site": "busca web",
     "telefone": "busca web", "endereco": "busca web", "horario": "busca web",
     "shopping": "busca web",  # pt-BR: shopping = o lugar (não a lista)
     "clima": "clima", "tempo": "clima",  # seção Clima dedicada (consultar_clima)

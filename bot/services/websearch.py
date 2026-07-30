@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 import httpx
 
@@ -65,11 +66,21 @@ def backend_available() -> bool:
     return any(_configured(b) for b in ("searxng", "firecrawl"))
 
 
+def _normalize_site(site: str) -> str:
+    """'https://www.loja.com.br/x' | 'www.loja.com.br' → 'loja.com.br' (domínio
+    pro operador site:). Mantém subdomínio real (ex.: 'loja.exemplo.com')."""
+    s = (site or "").strip().lower()
+    s = re.sub(r"^https?://", "", s)
+    s = s.split("/")[0].strip()
+    return s[4:] if s.startswith("www.") else s
+
+
 async def search_and_read(
     query: str,
     *,
     limit: int = _DEFAULT_LIMIT,
     read_content: bool = True,
+    site: str | None = None,
 ) -> str:
     """Busca na web e (por padrão) LÊ as páginas, devolvendo texto pronto pro
     LLM sintetizar com as fontes. Tenta o backend primário e cai pro fallback
@@ -78,7 +89,15 @@ async def search_and_read(
 
     read_content=False → só títulos/links/descrição (sem ler página): mais
     rápido e barato.
+
+    site='loja.com.br' → restringe ao domínio (operador `site:`), pro caso
+    "quero o preço NESSA loja". Sem isso, o buscador podia nunca devolver a
+    página da loja pedida e o modelo concluía que o site estava inacessível.
     """
+    if site:
+        dominio = _normalize_site(site)
+        if dominio and f"site:{dominio}" not in query:
+            query = f"site:{dominio} {query}".strip()
     limit = max(1, min(limit, _MAX_RESULTS))
     errors: list[str] = []
     ran_any = False
@@ -145,6 +164,47 @@ async def _searxng_backend(query: str, limit: int, read_content: bool) -> str:
     ]
     logger.info("buscar_web[searxng]: %d resultados para %r (read=%s)", len(norm), query, read_content)
     return _format_results(query, norm)
+
+
+_MAX_PAGE_CHARS = 20000
+
+
+async def read_url(url: str, *, max_chars: int = _MAX_PAGE_CHARS) -> str:
+    """Lê UMA página específica via Jina Reader e devolve o markdown renderizado.
+
+    Complementa o search_and_read: serve pra 'vê o preço nesse link' (URL que o
+    usuário colou) e pra ler a busca interna de uma loja. O Jina renderiza JS e
+    atravessa proteção anti-bot que derruba fetch direto — testado no site da
+    Pires Martins (403 direto por desafio Cloudflare, 200 via Jina).
+    """
+    u = (url or "").strip()
+    if not u:
+        raise WebSearchError("url vazia")
+    if not u.startswith(("http://", "https://")):
+        u = "https://" + u
+    headers = {"X-Return-Format": "markdown"}
+    if settings.jina_api_key is not None:
+        headers["Authorization"] = f"Bearer {settings.jina_api_key.get_secret_value()}"
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=_TIMEOUT_S) as client:
+            r = await client.get(f"{JINA_READER_PREFIX}{u}", headers=headers)
+            r.raise_for_status()
+            texto = r.text
+    except httpx.HTTPStatusError as e:
+        raise WebSearchError(
+            f"não consegui ler a página (HTTP {e.response.status_code})"
+        ) from e
+    except httpx.HTTPError as e:
+        raise WebSearchError(f"não consegui ler a página ({type(e).__name__})") from e
+    if not texto.strip():
+        raise WebSearchError("a página voltou vazia")
+    cortado = len(texto) > max_chars
+    if cortado:
+        texto = texto[:max_chars]
+    logger.info("ler_pagina: %s (%d chars%s)", u, len(texto), ", truncado" if cortado else "")
+    cabec = f"Conteúdo lido de {u}:\n\n"
+    rodape = "\n\n[…página truncada — peça um trecho específico se faltar algo]" if cortado else ""
+    return cabec + texto + rodape
 
 
 async def _attach_jina_markdown(client: httpx.AsyncClient, results: list[dict]) -> None:
