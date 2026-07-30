@@ -166,7 +166,12 @@ async def _searxng_backend(query: str, limit: int, read_content: bool) -> str:
     return _format_results(query, norm)
 
 
-_MAX_PAGE_CHARS = 30000
+# 50k chars ≈ 12k tokens — caro se fosse rotina, aceitável porque ler_pagina é
+# chamada deliberada. Motivo do aumento: página de BUSCA de loja chega a 68k
+# brutos e, mesmo sem o menu, passava do teto e era truncada — e o produto
+# certo podia estar justamente no pedaço cortado (foi o bug do "loja de
+# parafusos"). Rede de segurança; o caminho bom é ler a página do PRODUTO.
+_MAX_PAGE_CHARS = 50000
 
 # Linha de MENU/navegação no markdown do Jina: bullet com UM link de texto
 # curto, sem imagem e sem mais nada. Produto/artigo real traz imagem
