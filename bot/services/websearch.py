@@ -168,6 +168,48 @@ async def _searxng_backend(query: str, limit: int, read_content: bool) -> str:
 
 _MAX_PAGE_CHARS = 20000
 
+# O Jina falha de forma TRANSITÓRIA sob rajada (o buscar_web lê todos os
+# resultados em paralelo e o ler_pagina pode disparar junto): observado 422 numa
+# URL que, repetida segundos depois, devolve 200 com o conteúdo. 429/5xx idem.
+# Mesmo padrão de retry usado em camara/inlabs/brapi.
+_JINA_RETRY_STATUS = {408, 422, 429, 500, 502, 503, 504}
+_JINA_RETRIES = 3
+
+
+def _jina_headers() -> dict[str, str]:
+    h = {"X-Return-Format": "markdown"}
+    if settings.jina_api_key is not None:
+        h["Authorization"] = f"Bearer {settings.jina_api_key.get_secret_value()}"
+    return h
+
+
+async def _jina_get(client: httpx.AsyncClient, url: str) -> str:
+    """GET no Jina Reader com retry/backoff em falha transitória. Levanta o
+    último erro httpx se todas as tentativas falharem."""
+    last: Exception | None = None
+    for tentativa in range(_JINA_RETRIES):
+        try:
+            r = await client.get(
+                f"{JINA_READER_PREFIX}{url}", headers=_jina_headers(), timeout=_TIMEOUT_S,
+            )
+            r.raise_for_status()
+            return r.text
+        except httpx.HTTPStatusError as e:
+            last = e
+            if e.response.status_code not in _JINA_RETRY_STATUS:
+                raise
+            logger.warning(
+                "jina %s em %s (tentativa %d/%d)",
+                e.response.status_code, url, tentativa + 1, _JINA_RETRIES,
+            )
+        except httpx.HTTPError as e:
+            last = e
+            logger.warning("jina %s em %s (tentativa %d/%d)",
+                           type(e).__name__, url, tentativa + 1, _JINA_RETRIES)
+        if tentativa < _JINA_RETRIES - 1:
+            await asyncio.sleep(1.5 * (tentativa + 1))
+    raise last  # type: ignore[misc]
+
 
 async def read_url(url: str, *, max_chars: int = _MAX_PAGE_CHARS) -> str:
     """Lê UMA página específica via Jina Reader e devolve o markdown renderizado.
@@ -182,14 +224,9 @@ async def read_url(url: str, *, max_chars: int = _MAX_PAGE_CHARS) -> str:
         raise WebSearchError("url vazia")
     if not u.startswith(("http://", "https://")):
         u = "https://" + u
-    headers = {"X-Return-Format": "markdown"}
-    if settings.jina_api_key is not None:
-        headers["Authorization"] = f"Bearer {settings.jina_api_key.get_secret_value()}"
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=_TIMEOUT_S) as client:
-            r = await client.get(f"{JINA_READER_PREFIX}{u}", headers=headers)
-            r.raise_for_status()
-            texto = r.text
+            texto = await _jina_get(client, u)
     except httpx.HTTPStatusError as e:
         raise WebSearchError(
             f"não consegui ler a página (HTTP {e.response.status_code})"
@@ -208,24 +245,21 @@ async def read_url(url: str, *, max_chars: int = _MAX_PAGE_CHARS) -> str:
 
 
 async def _attach_jina_markdown(client: httpx.AsyncClient, results: list[dict]) -> None:
-    """Lê cada URL via Jina Reader e grava em result['markdown']. Falha de uma
-    página não derruba as outras (cai pro snippet do SearXNG)."""
-    headers = {"X-Return-Format": "markdown"}
-    if settings.jina_api_key is not None:
-        headers["Authorization"] = f"Bearer {settings.jina_api_key.get_secret_value()}"
+    """Lê cada URL via Jina Reader (com retry) e grava em result['markdown'].
+    Falha de uma página não derruba as outras (cai pro snippet do SearXNG).
 
-    async def _read(item: dict) -> None:
+    Leitura SERIALIZADA de propósito: em paralelo, a rajada fazia o Jina
+    devolver 422 em URL que sozinha responde 200 (caso real: página de produto
+    da Pires Martins). Poucos resultados (_DEFAULT_LIMIT) — o custo em tempo é
+    aceitável perto de perder a página."""
+    for item in results:
         url = (item.get("url") or "").strip()
         if not url:
-            return
+            continue
         try:
-            r = await client.get(f"{JINA_READER_PREFIX}{url}", headers=headers, timeout=_TIMEOUT_S)
-            r.raise_for_status()
-            item["markdown"] = r.text
+            item["markdown"] = await _jina_get(client, url)
         except httpx.HTTPError as e:
-            logger.warning("jina read falhou p/ %s: %s", url, e)
-
-    await asyncio.gather(*(_read(r) for r in results))
+            logger.warning("jina read falhou p/ %s (após retries): %s", url, e)
 
 
 # ─────────────────────────── Firecrawl ────────────────────────────────────
