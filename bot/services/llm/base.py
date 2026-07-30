@@ -75,15 +75,6 @@ class ToolContext:
     # A tool já preencheu pending_routes; aqui o handler só precisa montar o
     # teclado e atrelar à mensagem.
     request_location: bool = False
-    # Concatenação do texto devolvido por TODAS as tools deste turno. Serve de
-    # "fonte permitida" pra blindagens determinísticas — ex.: telefone que o
-    # LLM cita mas que não veio de nenhuma tool (veio da memória da conversa
-    # ou foi inventado). Ver bot/services/contact_guard.py.
-    tool_output: str = ""
-
-    def record_tool_output(self, text: str) -> None:
-        if text:
-            self.tool_output += "\n" + text
 
 
 ToolHandler = Callable[[dict, ToolContext], Awaitable[str]]

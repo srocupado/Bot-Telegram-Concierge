@@ -478,8 +478,6 @@ async def _dispatch_chat(
 
     from bot.services.finance_guard import guard_financial_reply
     reply = guard_financial_reply(text, ctx.financial_logged_ok, reply)
-    from bot.services.contact_guard import guard_contact_reply
-    reply = guard_contact_reply(reply, ctx.tool_output, text)
 
     if ctx.direct_html:
         from bot.handlers.chat import send_html_chunked

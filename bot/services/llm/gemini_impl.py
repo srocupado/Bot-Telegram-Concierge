@@ -206,7 +206,6 @@ class GeminiProvider(LLMProvider):
                 else:
                     try:
                         result = await tool.handler(args, ctx)
-                        ctx.record_tool_output(result if isinstance(result, str) else str(result))
                     except Exception as e:
                         logger.exception("tool %s failed", fc.name)
                         result = f"erro: {e}"

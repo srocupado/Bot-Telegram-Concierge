@@ -168,7 +168,6 @@ class AnthropicProvider(LLMProvider):
                 else:
                     try:
                         result = await tool.handler(block.input or {}, ctx)
-                        ctx.record_tool_output(result if isinstance(result, str) else str(result))
                     except Exception as e:
                         logger.exception("tool %s failed", block.name)
                         result = f"erro: {e}"

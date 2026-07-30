@@ -132,7 +132,6 @@ class OpenAIProvider(LLMProvider):
                 else:
                     try:
                         result = await tool.handler(fn_args, ctx)
-                        ctx.record_tool_output(result if isinstance(result, str) else str(result))
                     except Exception as e:
                         logger.exception("tool %s failed", fn_name)
                         result = f"erro: {e}"
