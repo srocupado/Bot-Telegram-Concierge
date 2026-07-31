@@ -1916,8 +1916,30 @@ async def analisar_gastos(
         for y, m in _months_between(inicio, fim):
             for it in entries:
                 info = _entry_in_bill(it, y, m, closing)
-                if info:
-                    events.append((date(y, m, 1), it.get("category") or "outros", float(info["value"])))
+                if not info:
+                    continue
+                # Data do EVENTO: a da compra quando ela cai no intervalo
+                # pedido; senão, a parcela é atribuída ao mês da fatura. Antes
+                # tudo virava date(y, m, 1) e o mês-fatura INTEIRO entrava —
+                # "quanto gastei essa semana" devolvia a fatura do mês toda, e
+                # o agrupamento por semana jogava o cartão todo na semana do
+                # dia 1º.
+                try:
+                    d_compra = date.fromisoformat(
+                        (it.get("date") or "").replace(" ", "T")[:10]
+                    )
+                except ValueError:
+                    d_compra = None
+                if d_compra and inicio <= d_compra <= fim:
+                    quando = d_compra
+                elif d_compra and int(info.get("total") or 1) > 1:
+                    # Parcela de compra ANTIGA que cai numa fatura do período:
+                    # conta, ancorada no 1º dia do mês da fatura.
+                    quando = date(y, m, 1)
+                else:
+                    # Compra à vista fora do intervalo de dias — não conta.
+                    continue
+                events.append((quando, it.get("category") or "outros", float(info["value"])))
 
     if not events:
         return f"sem gastos entre {inicio.strftime('%d/%m/%Y')} e {fim.strftime('%d/%m/%Y')}."

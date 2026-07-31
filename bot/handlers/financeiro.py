@@ -18,6 +18,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.config import settings
 from bot.db.models import User
 from bot.utils import as_utc
 from bot.services.financeiro import (
@@ -32,6 +33,14 @@ router = Router(name="financeiro")
 
 AWAITING_WINDOW = timedelta(minutes=5)
 MAX_JSON_BYTES = 32 * 1024  # service accounts são ~2 KB; 32 é largo demais já
+
+
+def _is_owner(user: User) -> bool:
+    """A service account é GLOBAL (kv_settings, uma só pro bot inteiro): quem a
+    troca redireciona os lançamentos de TODO mundo pro seu próprio Firebase.
+    Só o dono mexe. Sem OWNER_TELEGRAM_ID configurado não há como distinguir —
+    aí vale o comportamento antigo (deploy de usuário único)."""
+    return not settings.owner_telegram_id or user.id == settings.owner_telegram_id
 
 
 @router.message(Command("financeiro_setup"))
@@ -73,6 +82,28 @@ async def cmd_setup(
     sa_json = await get_service_account_json(session)
     has_sa = sa_json is not None
     has_uid = bool(user.firebase_uid)
+
+    if not _is_owner(user):
+        # Não abre a janela de espera: sem isso o próximo JSON enviado por
+        # qualquer autorizado sobrescreveria a credencial global.
+        logger.info("financeiro_setup: não-dono %s pediu setup", user.id)
+        if has_sa:
+            await message.answer(
+                "A conta de serviço do financeiro é do dono do bot e vale pra "
+                "todo mundo — só ele troca.\n"
+                "Você pode configurar o SEU usuário: "
+                "<code>/financeiro_setup uid &lt;seu_firebase_uid&gt;</code>"
+                + ("\n\n✅ Seu UID já está configurado." if has_uid else ""),
+                parse_mode="HTML",
+            )
+        else:
+            await message.answer(
+                "O financeiro ainda não foi configurado pelo dono do bot "
+                "(falta a conta de serviço). Peça pra ele rodar "
+                "/financeiro_setup.",
+                parse_mode=None,
+            )
+        return
 
     if has_sa and has_uid:
         await message.answer(
@@ -127,6 +158,8 @@ async def on_document(message: Message, user: User, session: AsyncSession) -> No
         raise SkipHandler
     if not _is_json_doc(message):
         raise SkipHandler
+    if not _is_owner(user):
+        raise SkipHandler  # credencial global: só o dono grava (ver _is_owner)
 
     awaiting = as_utc(user.awaiting_firebase_json_until)
     if awaiting is None:

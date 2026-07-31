@@ -7,7 +7,14 @@ from typing import Any
 
 from openai import OpenAI
 
-from bot.services.llm.base import ChatMessage, LLMProvider, Tool, ToolContext
+from bot.services.llm.base import (
+    ITER_LIMIT_FALLBACK,
+    ITER_LIMIT_INSTRUCTION,
+    ChatMessage,
+    LLMProvider,
+    Tool,
+    ToolContext,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -144,4 +151,23 @@ class OpenAIProvider(LLMProvider):
             if ctx.short_circuit:
                 return ""
 
-        return "(limite de iterações de tool use atingido)"
+        # Limite estourado: última rodada SEM tools pro modelo contar o que já
+        # executou (ver ITER_LIMIT_INSTRUCTION em llm/base.py).
+        logger.warning("openai: max_iterations (%d) estourado", max_iterations)
+        oa_messages.append({"role": "user", "content": ITER_LIMIT_INSTRUCTION})
+
+        def _final():
+            # tools declaradas (o histórico tem tool_calls), mas proibidas de
+            # rodar de novo — só a resposta em texto.
+            return self.client.chat.completions.create(
+                model=self.model, messages=oa_messages, max_tokens=max_tokens,
+                tools=tools_spec, tool_choice="none",
+            )
+
+        try:
+            resp = await asyncio.to_thread(_final)
+            texto = (resp.choices[0].message.content or "").strip()
+        except Exception:
+            logger.exception("openai: rodada final pós-limite falhou")
+            texto = ""
+        return texto or ITER_LIMIT_FALLBACK

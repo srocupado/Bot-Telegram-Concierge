@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from html import escape as _html_escape
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -56,7 +57,7 @@ from bot.services.financeiro import (
 )
 from bot.db.models import ShoppingItem
 from bot.services.shopping import (
-    add_item,
+    add_items,
     clear_all,
     clear_checked,
     find_by_text,
@@ -375,6 +376,20 @@ async def _h_criar_lembrete_recorrente(args: dict, ctx: ToolContext) -> str:
             "erro: recurrencia inválida. Use 'daily', 'weekday', 'weekend', "
             "'monthly' ou 'weekly:mon,wed,fri' (dias = mon|tue|wed|thu|fri|sat|sun "
             "ou seg|ter|qua|qui|sex|sab|dom)."
+        )
+    # is_valid_recurrence também aceita 'cron:<expr>' — sem este piso, um
+    # 'cron:*/1 * * * *' virava lembrete DE MINUTO EM MINUTO (o agendar_comando
+    # já barrava isso; aqui passava direto e só o dono, no grito, desativava).
+    from bot.services.reminders import (
+        CRON_MIN_INTERVAL_MINUTES,
+        cron_expr,
+        cron_interval_ok,
+    )
+    _expr = cron_expr(recurrencia)
+    if _expr is not None and not cron_interval_ok(_expr):
+        return (
+            f"erro: recorrência muito frequente (mínimo {CRON_MIN_INTERVAL_MINUTES} "
+            "minutos entre disparos). Use um intervalo maior."
         )
     tz = ZoneInfo(ctx.tz)
     try:
@@ -716,7 +731,12 @@ def _parse_valor(valor) -> float | None:
         return None
 
 
-_CARD_CUES = ("credito", "crédito", "cartao", "cartão", "parcel")
+# Cues que indicam compra no CARTÃO quando o LLM roteou pro banco. "parcel"
+# saiu da lista: "paguei a PARCELA do financiamento no débito" é saída
+# bancária legítima e era redirecionada pro cartão. Parcelamento agora é
+# detectado pelo padrão "Nx" (3x, 10 x), que só aparece em compra parcelada.
+_CARD_CUES = ("credito", "crédito", "cartao", "cartão")
+_PARCELAS_RE = re.compile(r"\b(\d{1,2})\s*x\b", re.IGNORECASE)
 
 
 def _looks_like_card_purchase(text: str, tipo: str) -> bool:
@@ -739,9 +759,16 @@ async def _h_lancar_movimento_banco(args: dict, ctx: ToolContext) -> str:
         return "erro: 'desc', 'valor' e 'tipo' são obrigatórios"
     # Trava: 'comprei no crédito/cartão' (saída) virou banco → redireciona p/ cartão.
     if _looks_like_card_purchase(ctx.user_text, tipo):
+        # Preserva o PARCELAMENTO dito pelo usuário. Fixar parcelas=1 fazia
+        # "comprei no crédito em 3x de 100" (redirecionado com valor 300) cair
+        # como à vista, superavaliando a fatura aberta em R$ 200.
+        m_parc = _PARCELAS_RE.search(ctx.user_text or "")
+        parcelas = int(m_parc.group(1)) if m_parc else 1
+        if not 1 <= parcelas <= 36:
+            parcelas = 1
         return await _h_lancar_despesa_cartao(
             {"desc": desc, "valor": valor, "data_iso": args.get("data_iso"),
-             "categoria": args.get("categoria"), "parcelas": 1}, ctx,
+             "categoria": args.get("categoria"), "parcelas": parcelas}, ctx,
         )
     try:
         valor_f = _parse_valor(valor)
@@ -1012,7 +1039,7 @@ async def _h_adicionar_lista_compras(args: dict, ctx: ToolContext) -> str:
     itens = args.get("itens") or []
     if not isinstance(itens, list) or not itens:
         return "erro: 'itens' deve ser lista não vazia"
-    added = []
+    pares: list[tuple[str, str | None]] = []
     for raw in itens:
         if isinstance(raw, str):
             text, qty = raw, None
@@ -1025,10 +1052,19 @@ async def _h_adicionar_lista_compras(args: dict, ctx: ToolContext) -> str:
             continue
         if not text:
             continue
-        item = await add_item(ctx.session, ctx.user.id, text, qty)
-        added.append(item)
-    if not added:
+        pares.append((text, qty))
+    if not pares:
         return "erro: nenhum item válido em 'itens'"
+    # Um único commit: falha no meio não pode deixar meia lista gravada
+    # (o usuário repetiria o pedido e duplicaria o resto). Ver add_items.
+    try:
+        added = await add_items(ctx.session, ctx.user.id, pares)
+    except Exception as e:
+        logger.exception("adicionar_lista_compras falhou")
+        return (
+            f"erro: não consegui gravar a lista ({e}). NADA foi adicionado — "
+            "diga isso ao usuário e ofereça tentar de novo."
+        )
     await record_action(
         ctx.session, ctx.user.id, "compras",
         "itens de compra: " + ", ".join(i.text for i in added),
@@ -1255,14 +1291,16 @@ async def _h_consultar_mp_dou(args: dict, ctx: ToolContext) -> str:
     for mp in mps:
         linhas.append(f"• MP {mp['numero']}/{mp['ano']} — {_clean_ementa(mp.get('ementa') or '')}")
     linhas.append("\nQuer a nota técnica completa? 👇")
-    # Guarda o texto limpo: se o LLM vier vazio após a tool call, o handler
-    # usa isso (e ainda anexa os botões Sim/Não via ctx.dou_mp_found).
-    ctx.fallback_text = "\n".join(linhas)
-    return (
-        "ok (repasse estas linhas EXATAMENTE como estão, com emojis; os botões "
-        "Sim/Não aparecem automaticamente — não cite /mp_dou_agora):\n"
-        + "\n".join(linhas)
-    )
+    # VERBATIM: número, ano e ementa de MP são dado determinístico — pedir
+    # "repasse exatamente" ao LLM já não segurou (encurtava ementa, juntava
+    # duas MPs numa linha, trocava 1.284 por 1.248). Mesmo tratamento do erro
+    # e do vazio logo acima. Os botões Sim/Não continuam vindo por
+    # ctx.dou_mp_found (o entregador anexa teclado também no caminho direto).
+    texto = "\n".join(linhas)
+    ctx.fallback_text = texto
+    ctx.direct_html = _html_escape(texto)
+    ctx.short_circuit = True
+    return "ok: lista enviada ao usuário verbatim (não escreva nada)"
 
 
 async def _h_consultar_congresso(_args: dict, ctx: ToolContext) -> str:
@@ -2918,6 +2956,10 @@ TOOLS: list[Tool] = [
         parameters={
             "type": "object",
             "properties": {
+                "hotel": {
+                    "type": "string",
+                    "description": "Nome do hotel quando o usuário pedir um ESPECÍFICO ('monitora o Gran Marquise'). Sem isso o monitor pega o mais barato da cidade.",
+                },
                 "location": {"type": "string"},
                 "check_in": {"type": "string", "description": "YYYY-MM-DD"},
                 "check_out": {"type": "string", "description": "YYYY-MM-DD"},

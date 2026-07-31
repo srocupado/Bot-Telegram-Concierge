@@ -6,7 +6,14 @@ from typing import Any
 
 import anthropic
 
-from bot.services.llm.base import ChatMessage, LLMProvider, Tool, ToolContext
+from bot.services.llm.base import (
+    ITER_LIMIT_FALLBACK,
+    ITER_LIMIT_INSTRUCTION,
+    ChatMessage,
+    LLMProvider,
+    Tool,
+    ToolContext,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -181,4 +188,34 @@ class AnthropicProvider(LLMProvider):
             if ctx.short_circuit:
                 return ""
 
-        return "(limite de iterações de tool use atingido)"
+        # Limite estourado: uma última rodada SEM tools pro modelo CONTAR o que
+        # já executou (ver ITER_LIMIT_INSTRUCTION). Nunca devolver string de
+        # erro seca — o usuário repetia o pedido e duplicava o que já gravou.
+        logger.warning("anthropic: max_iterations (%d) estourado", max_iterations)
+        anth_messages.append({"role": "user", "content": ITER_LIMIT_INSTRUCTION})
+
+        def _final() -> anthropic.types.Message:
+            # `tools` continua no request (o histórico tem blocos tool_use e a
+            # API os recusa sem a declaração); quem barra nova chamada é o
+            # tool_choice=none.
+            kwargs: dict = {
+                "model": self.model,
+                "max_tokens": max_tokens,
+                "messages": anth_messages,
+                "tools": tools_spec,
+                "tool_choice": {"type": "none"},
+            }
+            if system_blocks:
+                kwargs["system"] = system_blocks
+            return self.client.messages.create(**kwargs)
+
+        try:
+            resp = await asyncio.to_thread(_final)
+            _log_usage("chat_with_tools[limite]", resp)
+            texto = "".join(
+                b.text for b in resp.content if getattr(b, "type", None) == "text"
+            ).strip()
+        except Exception:
+            logger.exception("anthropic: rodada final pós-limite falhou")
+            texto = ""
+        return texto or ITER_LIMIT_FALLBACK

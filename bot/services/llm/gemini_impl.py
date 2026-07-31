@@ -16,7 +16,14 @@ from typing import Any
 from google import genai
 from google.genai import types
 
-from bot.services.llm.base import ChatMessage, LLMProvider, Tool, ToolContext
+from bot.services.llm.base import (
+    ITER_LIMIT_FALLBACK,
+    ITER_LIMIT_INSTRUCTION,
+    ChatMessage,
+    LLMProvider,
+    Tool,
+    ToolContext,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -219,4 +226,36 @@ class GeminiProvider(LLMProvider):
             if ctx.short_circuit:
                 return ""
 
-        return "(limite de iterações de tool use atingido)"
+        # Limite estourado: última rodada SEM tools pro modelo contar o que já
+        # executou (ver ITER_LIMIT_INSTRUCTION em llm/base.py).
+        logger.warning("gemini: max_iterations (%d) estourado", max_iterations)
+        contents.append(
+            types.Content(
+                role="user", parts=[types.Part.from_text(text=ITER_LIMIT_INSTRUCTION)],
+            )
+        )
+
+        def _final() -> Any:
+            # Declarações continuam (o histórico tem function_call/response),
+            # com function calling em modo NONE: só texto sai daqui.
+            config = types.GenerateContentConfig(
+                system_instruction=system,
+                tools=genai_tools,
+                tool_config=types.ToolConfig(
+                    function_calling_config=types.FunctionCallingConfig(mode="NONE"),
+                ),
+                max_output_tokens=max(max_tokens, _MIN_OUTPUT_TOKENS),
+                thinking_config=_thinking_config(self.model_name),
+            )
+            return self.client.models.generate_content(
+                model=self.model_name, contents=contents, config=config,
+            )
+
+        try:
+            resp = await asyncio.to_thread(_final)
+            _log_usage("chat_with_tools[limite]", resp)
+            texto = (resp.text or "").strip()
+        except Exception:
+            logger.exception("gemini: rodada final pós-limite falhou")
+            texto = ""
+        return texto or ITER_LIMIT_FALLBACK

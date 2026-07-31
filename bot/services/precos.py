@@ -23,6 +23,7 @@ Obs: a cota SerpAPI é compartilhada com voo/hotel.
 from __future__ import annotations
 
 import logging
+import re as _re_mod
 
 from bot.config import settings
 from bot.services.travels.serpapi_client import (
@@ -86,22 +87,35 @@ async def _confirmar_na_pagina(url: str) -> str | None:
         return None
 
 
-def _tokens_numericos(texto: str) -> set[str]:
-    """Tokens com dígito ('360', '13', '2', '110l') — é o que distingue modelo
-    ('Avata 2' vs 'Avata 360'). Minúsculas, sem pontuação. Descarta o que tem
-    cara de DINHEIRO/parcela, não de modelo: '6900' (teto de preço), '12x',
-    '6.900,00' — senão 'me avisa abaixo de 6900' dispararia aviso falso."""
-    import re as _re
+# Contexto que marca um número como DINHEIRO (teto, orçamento) e não modelo.
+_DINHEIRO_CTX = _re_mod.compile(
+    r"(r\$|reais?|abaixo de|até|ate|menos de|max(?:imo)?|teto|or[çc]amento|"
+    r"custa|pre[çc]o|valor)\s*$", _re_mod.IGNORECASE,
+)
+
+
+def _tokens_numericos(texto: str, checar_contexto: bool = False) -> set[str]:
+    """Tokens com dígito ('360', '13', '4070', '9600x') — é o que distingue
+    MODELO ('Avata 2' vs 'Avata 360'). Minúsculas, sem pontuação.
+
+    Descarta só o que é claramente DINHEIRO: valor formatado ('6.900,00') e,
+    quando `checar_contexto`, número precedido de marcador de preço ('abaixo
+    de 6900', 'até 300 reais'). Números de 4 dígitos e sufixo 'x' NÃO são mais
+    descartados às cegas — isso engolia RTX 4070 e Ryzen 9600X, justamente a
+    família onde trocar de modelo é o erro mais caro.
+    """
     out: set[str] = set()
-    for t in _re.findall(r"\d[\w.,]*", (texto or "").lower()):
-        t = t.rstrip(".,")
-        if _re.fullmatch(r"\d+x", t):          # parcela: 12x, 10x
-            continue
+    for m in _re_mod.finditer(r"\d[\w.,]*", (texto or "").lower()):
+        t = m.group(0).rstrip(".,")
         if "," in t or "." in t:               # 6.900,00 / 3.303,00 → dinheiro
             continue
-        if len(t) >= 4 and t.isdigit():        # 6900, 11190 → dinheiro/limite
-            continue
+        if checar_contexto and _DINHEIRO_CTX.search((texto or "").lower()[:m.start()]):
+            continue                            # "abaixo de 6900", "até 300"
         out.add(t)
+        # '256gb' também casa como '256' (título costuma separar: "256 GB")
+        mnum = _re_mod.match(r"^(\d+)[a-z]+$", t)
+        if mnum:
+            out.add(mnum.group(1))
     return out
 
 
@@ -113,12 +127,23 @@ def _aviso_modelo_divergente(query: str, items: list[dict], user_text: str = "")
       [lançado após seu treino], 'corrigiu' pra 'Avata 2' ANTES de buscar, e
       o aviso antigo ficava mudo porque query e títulos combinavam entre si).
     Devolve '' quando tudo bate."""
-    alvo = _tokens_numericos(query) | _tokens_numericos(user_text)
+    alvo = _tokens_numericos(query) | _tokens_numericos(user_text, checar_contexto=True)
     if not alvo:
         return ""
-    titulos = " ".join(str(i.get("title") or "") for i in items[:3])
+    titulos = " ".join(str(i.get("title") or "") for i in items)
     achados = _tokens_numericos(titulos)
-    faltando = alvo - achados
+
+    def _satisfeito(tok: str) -> bool:
+        if tok in achados:
+            return True
+        # '256gb' é satisfeito por '256' no título ("256 GB" separado) e
+        # vice-versa — unidade colada não pode virar divergência de modelo.
+        m = _re_mod.match(r"^(\d+)[a-z]+$", tok)
+        if m and m.group(1) in achados:
+            return True
+        return any(_re_mod.match(rf"^{tok}[a-z]+$", a) for a in achados)
+
+    faltando = {t for t in alvo if not _satisfeito(t)}
     if not faltando:
         return ""
     return (

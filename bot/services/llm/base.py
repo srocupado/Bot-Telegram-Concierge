@@ -88,6 +88,26 @@ class Tool:
     handler: ToolHandler
 
 
+# Estouro de `max_iterations`: as tools JÁ rodaram (lançamento no Firestore,
+# lembrete criado, item na lista). Devolver "(limite de iterações...)" fazia o
+# usuário achar que nada aconteceu e REPETIR o pedido — duplicando o que já
+# estava gravado. Em vez disso pedimos ao modelo uma ÚLTIMA rodada SEM tools,
+# só pra contar o que já fez; e se nem isso sair, vai o aviso explícito abaixo.
+ITER_LIMIT_INSTRUCTION = (
+    "PARE de usar ferramentas — o limite de rodadas foi atingido. "
+    "Responda AGORA ao usuário, em português, contando o que você JÁ executou "
+    "nesta conversa (as ferramentas que rodaram tiveram efeito real e "
+    "permanente) e o que ficou faltando. Não invente resultado que não veio "
+    "de uma ferramenta."
+)
+ITER_LIMIT_FALLBACK = (
+    "⚠️ Precisei parar no meio: bati o limite de rodadas de ferramenta. "
+    "ATENÇÃO: parte do que você pediu PODE já ter sido executada (lançamento, "
+    "lembrete, item de lista). Confira antes de repetir o pedido, pra não "
+    "duplicar."
+)
+
+
 class LLMProvider(ABC):
     name: str
 

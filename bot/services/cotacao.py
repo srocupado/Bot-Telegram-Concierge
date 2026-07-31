@@ -61,7 +61,17 @@ async def _cambio(code: str, nome: str) -> str:
     except httpx.HTTPError as e:
         raise CotacaoError(f"câmbio indisponível: {e}") from e
     if d.get("result") != "success":
-        raise CotacaoError(f"não reconheci a moeda '{code}'")
+        # 'error-type' distingue MOEDA INVÁLIDA de FALHA DA FONTE (cota
+        # estourada, chave inativa, manutenção). Sem isso, cota estourada
+        # virava "não reconheci a moeda 'USD'" — falso "não existe" no lugar
+        # de "não consegui checar".
+        et = str(d.get("error-type") or "").lower()
+        if et in ("unsupported-code", "unknown-code", "malformed-request"):
+            raise CotacaoError(f"não reconheci a moeda '{code}'")
+        raise CotacaoError(
+            f"não consegui consultar o câmbio de {code} agora "
+            f"(fonte indisponível: {et or 'erro desconhecido'})"
+        )
     brl = (d.get("rates") or {}).get("BRL")
     if brl is None:
         raise CotacaoError(f"sem cotação em reais para {code}")

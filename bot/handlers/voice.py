@@ -295,7 +295,7 @@ async def cmd_voice(message: Message, user: User, session: AsyncSession) -> None
     # MODO TRADUTOR: se ligado, o áudio é traduzido (texto + voz) em vez de
     # transcrito/roteado. Bypassa o STT normal (que força PT e vira comando).
     if user.translator_lang:
-        await _handle_translation(message, user, audio_bytes, mime_type)
+        await _handle_translation(message, user, session, audio_bytes, mime_type)
         return
 
     stt_provider = user.voice_stt_provider or settings.voice_stt_provider
@@ -354,8 +354,28 @@ async def cmd_voice(message: Message, user: User, session: AsyncSession) -> None
         await _dispatch_chat(message, user, session, transcribed)
 
 
+# Desligar o tradutor POR VOZ. Com o modo ligado, todo áudio ia pra tradução —
+# quem falava "desliga o tradutor" recebia isso traduzido pro inglês e continuava
+# preso no modo (só /tradutor off, digitado, saía). Exige a palavra "tradutor"
+# + um verbo de desligar numa frase curta, pra não capturar uma tradução legítima
+# que por acaso fale de tradutor.
+_TRAD_OFF_RE = re.compile(
+    r"\b(?:desliga\w*|desativa\w*|encerra\w*|para(?:r)?|sai(?:r)?|fecha\w*|off|stop|fim|cancela\w*)\b",
+    re.IGNORECASE,
+)
+_TRAD_WORD_RE = re.compile(r"\b(?:tradutor|tradu[cç][ãa]o|translator)\b", re.IGNORECASE)
+
+
+def _pede_desligar_tradutor(texto: str) -> bool:
+    t = (texto or "").strip()
+    if not t or len(t.split()) > 8:
+        return False
+    return bool(_TRAD_WORD_RE.search(t) and _TRAD_OFF_RE.search(t))
+
+
 async def _handle_translation(
-    message: Message, user: User, audio_bytes: bytes, mime_type: str,
+    message: Message, user: User, session: AsyncSession,
+    audio_bytes: bytes, mime_type: str,
 ) -> None:
     """Modo tradutor: áudio → {original, tradução} → responde texto + nota de voz."""
     from aiogram.types import BufferedInputFile
@@ -385,6 +405,18 @@ async def _handle_translation(
 
     original = (res.get("original") or "").strip()
     translation = (res.get("translation") or "").strip()
+
+    # "desliga o tradutor" falado vale tanto quanto /tradutor off digitado.
+    if _pede_desligar_tradutor(original):
+        user.translator_lang = None
+        await session.commit()
+        await message.answer(
+            f"🎙️ Modo tradutor desligado (você disse: “{original}”).\n"
+            "Pra ligar de novo: /tradutor <idioma>.",
+            parse_mode=None,
+        )
+        return
+
     if not translation:
         await message.answer(_EMPTY)
         return

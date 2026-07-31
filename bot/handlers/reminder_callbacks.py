@@ -10,6 +10,7 @@ from aiogram.types import CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.models import Reminder, User
+from bot.services.viagem import effective_tz
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ async def cb_snooze(query: CallbackQuery, user: User, session: AsyncSession) -> 
     rem.sent_at = None
     await session.commit()
 
-    local = new_due.astimezone(ZoneInfo(user.timezone))
+    local = new_due.astimezone(ZoneInfo(effective_tz(user)))
     await query.answer(f"💤 Adiado para {local.strftime('%H:%M')}")
     try:
         await query.message.edit_text(

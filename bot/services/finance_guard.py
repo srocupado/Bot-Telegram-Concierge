@@ -24,6 +24,12 @@ _LOG_CUES = (
 )
 # Palavras que indicam CONSULTA/edição (não lançamento) — desarmam o guard.
 _QUERY_CUES = (
+    # "cadê/onde/apareceu/consta/tem algum" faltavam: "cadê o pix de 200 que
+    # recebi?" era lido como LANÇAMENTO, e o guard trocava a resposta CORRETA
+    # da consulta por "não registrei isso".
+    "cadê", "cade", "onde está", "onde esta", "apareceu", "consta",
+    "tem algum", "teve algum", "achei", "encontrei", "procur", "verifica",
+    "confere", "conferir", "checa", "checar",
     "quanto", "quais", "qual", "mostra", "mostrar", "lista", "listar",
     "extrato", "saldo", "consulta", "consultar", "resumo", "relatório",
     "relatorio", "quanto gastei", "apaga", "apagar", "cancela", "cancelar",

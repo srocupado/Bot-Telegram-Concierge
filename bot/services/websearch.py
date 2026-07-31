@@ -196,6 +196,12 @@ def _strip_nav(texto: str) -> str:
 # Mesmo padrão de retry usado em camara/inlabs/brapi.
 _JINA_RETRY_STATUS = {408, 422, 429, 500, 502, 503, 504}
 _JINA_RETRIES = 3
+# Teto de tempo do LOTE de leitura do buscar_web. Sem isto o pior caso era
+# ~10 min (N URLs × 3 tentativas × 60s, em série) — o usuário ficava sem
+# resposta e uma tarefa do agente agendado (timeout 900s) morria com duas
+# chamadas ruins. Quem estourar o orçamento fica sem markdown e cai no
+# snippet do buscador, que é degradação aceitável.
+_LEITURA_BUDGET_S = 90.0
 
 
 def _jina_headers() -> dict[str, str]:
@@ -286,12 +292,24 @@ async def _attach_jina_markdown(client: httpx.AsyncClient, results: list[dict]) 
     devolver 422 em URL que sozinha responde 200 (caso real: página de produto
     da Pires Martins). Poucos resultados (_DEFAULT_LIMIT) — o custo em tempo é
     aceitável perto de perder a página."""
+    import time as _time
+    inicio = _time.monotonic()
     for item in results:
         url = (item.get("url") or "").strip()
         if not url:
             continue
+        if _time.monotonic() - inicio > _LEITURA_BUDGET_S:
+            logger.warning(
+                "buscar_web: orçamento de leitura (%.0fs) esgotado; %s e demais "
+                "ficam só com o snippet", _LEITURA_BUDGET_S, url[:60],
+            )
+            break
         try:
-            item["markdown"] = await _jina_get(client, url)
+            # _strip_nav TAMBÉM aqui: o fix do "essa loja é de parafusos" só
+            # tinha entrado no ler_pagina. Aqui o corte é de 3.500 chars
+            # (_MAX_CHARS_PER_PAGE) — MUITO menor —, então uma página de loja
+            # com menu grande virava só menu no contexto do modelo.
+            item["markdown"] = _strip_nav(await _jina_get(client, url))
         except httpx.HTTPError as e:
             logger.warning("jina read falhou p/ %s (após retries): %s", url, e)
 

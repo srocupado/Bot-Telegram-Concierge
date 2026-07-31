@@ -121,11 +121,19 @@ async def deliver_llm_reply(
     if ctx.direct_html:
         memory.append(chat_id, "user", para_memoria)
         memory.append(chat_id, "assistant", ctx.direct_html)
-        loc_kb = None
+        # Teclado também no caminho verbatim: entrega direta e botão não são
+        # excludentes (a lista de MPs vai verbatim E oferece a nota técnica).
+        direct_kb = None
         if ctx.request_location:
             from bot.handlers.route import _build_keyboard
-            loc_kb = _build_keyboard()
-        await send_html_chunked(message, ctx.direct_html, reply_markup=loc_kb)
+            direct_kb = _build_keyboard()
+        elif ctx.dou_mp_found:
+            from bot.handlers.dou_mp import nota_keyboard
+            direct_kb = nota_keyboard(ctx.dou_mp_found["date_iso"])
+        elif ctx.confirm_clear_shopping:
+            from bot.handlers.shopping import clear_keyboard
+            direct_kb = clear_keyboard()
+        await send_html_chunked(message, ctx.direct_html, reply_markup=direct_kb)
         return
 
     # O Gemini às vezes volta texto vazio após uma tool call; se a tool deixou
@@ -350,10 +358,11 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "reformatar nem trocar emojis — só pode adicionar uma frase curta antes/"
     "depois (ex: 'Quer apagar algum?').\n\n"
     "Para consultar_transito: aceita atalhos 'casa' e 'trabalho' como origem/destino "
-    "(mapeiam pra HOME_COORDS/WORK_COORDS do servidor). Quando o usuário disser só "
-    "'trânsito pra casa', interprete como origem='trabalho' e destino='casa'. "
-    "Quando ele disser 'trânsito pro trabalho', interprete como origem='casa' "
-    "e destino='trabalho'.\n\n"
+    "(mapeiam pra HOME_COORDS/WORK_COORDS do servidor). NUNCA deduza a origem pelo "
+    "destino: 'trânsito pra casa' NÃO quer dizer que ele está no trabalho. Só use "
+    "origem='casa'/'trabalho' quando ele DISSER de onde está saindo; caso contrário "
+    "passe origem='minha_localizacao' (o servidor pede o GPS). Vale a regra completa "
+    "que está na descrição da própria ferramenta.\n\n"
     "Para agendar_comando (executar AÇÃO automática no futuro, não só lembrete texto):\n"
     "- Use quando o usuário quer DISPARAR um comando no horário marcado, ex: "
     "'lembre de mostrar o trânsito pra casa às 15h' → agendar_comando("

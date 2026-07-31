@@ -83,15 +83,29 @@ async def cmd_viagem(
         )
         return
     ini, fim, resto = parsed
+    # Sanidade do período: datas trocadas ("15/01 a 10/01") viravam viagem de
+    # ~1 ano JÁ ativa, com fuso e clima do destino por meses sem o usuário
+    # perceber. Recusa em vez de adivinhar.
+    if (fim - ini).days > 180:
+        await message.answer(
+            f"⚠️ Período muito longo ({ini.strftime('%d/%m/%Y')} → "
+            f"{fim.strftime('%d/%m/%Y')}, {(fim - ini).days} dias). "
+            "As datas estão invertidas? Refaça com o período certo.",
+            parse_mode=None,
+        )
+        return
 
     # moeda opcional: "... moeda iene"
+    # Moeda: pega TUDO depois de "moeda" (nomes têm mais de uma palavra —
+    # "peso argentino", "dólar canadense"). Antes ficava só a 1ª palavra
+    # ("peso", que a cotação não reconhece) e o resto contaminava o destino.
     moeda = None
     tokens = resto.split()
-    if "moeda" in [t.lower() for t in tokens]:
-        i = [t.lower() for t in tokens].index("moeda")
-        if i + 1 < len(tokens):
-            moeda = tokens[i + 1].strip().lower()
-        tokens = tokens[:i] + tokens[i + 2:]
+    baixos = [t.lower() for t in tokens]
+    if "moeda" in baixos:
+        i = baixos.index("moeda")
+        moeda = " ".join(tokens[i + 1:]).strip().lower() or None
+        tokens = tokens[:i]
     destino = " ".join(tokens).strip(" ,-—")
     if not destino:
         await message.answer("Faltou o destino (ex.: /viagem Fortaleza 22/08 a 27/08).", parse_mode=None)
@@ -105,6 +119,18 @@ async def cmd_viagem(
     user.viagem_fim = fim.isoformat()
     user.viagem_coords = coords
     user.viagem_tz = tz
+    # Valida a moeda AGORA: melhor errar na configuração (onde você vê) do que
+    # sumir do briefing todo dia.
+    moeda_aviso = ""
+    if moeda:
+        try:
+            from bot.services.cotacao import consultar_cotacao
+            await consultar_cotacao(moeda)
+        except Exception as e:
+            moeda_aviso = (
+                f"\n⚠️ Não reconheci a moeda '{moeda}' ({e}) — ela NÃO vai "
+                "aparecer no briefing. Refaça com outro nome se quiser."
+            )
     user.viagem_moeda = moeda
     await session.commit()
 
@@ -124,5 +150,7 @@ async def cmd_viagem(
         linhas.append("Clima do briefing: do destino, durante o período.")
     if moeda:
         linhas.append(f"Briefing inclui a cotação: {moeda}.")
+    if moeda_aviso:
+        linhas.append(moeda_aviso)
     linhas.append("\n/viagem off desliga antes da hora; no fim do período desliga sozinho.")
     await message.answer("\n".join(linhas), parse_mode="HTML")

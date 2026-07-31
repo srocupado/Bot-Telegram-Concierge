@@ -186,7 +186,15 @@ async def _processar_notas_pendentes(bot, session: AsyncSession, user: User) -> 
             await unmark_notified(session, user.id, "nota_pendente", r.key)
             continue
         if (hoje - d).days > _NOTA_PENDENTE_EXPIRA_DIAS:
+            # Desistir em silêncio contradiz o que o bot prometeu ("te envio
+            # automaticamente"). Avisa antes de largar.
             await unmark_notified(session, user.id, "nota_pendente", r.key)
+            await _send(bot, user.id, (
+                f"⚠️ Desisti da nota técnica de {d.strftime('%d/%m')} — "
+                f"{_NOTA_PENDENTE_EXPIRA_DIAS} dias sem conseguir acessar o "
+                "Inlabs. Se ainda quiser, peça de novo com "
+                f"/mp_dou_agora {d.strftime('%d/%m/%Y')}."
+            ))
             continue
         numeros = [n for n in nums.split(",") if n and n != "all"] or None
         fila.append((d, numeros, r.key))
@@ -203,9 +211,15 @@ async def _processar_notas_pendentes(bot, session: AsyncSession, user: User) -> 
         logger.info("nota pendente %s entregue", key)
 
 
-async def _mp_dias_pendentes(session: AsyncSession, user_id: int, hoje: date) -> list[date]:
+async def _mp_dias_pendentes(
+    session: AsyncSession, user_id: int, hoje: date, desistidos: list[date] | None = None,
+) -> list[date]:
     """Dias de DOU pendentes de checagem (antigos primeiro). Limpa do banco
-    pendências expiradas e chaves inválidas."""
+    pendências expiradas e chaves inválidas.
+
+    `desistidos` (se passado) recebe os dias que expiraram — o caller vira isso
+    num aviso ao usuário: desistir em silêncio de um dia não checado é
+    exatamente o falso negativo que a retroativa existe pra evitar."""
     rows = list(await session.scalars(
         select(ProactiveNotice).where(
             ProactiveNotice.user_id == user_id,
@@ -221,6 +235,8 @@ async def _mp_dias_pendentes(session: AsyncSession, user_id: int, hoje: date) ->
             continue
         if (hoje - d).days > _MP_RETRO_EXPIRA_DIAS:
             await unmark_notified(session, user_id, "mp_pendente", r.key)
+            if desistidos is not None:
+                desistidos.append(d)
             continue
         out.append(d)
     return sorted(out)
@@ -304,7 +320,19 @@ async def collect_mp(
     # perde o dia. Dia pendente que já entrou na varredura normal desta janela
     # (ex.: briefing re-checa ontem) conta como coberto, sem novo fetch.
     hoje = datetime.now(BRT).date()
-    pendentes = await _mp_dias_pendentes(session, user.id, hoje)
+    desistidos: list[date] = []
+    pendentes = await _mp_dias_pendentes(session, user.id, hoje, desistidos)
+    for d in desistidos:
+        # Aviso explícito ao desistir: sem isto o dia sumia da fila em silêncio
+        # e o usuário jamais saberia que aquele DOU nunca foi verificado.
+        facts.append(ProactiveFact(
+            "mp", "mp_desisti", f"desisti:{d.isoformat()}",
+            f"⚠️ Desisti de checar o DOU de {d.strftime('%d/%m')} — "
+            f"{_MP_RETRO_EXPIRA_DIAS} dias sem conseguir acessar o Inlabs. "
+            f"Esse dia NÃO foi verificado; se quiser, rode "
+            f"/mp_dou_agora {d.strftime('%d/%m/%Y')}.",
+            date_iso=None,
+        ))
     resolvidos: list[date] = [d for d in pendentes if d in ok_dates]
     restantes = [d for d in pendentes if d not in dates][:_MP_RETRO_MAX_POR_JANELA]
     for d in restantes:
@@ -475,9 +503,16 @@ async def collect_moeda_viagem(user: User) -> list[ProactiveFact]:
     try:
         from bot.services.cotacao import consultar_cotacao
         linha = await consultar_cotacao(moeda)
-    except Exception:
+    except Exception as exc:
+        # Falha ≠ silêncio: o usuário CONFIGUROU a moeda e conta com ela no
+        # briefing. Sumir sem dizer nada (e sem ele saber que 'peso' era
+        # inválido, p.ex.) esconde o defeito por semanas.
         logger.warning("proactive: cotação da moeda da viagem falhou", exc_info=True)
-        return []
+        return [ProactiveFact(
+            "clima", "moeda_viagem_erro", "",
+            f"💱 Não consegui a cotação de <b>{moeda}</b> ({type(exc).__name__}) — "
+            "confira o nome da moeda com /viagem.",
+        )]
     return [ProactiveFact("clima", "moeda_viagem", "", f"💱 {linha}")]
 
 

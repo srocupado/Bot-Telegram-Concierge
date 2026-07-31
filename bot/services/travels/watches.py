@@ -55,9 +55,17 @@ def _should_alert(
     if snooze_until and snooze_until > now:
         return False, "snoozed"
     if watch.max_price is not None:
-        if new_price <= watch.max_price:
+        if new_price > watch.max_price:
+            return False, "above_max"
+        # Abaixo do teto: avisa na PRIMEIRA vez e depois só se MELHORAR
+        # (novo mínimo). Antes repetia o mesmo alerta todo santo dia e a única
+        # saída do usuário era cancelar o watch que ele quis criar — o campo
+        # snooze_until existe no modelo mas nada no bot o escreve.
+        if watch.last_alert_at is None:
             return True, "below_max"
-        return False, "above_max"
+        if watch.min_price_seen is None or new_price < watch.min_price_seen:
+            return True, "new_min"
+        return False, "ja_avisado"
     # Sem teto: avisa só quando bate mínimo histórico (ou é a primeira leitura).
     if watch.min_price_seen is None or new_price < watch.min_price_seen:
         return True, "new_min"
@@ -182,12 +190,21 @@ async def check_watch(
                     adults=watch.params.get("adults", 2),
                     currency=watch.currency,
                 )
-                best = extract_best_hotel(raw)
+                best = extract_best_hotel(raw, prefer_name=watch.params.get("hotel") or None)
         else:
             logger.warning("travels: unknown watch kind: %s", watch.kind)
             return
     except SerpAPIError as e:
         logger.warning("serpapi error for watch %d: %s", watch.id, e)
+        watch.last_checked_at = datetime.now(timezone.utc)
+        await session.commit()
+        return
+    except Exception:
+        # QUALQUER outra falha (params malformados, payload inesperado) também
+        # marca o dia como checado. Sem isto, _is_due seguia verdadeiro e o
+        # watch quebrado era re-executado a cada tick (60s) até meia-noite,
+        # queimando cota do SerpAPI todos os dias, em silêncio.
+        logger.exception("watch %d: falha inesperada na checagem", watch.id)
         watch.last_checked_at = datetime.now(timezone.utc)
         await session.commit()
         return

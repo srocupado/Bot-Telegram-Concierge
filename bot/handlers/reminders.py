@@ -16,6 +16,7 @@ from bot.services.reminders import (
     list_pending,
     parse_reminder,
 )
+from bot.services.viagem import effective_tz
 
 router = Router(name=__name__)
 
@@ -36,13 +37,13 @@ async def cmd_lembrar(
         return
 
     try:
-        clean_text, due_utc = parse_reminder(raw, user.timezone)
+        clean_text, due_utc = parse_reminder(raw, effective_tz(user))
     except ReminderParseError as e:
         await message.answer(f"⚠️ {e}")
         return
 
     rem = await create_reminder(session, user.id, clean_text, due_utc)
-    local = due_utc.astimezone(ZoneInfo(user.timezone))
+    local = due_utc.astimezone(ZoneInfo(effective_tz(user)))
     await message.answer(
         f"🔔 *{clean_text}*\n"
         f"   marcado para {local.strftime('%d/%m %H:%M')} _(#{rem.id})_",
@@ -54,7 +55,7 @@ async def cmd_lembrar(
 async def cmd_lembretes(message: Message, user: User, session: AsyncSession) -> None:
     items = await list_pending(session, user.id)
     await message.answer(
-        format_pending_list(items, user.timezone), parse_mode=None,
+        format_pending_list(items, effective_tz(user)), parse_mode=None,
     )
 
 
@@ -109,7 +110,7 @@ async def cmd_agendar_comando(
         # (que pode ser vazio pra transito/congresso). Inserimos placeholder
         # se necessário.
         target = resto if any(c.isalpha() for c in resto.split()[0]) else f"x {resto}"
-        clean_text, due_utc = parse_reminder(target, user.timezone)
+        clean_text, due_utc = parse_reminder(target, effective_tz(user))
         # clean_text vira o parametros (se houver), ou vazio.
         parametros = "" if clean_text == "x" else clean_text
     except ReminderParseError as e:
@@ -139,7 +140,7 @@ async def cmd_agendar_comando(
         session, user.id, texto, due_utc,
         command_kind=tipo, command_args=parametros or None,
     )
-    local = due_utc.astimezone(ZoneInfo(user.timezone))
+    local = due_utc.astimezone(ZoneInfo(effective_tz(user)))
     await message.answer(
         f"⏰ Agendado #{rem.id}: {descricao_map[tipo]} em "
         f"{local.strftime('%d/%m %H:%M')}",

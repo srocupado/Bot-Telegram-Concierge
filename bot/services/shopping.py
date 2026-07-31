@@ -31,6 +31,34 @@ async def add_item(
     return item
 
 
+async def add_items(
+    session: AsyncSession, user_id: int, pares: list[tuple[str, str | None]],
+) -> list[ShoppingItem]:
+    """Adiciona vários itens em UM commit — tudo ou nada.
+
+    Item a item (add_item em laço) cada um já ia commitado: falha no 4º de 6
+    deixava metade da lista gravada, o usuário via a mensagem de erro, repetia
+    o pedido inteiro e ficava com itens duplicados. Aqui, se qualquer um
+    falhar, nada entra."""
+    itens = [
+        ShoppingItem(
+            user_id=user_id,
+            text=text.strip(),
+            quantity=(quantity or None) and quantity.strip(),
+        )
+        for text, quantity in pares
+    ]
+    session.add_all(itens)
+    try:
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    for it in itens:
+        await session.refresh(it)
+    return itens
+
+
 async def list_items(
     session: AsyncSession, user_id: int, only_pending: bool = True,
 ) -> list[ShoppingItem]:

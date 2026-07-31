@@ -48,6 +48,11 @@ logger = logging.getLogger(__name__)
 BRT = ZoneInfo("America/Sao_Paulo")
 CONGRESS_HOUR = 7
 
+# Minutos após a hora-alvo em que a janela do proativo ainda pode disparar.
+# Era 1 (2 min de janela) e um tick lento fazia a janela ser PERDIDA sem
+# catch-up. O dedup por run_key impede execução dupla, então alargar é seguro.
+_PROACTIVE_CATCHUP_MIN = 20
+
 
 async def _send_html_with_fallback(bot: Bot, chat_id: int, text: str) -> bool:
     try:
@@ -103,8 +108,24 @@ async def run_congress_digest(
             headers={"User-Agent": CONGRESS_USER_AGENT},
         ) as client:
             items = await fetch_week_mps(client, now_brt.date())
-    except CongressScrapeError:
+    except CongressScrapeError as exc:
+        # Falha ≠ silêncio: avisa os inscritos E marca o digest como "feito"
+        # do dia. Sem a marca, o _due continua verdadeiro e o scrape era
+        # refeito A CADA TICK (60s) o dia inteiro — ~900 chamadas/dia com
+        # credencial/site quebrado, e o usuário nunca sabia de nada.
         logger.exception("congress scrape failed")
+        aviso = (
+            "⚠️ Não consegui buscar a pauta do Congresso hoje "
+            f"({type(exc).__name__}). NÃO dá pra afirmar se há ou não MPs "
+            "em pauta — veja com /congresso_agora mais tarde."
+        )
+        for u in users:
+            await _send_html_with_fallback(bot, u.id, aviso)
+            async with sessionmaker() as session:
+                fresh = await session.get(User, u.id)
+                if fresh is not None:
+                    fresh.last_congress_digest_at = datetime.now(timezone.utc)
+                    await session.commit()
         return
 
     message = format_week_message(items, now_brt.date())
@@ -196,10 +217,21 @@ async def run_traffic_digest(
                 )
             else:
                 weather_line = format_weather_line(weather_result)
-    except Exception:
-        # Qualquer falha do fetch de trânsito (TrafficError, httpx, JSON cru…)
-        # degrada o digest graciosamente em vez de abortar o tick inteiro.
+    except Exception as exc:
+        # Falha ≠ silêncio (mesma correção do congresso): avisa e marca o dia,
+        # senão o fetch do Maps era refeito a cada 60s até meia-noite.
         logger.exception("traffic digest fetch failed")
+        aviso = (
+            "⚠️ Não consegui consultar o trânsito hoje "
+            f"({type(exc).__name__}). Tente /transito_agora mais tarde."
+        )
+        for u in users:
+            await _send_html_with_fallback(bot, u.id, aviso)
+            async with sessionmaker() as session:
+                fresh = await session.get(User, u.id)
+                if fresh is not None:
+                    fresh.last_traffic_digest_at = datetime.now(timezone.utc)
+                    await session.commit()
         return
 
     message = format_traffic_message(info, "casa → trabalho")
@@ -287,7 +319,7 @@ async def run_reminders(
                     if rem.recurrence:
                         # Reagenda: mesmo HH:MM, próximo dia conforme rrule
                         # (cron: avaliado no tz do usuário). Mantém row.
-                        rem.due_at = next_due_from(rem.recurrence, rem.due_at, user.timezone)
+                        rem.due_at = next_due_from(rem.recurrence, rem.due_at, effective_tz(user))
                         rem.sent = False
                         rem.sent_at = None
                         await session.commit()
@@ -509,10 +541,10 @@ async def run_proactive(
 
     hours = parse_proactive_hours(settings.proactive_hours)
     # Gate barato ANTES de tocar o banco: só há janela possível quando algum
-    # fuso plausível está em minute<=1 de uma hora-alvo. Como fusos são
-    # múltiplos de 15min, checa os 4 offsets de quarto de hora.
+    # fuso plausível está dentro da JANELA DE CATCH-UP de uma hora-alvo. Como
+    # fusos são múltiplos de 15min, checa os 4 offsets de quarto de hora.
     plausivel = any(
-        ((now_utc.minute + q * 15) % 60) <= 1 for q in range(4)
+        ((now_utc.minute + q * 15) % 60) <= _PROACTIVE_CATCHUP_MIN for q in range(4)
     )
     if not plausivel:
         return
@@ -532,7 +564,12 @@ async def run_proactive(
         except Exception:
             tz = BRT
         now_local = now_utc.astimezone(tz)
-        if now_local.hour not in hours or now_local.minute > 1:
+        # Janela de CATCH-UP (não 2 min): o tick é sequencial e pode carregar
+        # I/O de minutos (nota técnica: web search 55s + LLM até 240s), então
+        # a passagem exata pelos 2 primeiros minutos podia simplesmente não
+        # acontecer e a janela evaporava sem catch-up. O run_key (janela+dia+
+        # hora local) segue garantindo 1 execução só.
+        if now_local.hour not in hours or now_local.minute > _PROACTIVE_CATCHUP_MIN:
             continue
         window = "briefing" if now_local.hour == settings.proactive_briefing_hour else "regular"
         async with sessionmaker() as session:
@@ -622,12 +659,6 @@ async def run_birthday_greeting(
     if dm is None or not settings.owner_telegram_id:
         return
     dia, mes = dm
-    now_brt = datetime.now(BRT)
-    if now_brt.day != dia or now_brt.month != mes:
-        return
-    # janela da manhã (hora do briefing); o dedup anual é a trava real.
-    if now_brt.hour != settings.proactive_briefing_hour or now_brt.minute > 1:
-        return
 
     from bot.services.proactive import _send, already_notified, mark_notified
 
@@ -635,7 +666,21 @@ async def run_birthday_greeting(
         owner = await session.get(User, settings.owner_telegram_id)
         if owner is None or not owner.is_authorized:
             return
-        ano = str(now_brt.year)
+        # Fuso EFETIVO do dono: em viagem o parabéns sai às 7h de ONDE ELE
+        # ESTÁ (com gate BRT fixo chegava às 19-20h em Tóquio). E a janela vai
+        # da hora do briefing até o MEIO-DIA local: o dedup é ANUAL, então
+        # perder a mensagem do ano porque o bot reiniciou às 7h01 não faz
+        # sentido — antes a janela era de 2 minutos, uma vez por ano.
+        try:
+            tz_dono = ZoneInfo(effective_tz(owner))
+        except Exception:
+            tz_dono = BRT
+        agora = datetime.now(tz_dono)
+        if agora.day != dia or agora.month != mes:
+            return
+        if not (settings.proactive_briefing_hour <= agora.hour < 12):
+            return
+        ano = str(agora.year)
         if await already_notified(session, owner.id, "aniversario", ano):
             return
         nome = (owner.first_name or "Vinícius").split()[0]

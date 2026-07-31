@@ -204,6 +204,13 @@ async def _h_criar_watch_hotel(args: dict, ctx: ToolContext) -> str:
         "location": location, "check_in": ci, "check_out": co,
         "adults": int(args.get("adults") or 2),
     }
+    # Hotel NOMEADO ("monitora o Gran Marquise em Fortaleza"): guarda o nome
+    # pra checagem diária usar prefer_name, como a busca interativa já faz.
+    # Sem isso, o tick pegava o "similar" mais barato da resposta e alertava o
+    # HOTEL ERRADO sob o nome do que o usuário pediu.
+    hotel_nome = (args.get("hotel") or "").strip()
+    if hotel_nome:
+        params["hotel"] = hotel_nome
     watch = TravelWatch(
         user_id=ctx.user.id, kind="hotel", params=params,
         max_price=float(max_price) if max_price is not None else None,

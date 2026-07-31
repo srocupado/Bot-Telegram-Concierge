@@ -323,35 +323,46 @@ def next_due_from(rrule: str, after: datetime, tz_name: str = "America/Sao_Paulo
     if expr is not None:
         base = max(as_utc(after) or after, datetime.now(timezone.utc))
         return cron_next_fire(expr, tz_name, base=base)
+
+    # A aritmética roda no fuso do usuário e o resultado volta pra UTC — assim
+    # o HH:MM LOCAL é preservado. Somando no instante UTC, um recorrente criado
+    # em viagem (8h de Tóquio) continuaria no mesmo instante e viraria 20h BRT
+    # pra sempre depois da volta. `tz_name` é o fuso EFETIVO de quem dispara.
+    tz = ZoneInfo(tz_name)
+    base_local = (as_utc(after) or after).astimezone(tz)
+
+    def _utc(d: datetime) -> datetime:
+        return d.astimezone(timezone.utc)
+
     if rrule == "daily":
-        return after + timedelta(days=1)
+        return _utc(base_local + timedelta(days=1))
     if rrule == "weekday":
-        nxt = after + timedelta(days=1)
+        nxt = base_local + timedelta(days=1)
         while nxt.weekday() > 4:  # 5=sat, 6=sun
             nxt += timedelta(days=1)
-        return nxt
+        return _utc(nxt)
     if rrule == "weekend":
-        nxt = after + timedelta(days=1)
+        nxt = base_local + timedelta(days=1)
         while nxt.weekday() < 5:
             nxt += timedelta(days=1)
-        return nxt
+        return _utc(nxt)
     if rrule == "monthly":
         # Próximo mês, mesmo dia. Edge case: dia 31 em mês com 30 dias → cai pro último dia.
         from calendar import monthrange
-        year, month = after.year, after.month + 1
+        year, month = base_local.year, base_local.month + 1
         if month > 12:
             month, year = 1, year + 1
-        day = min(after.day, monthrange(year, month)[1])
-        return after.replace(year=year, month=month, day=day)
+        day = min(base_local.day, monthrange(year, month)[1])
+        return _utc(base_local.replace(year=year, month=month, day=day))
     if rrule.startswith("weekly:"):
         wanted = {_WEEKDAY_MAP[d.strip().lower()] for d in rrule.split(":", 1)[1].split(",") if d.strip()}
-        nxt = after + timedelta(days=1)
+        nxt = base_local + timedelta(days=1)
         for _ in range(8):
             if nxt.weekday() in wanted:
-                return nxt
+                return _utc(nxt)
             nxt += timedelta(days=1)
     # Fallback: 1 dia. Evita loop infinito caso rrule estranho.
-    return after + timedelta(days=1)
+    return _utc(base_local + timedelta(days=1))
 
 
 async def delete_reminder(session: AsyncSession, user_id: int, reminder_id: int) -> Reminder | None:

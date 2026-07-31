@@ -83,7 +83,12 @@ _CITIES_CACHE: list[dict] = []
 _CITIES_AT: datetime | None = None
 _CITIES_TTL = timedelta(hours=12)
 _CITIES_LOCK = asyncio.Lock()
-_THEATERS_BY_CITY: dict[int, list[dict]] = {}
+# Cache de teatros por cidade COM TTL: sem expiração, cinema novo da rede
+# nunca aparecia (o processo roda semanas entre deploys no Orange Pi) e
+# cidade sem Cinemark ficava com lista vazia cacheada PRA SEMPRE — a cidade
+# que ganhasse seu 1º cinema jamais seria encontrada.
+_THEATERS_BY_CITY: dict[int, tuple[list[dict], datetime]] = {}
+_THEATERS_TTL = timedelta(hours=12)
 _DIR_CONCURRENCY = 6
 _CITY_CONNECTORS = {"de", "do", "da", "dos", "das", "e", "d"}
 _CIDADE_PADRAO = "Brasília"  # bot é de Brasília; sem cidade citada, assume aqui
@@ -108,11 +113,17 @@ async def _ensure_cities(client: httpx.AsyncClient) -> list[dict]:
         states = states if isinstance(states, list) else []
         sem = asyncio.Semaphore(_DIR_CONCURRENCY)
 
+        falhas: list[str] = []
+
         async def _cities(state: dict) -> list[dict]:
             async with sem:
                 try:
                     cs = await _get(client, "/v1/cities", {"stateId": state["id"]})
                 except CinemaError:
+                    # Estado que falha some do catálogo — e, com o cache de 12h,
+                    # "cinema não existe na rede" por meio dia. Registra pra NÃO
+                    # cachear um catálogo capenga como se fosse completo.
+                    falhas.append(str(state.get("code") or state.get("id")))
                     return []
             out = []
             for c in (cs if isinstance(cs, list) else []):
@@ -128,8 +139,16 @@ async def _ensure_cities(client: httpx.AsyncClient) -> list[dict]:
 
         nested = await asyncio.gather(*(_cities(s) for s in states))
         cities = [c for cl in nested for c in cl]
-        if cities:
+        if cities and not falhas:
             _CITIES_CACHE, _CITIES_AT = cities, datetime.now(timezone.utc)
+        elif cities:
+            # Catálogo parcial: usa nesta consulta, mas NÃO grava no cache —
+            # senão o estado que falhou fica "sem cinema" por 12h.
+            logger.warning(
+                "cinema: catálogo parcial (estados com falha: %s) — não cacheado",
+                ", ".join(falhas),
+            )
+            return cities
         return _CITIES_CACHE
 
 
@@ -151,8 +170,9 @@ async def _theaters_for_cities(client: httpx.AsyncClient, cities: list[dict]) ->
 
     async def _fetch(city: dict) -> list[dict]:
         cid = city["id"]
-        if cid in _THEATERS_BY_CITY:
-            return _THEATERS_BY_CITY[cid]
+        cached = _THEATERS_BY_CITY.get(cid)
+        if cached and datetime.now(timezone.utc) - cached[1] < _THEATERS_TTL:
+            return cached[0]
         async with sem:
             try:
                 ts = await _get(client, "/v1/theaters", {"cityId": cid})
@@ -165,7 +185,7 @@ async def _theaters_for_cities(client: httpx.AsyncClient, cities: list[dict]) ->
                 continue
             out.append({"id": tid, "name": t.get("name") or "",
                         "city": t.get("city") or "", "state": t.get("state") or ""})
-        _THEATERS_BY_CITY[cid] = out
+        _THEATERS_BY_CITY[cid] = (out, datetime.now(timezone.utc))
         return out
 
     nested = await asyncio.gather(*(_fetch(c) for c in cities))
