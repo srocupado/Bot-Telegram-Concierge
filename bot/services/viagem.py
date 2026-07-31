@@ -81,10 +81,32 @@ def viagem_ativa(user: User, hoje: date | None = None) -> bool:
     return d_ini <= hoje <= d_fim
 
 
+def tz_valido(tz: str | None) -> bool:
+    """True se a string é um fuso IANA que o `zoneinfo` resolve."""
+    if not tz:
+        return False
+    try:
+        ZoneInfo(tz)
+    except Exception:
+        return False
+    return True
+
+
 def effective_tz(user: User) -> str:
-    """Fuso efetivo: o da viagem durante o período; senão o do usuário."""
+    """Fuso efetivo: o da viagem durante o período; senão o do usuário.
+
+    O `viagem_tz` é VALIDADO aqui além de na gravação: ele vem de fora (Time
+    Zone API do Google) e quem consome o retorno faz `ZoneInfo(...)` fora de
+    try — uma string estranha derrubava o handler inteiro (ex.: o fast-path de
+    lembretes) e o usuário ficava sem resposta nenhuma. Fuso ruim degrada pro
+    de casa, que é o certo a fazer."""
     if viagem_ativa(user) and getattr(user, "viagem_tz", None):
-        return user.viagem_tz
+        if tz_valido(user.viagem_tz):
+            return user.viagem_tz
+        logger.warning(
+            "viagem_tz inválido (%r) pro user %s — usando o fuso de casa",
+            user.viagem_tz, getattr(user, "id", "?"),
+        )
     return user.timezone
 
 

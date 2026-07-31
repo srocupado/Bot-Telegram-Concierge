@@ -42,6 +42,25 @@ def _to_openai_content(content: Any) -> Any:
     return out
 
 
+# Modelos de RACIOCÍNIO da OpenAI (o1/o3/o4, gpt-5…) REJEITAM `max_tokens` —
+# exigem `max_completion_tokens`. O /provider oferece esses ids (o catálogo
+# lista o1/o3/o4 em catalog.py::_OPENAI_PREFIX), então escolher um deles
+# quebrava TODO chat com "❌ erro no LLM", sem pista do motivo.
+_MAX_COMPLETION_PREFIXOS = ("o1", "o3", "o4", "gpt-5", "gpt-6")
+# Nesses modelos o teto cobre os tokens de RACIOCÍNIO também; com 1024 o
+# pensamento consome tudo e a resposta volta VAZIA. Mesmo raciocínio do
+# _MIN_OUTPUT_TOKENS do Gemini.
+_MIN_REASONING_TOKENS = 4096
+
+
+def _campo_teto(model: str) -> str:
+    return (
+        "max_completion_tokens"
+        if (model or "").lower().startswith(_MAX_COMPLETION_PREFIXOS)
+        else "max_tokens"
+    )
+
+
 class OpenAIProvider(LLMProvider):
     name = "openai"
 
@@ -50,6 +69,30 @@ class OpenAIProvider(LLMProvider):
             raise ValueError("OPENAI_API_KEY ausente")
         self.client = OpenAI(api_key=api_key)
         self.model = model
+
+    def _create(self, *, max_tokens: int, **kwargs: Any):
+        """chat.completions.create escolhendo o parâmetro de teto certo pro
+        modelo — e, se a API reclamar DESSE parâmetro (modelo novo fora da
+        lista de prefixos), trocando e refazendo UMA vez. Prefixo é palpite;
+        a mensagem da API é fato."""
+        campo = _campo_teto(self.model)
+        teto = (
+            max(max_tokens, _MIN_REASONING_TOKENS)
+            if campo == "max_completion_tokens" else max_tokens
+        )
+        try:
+            return self.client.chat.completions.create(**kwargs, **{campo: teto})
+        except Exception as e:
+            msg = str(e)
+            if campo not in msg:
+                raise
+            outro = "max_tokens" if campo == "max_completion_tokens" else "max_completion_tokens"
+            logger.warning(
+                "openai: modelo %s recusou '%s' (%s) — refazendo com '%s'",
+                self.model, campo, msg[:120], outro,
+            )
+            teto = max(teto, _MIN_REASONING_TOKENS) if outro == "max_completion_tokens" else teto
+            return self.client.chat.completions.create(**kwargs, **{outro: teto})
 
     async def chat(
         self,
@@ -66,7 +109,7 @@ class OpenAIProvider(LLMProvider):
         )
 
         def _call() -> str:
-            resp = self.client.chat.completions.create(
+            resp = self._create(
                 model=self.model,
                 messages=oa_messages,
                 max_tokens=max_tokens,
@@ -107,7 +150,7 @@ class OpenAIProvider(LLMProvider):
 
         for _ in range(max_iterations):
             def _call():
-                return self.client.chat.completions.create(
+                return self._create(
                     model=self.model,
                     messages=oa_messages,
                     max_tokens=max_tokens,
@@ -159,7 +202,7 @@ class OpenAIProvider(LLMProvider):
         def _final():
             # tools declaradas (o histórico tem tool_calls), mas proibidas de
             # rodar de novo — só a resposta em texto.
-            return self.client.chat.completions.create(
+            return self._create(
                 model=self.model, messages=oa_messages, max_tokens=max_tokens,
                 tools=tools_spec, tool_choice="none",
             )

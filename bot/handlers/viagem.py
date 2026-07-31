@@ -15,7 +15,12 @@ from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.models import User
-from bot.services.viagem import parse_periodo, resolver_destino, viagem_ativa
+from bot.services.viagem import (
+    parse_periodo,
+    resolver_destino,
+    tz_valido,
+    viagem_ativa,
+)
 
 logger = logging.getLogger(__name__)
 router = Router(name="viagem")
@@ -113,6 +118,13 @@ async def cmd_viagem(
 
     await message.answer(f"🔎 Configurando a viagem pra {destino}…", parse_mode=None)
     coords, tz, endereco = await resolver_destino(destino)
+    # O fuso vem da Time Zone API do Google e era gravado sem conferir. Todo
+    # consumidor faz ZoneInfo(effective_tz(user)) FORA de try: uma string
+    # inesperada derrubava o handler e o usuário ficava sem resposta. Guarda só
+    # o que o zoneinfo resolve; o resto vira "não consegui o fuso".
+    if tz and not tz_valido(tz):
+        logger.warning("viagem: fuso %r não reconhecido pelo zoneinfo — ignorado", tz)
+        tz = None
 
     user.viagem_destino = destino[:64]
     user.viagem_inicio = ini.isoformat()

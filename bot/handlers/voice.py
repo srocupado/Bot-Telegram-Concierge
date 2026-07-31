@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import html
+import inspect
 import io
 import logging
 import re
+from typing import Any, Callable
 
 from aiogram import F, Router
 from aiogram.filters import CommandObject
@@ -34,23 +36,44 @@ from bot.handlers.agent import (
     cmd_agente_parar,
     cmd_agente_status,
 )
+from bot.handlers.financeiro import cmd_setup as cmd_financeiro_setup
 from bot.handlers.ping import cmd_ping
-from bot.handlers.provider import cmd_provider
-from bot.handlers.dou_mp import cmd_dou_provider
+from bot.handlers.proactive import (
+    cmd_agora as cmd_proativo_agora,
+    cmd_off as cmd_proativo_off,
+    cmd_on as cmd_proativo_on,
+    cmd_status as cmd_proativo_status,
+)
+from bot.handlers.provider import cmd_provider, cmd_provider_visao, cmd_voice_provider
+from bot.handlers.dou_mp import (
+    cmd_agora as cmd_mp_dou_agora,
+    cmd_dou_provider,
+    cmd_off as cmd_mp_dou_off,
+    cmd_on as cmd_mp_dou_on,
+)
 from bot.handlers.translator import cmd_tradutor, cmd_tradutor_provider
-from bot.handlers.reminders import cmd_lembrar, cmd_lembretes
-from bot.handlers.reset import cmd_reset
+from bot.handlers.reminders import (
+    cmd_agendar_comando,
+    cmd_apagar_lembrete,
+    cmd_lembrar,
+    cmd_lembretes,
+)
+from bot.handlers.reset import cmd_reset, cmd_reset_memoria
 from bot.handlers.route import cmd_rota
 from bot.handlers.search import cmd_buscar
 from bot.handlers.start import cmd_help, cmd_start
 from bot.handlers.tasks import cmd_feito, cmd_nova, cmd_tarefas
 from bot.handlers.traffic import (
     cmd_transito_agora,
+    cmd_transito_alerta_off,
+    cmd_transito_alerta_on,
     cmd_transito_at,
     cmd_transito_off,
     cmd_transito_on,
     cmd_transito_reset,
 )
+from bot.handlers.upload import cmd_arquivos
+from bot.handlers.viagem import cmd_viagem
 from bot.services.chat_memory import memory
 from bot.services.llm.factory import get_provider_for_user
 from bot.services.voice import VoiceTranscribeError, transcribe
@@ -86,160 +109,88 @@ def _cmd(name: str, args: str | None) -> CommandObject:
     return CommandObject(prefix="/", command=name, args=args or None)
 
 
-# Wrappers que adaptam as assinaturas heterogêneas dos handlers existentes
-# a um contrato único (message, args, user, session).
-async def _w_transito_agora(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_transito_agora(message, _cmd("transito_agora", args))
-
-
-async def _w_transito_on(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_transito_on(message, user, session)
-
-
-async def _w_transito_off(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_transito_off(message, user, session)
-
-
-async def _w_transito_at(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_transito_at(message, _cmd("transito_at", args), user, session)
-
-
-async def _w_transito_reset(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_transito_reset(message, user, session)
-
-
-async def _w_congresso_agora(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_congress_agora(message)
-
-
-async def _w_congresso_on(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_congress_on(message, user, session)
-
-
-async def _w_congresso_off(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_congress_off(message, user, session)
-
-
-async def _w_congresso_at(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_congress_at(message, _cmd("congresso_at", args), user, session)
-
-
-async def _w_congresso_reset(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_congress_reset(message, user, session)
-
-
-async def _w_nova(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_nova(message, _cmd("nova", args), user, session)
-
-
-async def _w_tarefas(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_tarefas(message, user, session)
-
-
-async def _w_feito(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_feito(message, _cmd("feito", args), user, session)
-
-
-async def _w_lembrar(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_lembrar(message, _cmd("lembrar", args), user, session)
-
-
-async def _w_lembretes(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_lembretes(message, user, session)
-
-
-async def _w_rota(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_rota(message, _cmd("rota", args), user, session)
-
-
-async def _w_buscar(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_buscar(message, _cmd("buscar", args), user)
-
-
-async def _w_ping(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_ping(message, user)
-
-
-async def _w_provider(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_provider(message, _cmd("provider", args), user, session)
-
-
-async def _w_dou_provider(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_dou_provider(message, _cmd("dou_provider", args), user, session)
-
-
-async def _w_tradutor(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_tradutor(message, _cmd("tradutor", args), user, session)
-
-
-async def _w_tradutor_provider(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_tradutor_provider(message, _cmd("tradutor_provider", args), user, session)
-
-
-async def _w_reset(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_reset(message)
-
-
-async def _w_start(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_start(message, user)
-
-
-async def _w_help(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_help(message)
-
-
-async def _w_agente(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_agente(message, _cmd("agente", args), user)
-
-
-async def _w_agente_parar(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_agente_parar(message, user)
-
-
-async def _w_agente_status(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_agente_status(message, user)
-
-
-async def _w_agente_fim(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_agente_fim(message, user)
-
-
-async def _w_agente_config(message: Message, args: str, user: User, session: AsyncSession) -> None:
-    await cmd_agente_config(message, _cmd("agente_config", args), user)
-
-
-_DISPATCH: dict[str, callable] = {
-    "transito_agora": _w_transito_agora,
-    "transito_on": _w_transito_on,
-    "transito_off": _w_transito_off,
-    "transito_at": _w_transito_at,
-    "transito_reset": _w_transito_reset,
-    "congresso_agora": _w_congresso_agora,
-    "congresso_on": _w_congresso_on,
-    "congresso_off": _w_congresso_off,
-    "congresso_at": _w_congresso_at,
-    "congresso_reset": _w_congresso_reset,
-    "nova": _w_nova,
-    "tarefas": _w_tarefas,
-    "feito": _w_feito,
-    "lembrar": _w_lembrar,
-    "lembretes": _w_lembretes,
-    "rota": _w_rota,
-    "buscar": _w_buscar,
-    "ping": _w_ping,
-    "provider": _w_provider,
-    "dou_provider": _w_dou_provider,
-    "tradutor": _w_tradutor,
-    "tradutor_provider": _w_tradutor_provider,
-    "reset": _w_reset,
-    "start": _w_start,
-    "help": _w_help,
-    "agente": _w_agente,
-    "agente_parar": _w_agente_parar,
-    "agente_status": _w_agente_status,
-    "agente_fim": _w_agente_fim,
-    "agente_config": _w_agente_config,
+# Comandos executáveis POR VOZ: nome falado → handler real.
+#
+# Antes cada entrada exigia um wrapper escrito à mão (as assinaturas dos
+# handlers são heterogêneas: uns querem `command`, outros `user`/`session`) — e
+# o custo disso apareceu: 17 comandos NUNCA foram adicionados (viagem,
+# mp_dou_*, proativo*, reset_memoria, arquivos, apagar_lembrete,
+# agendar_comando, provider_visao, voice, transito_alerta_*, financeiro_setup)
+# e respondiam "❌ comando não reconhecido" por voz, contrariando o help; e o
+# wrapper do /reset chamava o handler SEM user/session, então /reset por voz
+# sempre estourava. Agora os argumentos são montados por inspeção da
+# assinatura (`_invocar`) e adicionar comando é uma linha aqui.
+# tests/test_voice_dispatch.py falha se algum Command() dos handlers ficar de
+# fora — a lacuna não volta em silêncio.
+_DISPATCH: dict[str, Callable[..., Any]] = {
+    "transito_agora": cmd_transito_agora,
+    "transito_on": cmd_transito_on,
+    "transito_off": cmd_transito_off,
+    "transito_at": cmd_transito_at,
+    "transito_reset": cmd_transito_reset,
+    "transito_alerta_on": cmd_transito_alerta_on,
+    "transito_alerta_off": cmd_transito_alerta_off,
+    "congresso_agora": cmd_congress_agora,
+    "congresso_on": cmd_congress_on,
+    "congresso_off": cmd_congress_off,
+    "congresso_at": cmd_congress_at,
+    "congresso_reset": cmd_congress_reset,
+    "nova": cmd_nova,
+    "tarefas": cmd_tarefas,
+    "feito": cmd_feito,
+    "lembrar": cmd_lembrar,
+    "lembretes": cmd_lembretes,
+    "apagar_lembrete": cmd_apagar_lembrete,
+    "agendar_comando": cmd_agendar_comando,
+    "rota": cmd_rota,
+    "buscar": cmd_buscar,
+    "ping": cmd_ping,
+    "provider": cmd_provider,
+    "provider_visao": cmd_provider_visao,
+    "voice": cmd_voice_provider,
+    "dou_provider": cmd_dou_provider,
+    "mp_dou_agora": cmd_mp_dou_agora,
+    "mp_dou_on": cmd_mp_dou_on,
+    "mp_dou_off": cmd_mp_dou_off,
+    "proativo": cmd_proativo_status,
+    "proativo_on": cmd_proativo_on,
+    "proativo_off": cmd_proativo_off,
+    "proativo_agora": cmd_proativo_agora,
+    "tradutor": cmd_tradutor,
+    "tradutor_provider": cmd_tradutor_provider,
+    "viagem": cmd_viagem,
+    "reset": cmd_reset,
+    "reset_memoria": cmd_reset_memoria,
+    "arquivos": cmd_arquivos,
+    "financeiro_setup": cmd_financeiro_setup,
+    "start": cmd_start,
+    "help": cmd_help,
+    "agente": cmd_agente,
+    "agente_parar": cmd_agente_parar,
+    "agente_status": cmd_agente_status,
+    "agente_fim": cmd_agente_fim,
+    "agente_config": cmd_agente_config,
 }
+
+
+async def _invocar(
+    nome: str, handler: Callable[..., Any], message: Message,
+    args: str, user: User, session: AsyncSession,
+) -> None:
+    """Chama o handler passando só o que a assinatura dele pede.
+
+    Os nomes dos parâmetros são estáveis no projeto inteiro (`message`,
+    `command`, `user`, `session`), então a inspeção é confiável — e é ela que
+    tira a necessidade de um wrapper por comando."""
+    params = inspect.signature(handler).parameters
+    kwargs: dict[str, Any] = {}
+    if "command" in params:
+        kwargs["command"] = _cmd(nome, args)
+    if "user" in params:
+        kwargs["user"] = user
+    if "session" in params:
+        kwargs["session"] = session
+    await handler(message, **kwargs)
 
 
 @router.message(F.voice | F.audio)
@@ -452,7 +403,7 @@ async def _dispatch_command(
         return
 
     try:
-        await handler(message, args, user, session)
+        await _invocar(cmd, handler, message, args, user, session)
     except Exception:
         logger.exception("voice command dispatch failed: /%s", cmd)
         await message.answer(f"❌ Erro ao executar /{cmd}.")
