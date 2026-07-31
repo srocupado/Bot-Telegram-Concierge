@@ -347,7 +347,7 @@ Chaves são snake_case curto (ex: `esposa_nome`, `alergia`, `editor_preferido`).
 
 ### Memória de conversa (contexto persistente)
 
-Três camadas, sem nenhuma config nova no `.env` (defaults fixos no código):
+Três camadas, com defaults fixos no código (uma config opcional no `.env`):
 
 1. **Contexto que sobrevive a restart** — toda mensagem do chat livre é
    gravada em `chat_log` (write-through). No boot o bot re-hidrata o que
@@ -357,6 +357,9 @@ Três camadas, sem nenhuma config nova no `.env` (defaults fixos no código):
    `/provider`** compacta o que é duradouro num resumo ≤ ~1.500 chars por
    usuário, injetado no system prompt (nenhum modelo hardcoded). *"Aquele
    plano que montamos ontem"* passa a funcionar dias depois.
+   Como compactar é tarefa mecânica, dá pra apontar essa etapa (e só ela) pra
+   um modelo barato com `MEMORY_SUMMARY_MODEL=provider:modelo` no `.env`
+   (ex.: `gemini:gemini-3.1-flash-lite`); vazio = segue o `/provider`.
 3. **Busca no histórico** — tool `buscar_historico` com FTS5 do SQLite
    (fallback `LIKE`): *"o que eu te falei sobre o orçamento da reforma?"*
    responde com trechos datados de conversas antigas.
@@ -685,9 +688,9 @@ Passos manuais pra ligar (depois do rebuild):
    `AGENT_MAX_COST_USD`, `AGENT_SESSION_TTL_MINUTES`) têm default no `.env.example`
    e podem ser mudados **em runtime** via `/agente_config`, sem restart — os
    overrides ficam em `data/agent_config.json` e sobrevivem a reinício.
-6. **`AGENT_CRON_DAILY_BUDGET_USD`** (opcional, default 0 = sem teto): limite
-   diário somado das execuções **agendadas** (cron) do agente. Atingiu o teto,
-   as ocorrências do dia são puladas (aviso 1×/dia). Contador em memória —
+6. **`AGENT_CRON_DAILY_BUDGET_USD`** (opcional, **default 5**; `0` = sem teto):
+   limite diário somado das execuções **agendadas** (cron) do agente. Atingiu o
+   teto, as ocorrências do dia são puladas (aviso 1×/dia). Contador em memória —
    zera no restart.
 
 Limitações de desenho: a execução vive dentro da tarefa (processos longos,

@@ -49,19 +49,44 @@ def attach(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     memory.set_hooks(_schedule_persist, _schedule_compact)
 
 
-def _spawn(coro) -> None:
+# Referência FORTE às tasks em voo: o event loop guarda só weakref, e uma
+# task de persist/compact pode ser coletada antes de rodar (footgun conhecido
+# do asyncio) — a mensagem simplesmente não seria gravada.
+_vivas: set[asyncio.Task] = set()
+# Só os PERSISTS (gravações rápidas), por usuário: o /reset espera estes antes
+# de apagar — senão a linha entrava DEPOIS do delete e a conversa "resetada"
+# ressuscitava no próximo restart (hydrate). A compactação NÃO entra aqui:
+# é uma chamada de LLM e travaria o /reset por até um minuto.
+_pendentes: dict[int, set[asyncio.Task]] = {}
+
+
+def _spawn(coro, user_id: int | None = None, *, drenavel: bool = False) -> None:
     """create_task tolerante: fora de event loop (testes/sync), descarta."""
     try:
-        asyncio.get_running_loop().create_task(coro)
+        task = asyncio.get_running_loop().create_task(coro)
     except RuntimeError:
         coro.close()
+        return
+    _vivas.add(task)
+    task.add_done_callback(_vivas.discard)
+    if drenavel and user_id is not None:
+        grupo = _pendentes.setdefault(user_id, set())
+        grupo.add(task)
+        task.add_done_callback(grupo.discard)
+
+
+async def drenar_pendentes(user_id: int) -> None:
+    """Espera as gravações em voo desse usuário terminarem."""
+    tarefas = list(_pendentes.get(user_id) or ())
+    if tarefas:
+        await asyncio.gather(*tarefas, return_exceptions=True)
 
 
 def _schedule_persist(chat_id: int, role: str, content: str) -> None:
     # Em DM (único modo do bot) chat_id == user_id.
     if _sessionmaker is None or not isinstance(content, str) or not content.strip():
         return
-    _spawn(_persist(chat_id, role, content))
+    _spawn(_persist(chat_id, role, content), chat_id, drenavel=True)
 
 
 def _schedule_compact(chat_id: int, msgs: list[ChatMessage]) -> None:
@@ -69,7 +94,7 @@ def _schedule_compact(chat_id: int, msgs: list[ChatMessage]) -> None:
         return
     texts = [m for m in msgs if isinstance(m.get("content"), str) and m["content"].strip()]
     if texts:
-        _spawn(_compact(chat_id, texts))
+        _spawn(_compact(chat_id, texts), chat_id)
 
 
 # --- camada 1: write-through + hidratação ----------------------------------
@@ -158,13 +183,50 @@ def _transcript(msgs: list[ChatMessage]) -> str:
     return "\n".join(lines)
 
 
+def _provider_do_resumo(user):
+    """Provider da compactação: MEMORY_SUMMARY_MODEL ('provider:modelo') se
+    configurado, senão o do /provider do usuário.
+
+    Existe porque compactar é tarefa mecânica: com Opus escolhido no
+    /provider, cada compactação (a cada ~5 turnos e a cada TTL de 30 min)
+    saía no modelo caro. Continua sem modelo hardcoded — quem decide é o
+    .env; vazio mantém o comportamento antigo."""
+    from bot.config import settings as _s
+    from bot.services.llm.factory import get_provider, get_provider_for_user
+
+    escolha = (_s.memory_summary_model or "").strip()
+    if not escolha:
+        return get_provider_for_user(user)
+    prov, _, modelo = escolha.partition(":")
+    prov, modelo = prov.strip().lower(), modelo.strip()
+    try:
+        return get_provider(
+            prov,
+            gemini_model=modelo if prov == "gemini" else None,
+            anthropic_model=modelo if prov == "anthropic" else None,
+            openai_model=modelo if prov == "openai" else None,
+        )
+    except Exception:
+        logger.warning(
+            "memoria: MEMORY_SUMMARY_MODEL inválido (%r) — usando o do /provider",
+            escolha, exc_info=True,
+        )
+        return get_provider_for_user(user)
+
+
+# Falhas consecutivas da compactação, por usuário. Falhar sempre = resumo
+# CONGELADO (memória de longo prazo parada) sem ninguém perceber; a partir de
+# _FALHAS_ALERTA o log sobe pra ERROR, que é o que aparece no
+# `docker compose logs`.
+_falhas_compact: dict[int, int] = {}
+_FALHAS_ALERTA = 3
+
+
 async def _compact(user_id: int, msgs: list[ChatMessage]) -> None:
     """Funde mensagens que saíram do contexto no resumo rolante do usuário.
 
-    Usa o MESMO provider/modelo que o usuário escolheu no /provider — nada
-    de modelo hardcoded. Se a chamada falhar, o resumo anterior fica."""
-    from bot.services.llm.factory import get_provider_for_user
-
+    Modelo: MEMORY_SUMMARY_MODEL, ou o do /provider do usuário (ver
+    _provider_do_resumo). Se a chamada falhar, o resumo anterior fica."""
     assert _sessionmaker is not None
     try:
         async with _sessionmaker() as session:
@@ -173,7 +235,7 @@ async def _compact(user_id: int, msgs: list[ChatMessage]) -> None:
             user = await session.get(User, user_id)
         if user is None:
             return
-        provider = get_provider_for_user(user)
+        provider = _provider_do_resumo(user)
         today = datetime.now(timezone.utc).strftime("%d/%m/%Y")
         prompt = (
             f"RESUMO ATUAL:\n{old}\n\n"
@@ -196,9 +258,17 @@ async def _compact(user_id: int, msgs: list[ChatMessage]) -> None:
             else:
                 row.summary = new
             await session.commit()
+        _falhas_compact.pop(user_id, None)
         logger.info("memoria: resumo atualizado pra user %d (%d chars)", user_id, len(new))
     except Exception:
-        logger.warning("memoria: compactação falhou (resumo mantido)", exc_info=True)
+        n = _falhas_compact.get(user_id, 0) + 1
+        _falhas_compact[user_id] = n
+        nivel = logger.error if n >= _FALHAS_ALERTA else logger.warning
+        nivel(
+            "memoria: compactação falhou %dx seguidas pro user %d — o resumo de "
+            "longo prazo está CONGELADO (resumo antigo mantido)",
+            n, user_id, exc_info=True,
+        )
 
 
 async def get_summary(session: AsyncSession, user_id: int) -> str | None:
@@ -283,6 +353,9 @@ async def purge_old_messages(session: AsyncSession) -> int:
 async def reset_recent(session: AsyncSession, user_id: int) -> int:
     """/reset: apaga do SQL o que ainda re-hidrataria (dentro do TTL), pra
     conversa resetada não ressuscitar num restart."""
+    # Drena o que está em voo ANTES de apagar: um _persist agendado logo antes
+    # do /reset commitava depois do delete e a mensagem sobrevivia ao reset.
+    await drenar_pendentes(user_id)
     cutoff = datetime.now(timezone.utc) - memory.ttl
     result = await session.execute(
         delete(ChatLog).where(ChatLog.user_id == user_id, ChatLog.created_at >= cutoff)
@@ -301,6 +374,7 @@ async def clear_summary(session: AsyncSession, user_id: int) -> bool:
 
 
 async def clear_all_history(session: AsyncSession, user_id: int) -> int:
+    await drenar_pendentes(user_id)  # mesma corrida do reset_recent
     result = await session.execute(delete(ChatLog).where(ChatLog.user_id == user_id))
     row = await session.get(ChatSummary, user_id)
     if row is not None:

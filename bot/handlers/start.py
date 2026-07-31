@@ -212,21 +212,14 @@ async def cmd_start(message: Message, user: User) -> None:
 
 
 def _chunk_text(text: str, limit: int = 4000) -> list[str]:
-    """Quebra o texto em blocos < limit do Telegram (4096), preferindo
-    cortar em quebras de parágrafo pra não partir tags HTML no meio."""
-    chunks: list[str] = []
-    current = ""
-    for para in text.split("\n\n"):
-        candidate = f"{current}\n\n{para}" if current else para
-        if len(candidate) <= limit:
-            current = candidate
-        else:
-            if current:
-                chunks.append(current)
-            current = para
-    if current:
-        chunks.append(current)
-    return chunks
+    """Quebra o help em blocos abaixo do teto do Telegram.
+
+    Delega pro chunker compartilhado (bot/utils/text.py), que fecha e reabre
+    as tags entre blocos — a cópia local daqui devolvia um parágrafo maior que
+    o limite INTEIRO, e nesse caso o envio falhava."""
+    from bot.utils import chunk_text
+
+    return chunk_text(text, limit, mode="html")
 
 
 # ─────────────── Ajuda natural (tool `ajuda`) ───────────────

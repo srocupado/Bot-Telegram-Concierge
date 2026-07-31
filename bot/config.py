@@ -112,6 +112,13 @@ class Settings(BaseSettings):
     scheduler_tick_seconds: int = Field(60, alias="SCHEDULER_TICK_SECONDS")
     timezone: str = Field("America/Sao_Paulo", alias="TIMEZONE")
 
+    # Modelo do RESUMIDOR da memória (compactação do que sai do contexto).
+    # Vazio = segue o /provider do usuário, que era o comportamento único: com
+    # Opus selecionado, cada compactação (a cada ~5 turnos e a cada TTL) rodava
+    # no modelo caro pra uma tarefa mecânica. Formato "provider:modelo"
+    # (ex.: "gemini:gemini-3.1-flash-lite", "openai:gpt-4o-mini").
+    memory_summary_model: str = Field("", alias="MEMORY_SUMMARY_MODEL")
+
     # Voz (STT via Gemini multimodal; reutiliza GEMINI_API_KEY)
     voice_enabled: bool = Field(True, alias="VOICE_ENABLED")
     voice_max_seconds: int = Field(120, alias="VOICE_MAX_SECONDS")
@@ -150,9 +157,13 @@ class Settings(BaseSettings):
     # Entra no env do agente como GH_TOKEN — habilita push/PRs via git/gh.
     agent_github_token: SecretStr | None = Field(None, alias="AGENT_GITHUB_TOKEN")
     # Teto diário (US$) somado das execuções AGENDADAS do agente (cron).
-    # 0 = sem teto. Cada execução continua limitada por AGENT_MAX_COST_USD.
+    # 0 = sem teto (era o DEFAULT, e um cron "a cada 2h" podia gastar
+    # 12×AGENT_MAX_COST_USD por dia sem ninguém notar — o único default de
+    # custo aberto do projeto). Agora vem com teto; pra soltar de novo é
+    # explícito: AGENT_CRON_DAILY_BUDGET_USD=0 no .env.
+    # Cada execução continua limitada por AGENT_MAX_COST_USD.
     # Contador em memória — zera no restart do bot (aceitável pro uso pessoal).
-    agent_cron_daily_budget_usd: float = Field(0.0, alias="AGENT_CRON_DAILY_BUDGET_USD")
+    agent_cron_daily_budget_usd: float = Field(5.0, alias="AGENT_CRON_DAILY_BUDGET_USD")
 
     # Notificação ao reiniciar (mensagem '🟢 online' pra usuários autorizados).
     restart_notification_enabled: bool = Field(True, alias="RESTART_NOTIFICATION_ENABLED")

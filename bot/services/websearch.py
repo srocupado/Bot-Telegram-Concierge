@@ -184,11 +184,33 @@ _MAX_PAGE_CHARS = 50000
 _NAV_LINE = re.compile(r"^\s*\*\s*\[[^\]\[]{1,45}\]\(https?://[^)]+\)\s*$")
 
 
+# Piso de sobrevivência do filtro: quando a página INTEIRA é bullet-link curto
+# (home de portal de notícias, índice de blog, sumário), o filtro levava junto
+# TODAS as manchetes e o modelo concluía "não há notícias" — falha de leitura
+# virando falso negativo, que é o pecado que este projeto não aceita. Nesse
+# caso devolvemos o texto original: menu a mais é ruído; conteúdo a menos é
+# mentira.
+_NAV_MIN_RESTANTE = 400          # chars
+_NAV_MIN_FRACAO = 0.15           # do tamanho original
+
+
 def _strip_nav(texto: str) -> str:
     """Remove linhas de menu/navegação, preservando conteúdo (produtos, preços,
-    texto corrido). Reduz drasticamente o boilerplate antes do truncamento."""
-    linhas = [ln for ln in texto.split("\n") if not _NAV_LINE.match(ln)]
-    return "\n".join(linhas)
+    texto corrido). Reduz drasticamente o boilerplate antes do truncamento.
+
+    Se sobrar quase nada, desiste do filtro (ver _NAV_MIN_*)."""
+    limpo = "\n".join(ln for ln in texto.split("\n") if not _NAV_LINE.match(ln))
+    if texto and (
+        len(limpo.strip()) < _NAV_MIN_RESTANTE
+        and len(limpo.strip()) < len(texto.strip()) * _NAV_MIN_FRACAO
+    ):
+        logger.info(
+            "_strip_nav: filtro comeria a página (%d → %d chars) — mantendo o "
+            "original (provável índice/home de links)",
+            len(texto.strip()), len(limpo.strip()),
+        )
+        return texto
+    return limpo
 
 # O Jina falha de forma TRANSITÓRIA sob rajada (o buscar_web lê todos os
 # resultados em paralelo e o ler_pagina pode disparar junto): observado 422 numa

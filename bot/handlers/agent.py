@@ -157,23 +157,13 @@ class ProgressReporter:
 
 
 def _chunk_text(text: str, limit: int = 4000) -> list[str]:
-    chunks: list[str] = []
-    current = ""
-    for para in text.split("\n\n"):
-        candidate = f"{current}\n\n{para}" if current else para
-        if len(candidate) <= limit:
-            current = candidate
-        else:
-            if current:
-                chunks.append(current)
-            # Parágrafo sozinho maior que o limite: corta na marra.
-            while len(para) > limit:
-                chunks.append(para[:limit])
-                para = para[limit:]
-            current = para
-    if current:
-        chunks.append(current)
-    return chunks
+    """Blocos abaixo do teto do Telegram. Delega pro chunker compartilhado
+    (bot/utils/text.py) em vez da cópia local, que cortava parágrafo grande na
+    marra. Modo 'plain': a saída do agente vai com parse_mode=None, então NÃO
+    se costura tag nenhuma (o que apareceria como lixo no texto)."""
+    from bot.utils import chunk_text
+
+    return chunk_text(text, limit)
 
 
 def _summary_html(result: AgentResult, *, scheduled: bool = False) -> str:

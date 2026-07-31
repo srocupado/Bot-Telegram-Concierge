@@ -58,7 +58,6 @@ from bot.services.financeiro import (
 from bot.db.models import ShoppingItem
 from bot.services.shopping import (
     add_items,
-    clear_all,
     clear_checked,
     find_by_text,
     format_item,
@@ -643,17 +642,28 @@ async def _h_consultar_clima(args: dict, ctx: ToolContext) -> str:
     coords = (args.get("coords") or "").strip() or settings.home_coords
     if not coords:
         return "erro: coords não fornecido e HOME_COORDS não configurado"
-    try:
-        dias = int(args.get("dias") or 1)
-    except (TypeError, ValueError):
+    # 'dias' inválido NÃO vira 1 em silêncio: quem pediu "previsão da semana"
+    # recebia só HOJE, apresentado como se fosse a resposta certa (escopo
+    # errado sem aviso). Melhor devolver erro e deixar o modelo repetir a
+    # chamada com um número.
+    bruto = args.get("dias")
+    if bruto in (None, ""):
         dias = 1
+    else:
+        try:
+            dias = int(bruto)
+        except (TypeError, ValueError):
+            return (
+                f"erro: 'dias' deve ser um número inteiro (veio {bruto!r}). "
+                "Use dias=1 pra hoje ou dias=7 pra semana."
+            )
+        if not 1 <= dias <= 16:
+            return "erro: 'dias' fora da faixa suportada (1 a 16)."
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             if dias <= 1:
                 w = await fetch_today_weather(client, coords, ctx.tz)
                 return "ok: " + format_weather_line(w)
-            from datetime import datetime
-            from zoneinfo import ZoneInfo
             hoje_iso = datetime.now(ZoneInfo(ctx.tz)).date().isoformat()
             days = await fetch_forecast(client, coords, ctx.tz, days=dias)
     except WeatherError as e:
@@ -1304,7 +1314,6 @@ async def _h_consultar_mp_dou(args: dict, ctx: ToolContext) -> str:
 
 
 async def _h_consultar_congresso(_args: dict, ctx: ToolContext) -> str:
-    import httpx
     from bot.services.congress import (
         USER_AGENT as _CG_UA,
         CongressScrapeError,
@@ -1406,6 +1415,16 @@ async def _h_varrer_comissoes_partido(args: dict, ctx: ToolContext) -> str:
     return "ok: varredura enviada ao usuário (não escreva nada, a mensagem já foi enviada)"
 
 
+# Origem implícita → pede o GPS (mesma UX do /rota), em vez de chutar 'casa'.
+# Uma fonte só: havia duas cópias (LOC_NOW e _MHS_LOC_NOW) com um delta sutil
+# (a string vazia só na segunda) — editar uma e esquecer a outra era questão
+# de tempo. O melhor_horario_sair aceita origem vazia; o consultar_transito
+# trata vazio antes de chegar aqui.
+_LOC_NOW = {"minha_localizacao", "minha localizacao", "minha localização",
+            "atual", "agora", "daqui", "aqui", "onde estou", "current"}
+_MHS_LOC_NOW = _LOC_NOW | {""}
+
+
 async def _h_consultar_transito(args: dict, ctx: ToolContext) -> str:
     origem = (args.get("origem") or "").strip()
     destino = (args.get("destino") or "").strip()
@@ -1452,9 +1471,7 @@ async def _h_consultar_transito(args: dict, ctx: ToolContext) -> str:
 
     # Origem implícita / "minha localização" / "daqui" / "atual" → pede GPS
     # ao usuário (mesmo fluxo do /rota), em vez de assumir HOME silenciosamente.
-    LOC_NOW = {"minha_localizacao", "minha localizacao", "minha localização",
-               "atual", "agora", "daqui", "aqui", "onde estou", "current"}
-    if origem.lower() in LOC_NOW:
+    if origem.lower() in _LOC_NOW:
         import html as _html
         from bot.services.route_pending import pending_routes
 
@@ -1512,11 +1529,6 @@ async def _h_consultar_transito(args: dict, ctx: ToolContext) -> str:
         f"ok: ~{info.duration_minutes} min agora (típico ~{info.typical_minutes} min), "
         f"{info.distance_km} km via {info.summary or 'rota padrão'}"
     )
-
-
-# Origem implícita → pede o GPS (mesma UX do /rota), em vez de chutar 'casa'.
-_MHS_LOC_NOW = {"", "minha_localizacao", "minha localizacao", "minha localização",
-                "atual", "agora", "daqui", "aqui", "onde estou", "current"}
 
 
 async def _h_melhor_horario_sair(args: dict, ctx: ToolContext) -> str:
@@ -2384,8 +2396,11 @@ TOOLS: list[Tool] = [
             "próprio app.\n"
             "Fluxo correto:\n"
             "  1) Se você não tem o id em mente, chame consultar_lancamentos "
-            "primeiro. Cada linha vem como [id|origem]; só apague os com "
-            "origem 'bot'.\n"
+            "primeiro. Os ids vêm num bloco final "
+            "[IDS_INTERNOS — NÃO mostre ao usuário], uma linha por "
+            "lançamento no formato 'modulo · descrição (data) → #id'. SÓ "
+            "lançamentos criados pelo bot aparecem nesse bloco — o que não "
+            "estiver ali não pode ser apagado por aqui.\n"
             "  2) Confirme com o usuário qual lançamento apagar se houver "
             "ambiguidade.\n"
             "  3) Chame apagar_lancamento(modulo=..., id=...).\n"
@@ -2402,7 +2417,7 @@ TOOLS: list[Tool] = [
                 },
                 "id": {
                     "type": "string",
-                    "description": "Id do lançamento (7 chars; aparece entre [] em consultar_lancamentos)",
+                    "description": "Id do lançamento, como veio depois do '#' no bloco [IDS_INTERNOS] do consultar_lancamentos (sem o '#')",
                 },
             },
             "required": ["modulo", "id"],

@@ -118,7 +118,10 @@ def _classify(ativo: str, tipo: str | None) -> str | None:
         return "cripto"
     if a in _MOEDAS:
         return "moeda"
-    if re.fullmatch(r"[a-z]{4}\d{1,2}", a):   # PETR4, HGLG11, ITUB4
+    # 1ª letra + 3 alfanuméricos + 1-2 dígitos: PETR4, HGLG11, ITUB4 e também
+    # B3SA3 (o ticker da PRÓPRIA B3, que tem dígito no meio e o padrão antigo
+    # `[a-z]{4}\d{1,2}` recusava — "não reconheci 'B3SA3' como ação da B3").
+    if re.fullmatch(r"[a-z][a-z0-9]{3}\d{1,2}", a):
         return "acao"
     if re.fullmatch(r"[a-z]{3}", a):          # ISO de moeda (USD, EUR, GBP…)
         return "moeda"

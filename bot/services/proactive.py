@@ -579,7 +579,9 @@ async def collect_carteira(
             return []
         if not prices:
             return []
-        assets = await atualizar_cotacoes_carteira(session, user, prices)
+        assets = await atualizar_cotacoes_carteira(
+            session, user, prices, today_iso=now_brt.date().isoformat(),
+        )
         text = format_carteira_review(assets, prices)
         if not text:
             return []
@@ -616,19 +618,29 @@ def _compose(facts: list[ProactiveFact], *, briefing: bool) -> str:
 
 
 async def _send(bot, chat_id: int, text: str, reply_markup=None) -> bool:
-    try:
-        await bot.send_message(chat_id, text, parse_mode="HTML",
-                               disable_web_page_preview=True, reply_markup=reply_markup)
-        return True
-    except Exception:
-        logger.exception("proactive: HTML send failed; retrying plain for %d", chat_id)
+    """Envia o proativo em HTML (fallback texto puro), quebrando em blocos.
+
+    Briefing com MPs + digest passa de 4096 chars com facilidade, e sem o
+    chunk a mensagem falhava nas DUAS tentativas — o usuário simplesmente não
+    recebia o briefing do dia. Teclado só no último bloco."""
+    from bot.utils import chunk_text
+
+    blocos = chunk_text(text, mode="html") or [""]
+    ok = True
+    for i, bloco in enumerate(blocos):
+        kb = reply_markup if i == len(blocos) - 1 else None
         try:
-            await bot.send_message(chat_id, text, parse_mode=None,
-                                   disable_web_page_preview=True, reply_markup=reply_markup)
-            return True
+            await bot.send_message(chat_id, bloco, parse_mode="HTML",
+                                   disable_web_page_preview=True, reply_markup=kb)
         except Exception:
-            logger.exception("proactive: failed to send to %d", chat_id)
-            return False
+            logger.exception("proactive: HTML send failed; retrying plain for %d", chat_id)
+            try:
+                await bot.send_message(chat_id, bloco, parse_mode=None,
+                                       disable_web_page_preview=True, reply_markup=kb)
+            except Exception:
+                logger.exception("proactive: failed to send to %d", chat_id)
+                ok = False
+    return ok
 
 
 async def _redigir(user: User, deterministic: str) -> str:

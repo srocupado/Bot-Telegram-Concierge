@@ -21,6 +21,7 @@ import string
 import unicodedata
 from datetime import date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -287,9 +288,14 @@ def _run_blocking(fn, *args, **kwargs):
     return loop.run_in_executor(_FB_EXECUTOR, lambda: fn(*args, **kwargs))
 
 
-def _append_in_transaction(db, uid: str, array_name: str, entry: dict) -> None:
+def _append_in_transaction(db, uid: str, array_name: str, entry: dict) -> list[dict]:
     """Transaction: lê doc, anexa entry em state[array_name], escreve back.
-    Bloqueante; chamar via _run_blocking."""
+    Bloqueante; chamar via _run_blocking.
+
+    Devolve o array COMO FICOU COMMITADO. O saldo/fatura da confirmação tem
+    que sair daqui: calculado sobre o state lido ANTES da transaction, ele
+    ignorava um lançamento que a esposa tivesse feito no app nesse meio-tempo
+    — o número persistido ficava certo e o confirmado, errado."""
     from firebase_admin import firestore as _fs
 
     ref = db.collection("users").document(uid)
@@ -307,8 +313,9 @@ def _append_in_transaction(db, uid: str, array_name: str, entry: dict) -> None:
             {"state": state, "updatedAt": _fs.SERVER_TIMESTAMP},
             merge=True,
         )
+        return arr
 
-    _txn(db.transaction())
+    return _txn(db.transaction())
 
 
 class NotOwnedError(FinanceiroError):
@@ -709,16 +716,19 @@ async def get_carteira_tickers(session: AsyncSession, user) -> list[str] | None:
     return sorted(tickers)
 
 
-def _update_prices_in_transaction(db, uid: str, prices: dict[str, float]) -> list[dict]:
+def _update_prices_in_transaction(
+    db, uid: str, prices: dict[str, float], today_iso: str,
+) -> list[dict]:
     """Transaction: atualiza currentPrice+lastPriceUpdate dos assets cujo
     ticker está em `prices`. Retorna a lista de assets (cotáveis, qty>0)
-    pós-atualização pra montar a revisão. Bloqueante; via _run_blocking."""
-    from datetime import date as _date
+    pós-atualização pra montar a revisão. Bloqueante; via _run_blocking.
 
+    `today_iso` vem de FORA, no fuso do usuário: o container roda em UTC, e
+    `date.today()` aqui carimbava o dia SEGUINTE em toda revisão feita depois
+    das 21h de Brasília."""
     from firebase_admin import firestore as _fs
 
     ref = db.collection("users").document(uid)
-    today_iso = _date.today().isoformat()
 
     @_fs.transactional
     def _txn(transaction):
@@ -751,12 +761,20 @@ def _update_prices_in_transaction(db, uid: str, prices: dict[str, float]) -> lis
 
 async def atualizar_cotacoes_carteira(
     session: AsyncSession, user, prices: dict[str, float],
+    today_iso: str | None = None,
 ) -> list[dict]:
     """Persiste as cotações no Firestore (currentPrice) e devolve os assets
-    pós-atualização. Levanta NotConfiguredError se sem uid/SA."""
+    pós-atualização. Levanta NotConfiguredError se sem uid/SA.
+
+    `today_iso` = hoje no fuso do usuário (o do servidor é UTC)."""
     uid = _require_uid(user)
     db = await _get_db(session)
-    return await _run_blocking(_update_prices_in_transaction, db, uid, prices)
+    if not today_iso:
+        from bot.services.viagem import effective_tz
+        today_iso = datetime.now(ZoneInfo(effective_tz(user))).date().isoformat()
+    return await _run_blocking(
+        _update_prices_in_transaction, db, uid, prices, today_iso,
+    )
 
 
 def format_carteira_review(assets: list[dict], prices: dict[str, float]) -> str | None:
@@ -1013,11 +1031,11 @@ async def lancar_movimento_banco(
     if recorrente:
         entry["recurring"] = True
 
-    await _run_blocking(_append_in_transaction, db, uid, "bankTransactions", entry)
-    # Saldo pós-lançamento (soma dos amounts; o novo entry adiciona seu amount).
-    # Chave com _ prefix = só pra confirmação; NÃO é persistida (foi adicionada
-    # depois do append).
-    entry["_saldo_atual"] = _get_bank_balance(state) + amount
+    arr = await _run_blocking(_append_in_transaction, db, uid, "bankTransactions", entry)
+    # Saldo pós-lançamento, somado sobre o array COMMITADO (inclui o que a
+    # esposa lançou no app enquanto isto rodava). Chave com _ prefix = só pra
+    # confirmação; NÃO é persistida (foi adicionada depois do append).
+    entry["_saldo_atual"] = _get_bank_balance({"bankTransactions": arr or []})
     return entry
 
 
@@ -1056,13 +1074,13 @@ async def lancar_despesa_cartao(
         "currentInstallment": 1,
         "source": "bot",
     }
-    await _run_blocking(_append_in_transaction, db, uid, "cardEntries", entry)
-    # Total da fatura ABERTA (ciclo atual) pós-lançamento — pra confirmação.
-    # Só se houver dia de fechamento configurado. Chave _ não é persistida.
+    arr = await _run_blocking(_append_in_transaction, db, uid, "cardEntries", entry)
+    # Total da fatura ABERTA (ciclo atual) pós-lançamento — pra confirmação,
+    # sobre o array COMMITADO (ver _append_in_transaction). Só se houver dia de
+    # fechamento configurado. Chave _ não é persistida.
     closing = _get_card_closing_day(state)
     if closing is not None and today is not None:
-        cards = (state.get("cardEntries") or []) + [entry]
-        entry["_fatura_aberta"] = _open_bill_total(cards, closing, today)
+        entry["_fatura_aberta"] = _open_bill_total(arr or [entry], closing, today)
     return entry
 
 
@@ -1336,8 +1354,23 @@ def _entry_in_bill(
         amt = float(entry.get("amount") or 0)
         return {"kind": "recorrente", "value": amt}
 
-    installments = int(entry.get("installments") or 1)
-    base_inst = int(entry.get("currentInstallment") or 1)
+    # Sanidade de dado vindo do app: installments/currentInstallment fora de
+    # faixa (0, negativo, texto) faziam a compra NUNCA satisfazer
+    # `1 <= current <= installments` — ela sumia de TODAS as faturas em
+    # silêncio, que é o corte invisível que este projeto não aceita. Trata como
+    # à vista (o total aparece uma vez) e registra no log.
+    try:
+        installments = int(entry.get("installments") or 1)
+        base_inst = int(entry.get("currentInstallment") or 1)
+    except (TypeError, ValueError):
+        installments = base_inst = 0
+    if installments < 1 or base_inst < 1:
+        logger.warning(
+            "cardEntry %s com parcelamento inválido (installments=%r, "
+            "currentInstallment=%r) — contada como à vista",
+            entry.get("id"), entry.get("installments"), entry.get("currentInstallment"),
+        )
+        installments = base_inst = 1
     months_diff = (target_year - start_year) * 12 + (target_month - start_month)
     current = base_inst + months_diff
     if not (1 <= current <= installments):
@@ -1391,17 +1424,28 @@ def _open_invoice_range(state: dict, today: date) -> tuple[date, date, str]:
     # seguinte — igual ao billingMonthOf do app), a janela da fatura vai do DIA
     # do fechamento do mês inicial até o dia (fechamento-1) do mês seguinte.
     # Ex.: fechamento 20 → fatura de julho = [20/06 … 19/07].
-    last_day_start_month = monthrange(start_year, start_month)[1]
-    start_day = min(closing, last_day_start_month)
-    start = date(start_year, start_month, start_day)
+    def _abertura(ano: int, mes: int) -> date:
+        """Primeiro dia do ciclo que fecha em (ano, mês+1), pelo MESMO critério
+        do _bill_month_for_date (`dia >= fechamento` vai pro mês seguinte).
+
+        Fechamento que não existe no mês (dia 31 em junho): nenhuma compra
+        satisfaz `dia >= 31`, então o ciclo só começa no 1º do mês seguinte —
+        antes o clamp (min(closing, último dia)) anunciava "começa em 30/06"
+        enquanto a compra de 30/06 caía na fatura FECHADA."""
+        if closing <= monthrange(ano, mes)[1]:
+            return date(ano, mes, closing)
+        return date(ano + 1, 1, 1) if mes == 12 else date(ano, mes + 1, 1)
 
     if start_month == 12:
         end_year, end_month = start_year + 1, 1
     else:
         end_year, end_month = start_year, start_month + 1
-    last_day_end_month = monthrange(end_year, end_month)[1]
-    end_day = min(max(closing - 1, 1), last_day_end_month)
-    end = date(end_year, end_month, end_day)
+
+    # O fim é a véspera da abertura do ciclo SEGUINTE — assim o intervalo
+    # anunciado contém exatamente as compras que caem nesta fatura, inclusive
+    # com fechamento dia 1º (em que a fatura é o mês calendário anterior).
+    start = _abertura(start_year, start_month)
+    end = _abertura(end_year, end_month) - timedelta(days=1)
 
     return start, end, (
         f"fatura em aberto ({start.strftime('%d/%m')} → "
@@ -1541,7 +1585,11 @@ async def consultar_lancamentos(
         try:
             today_d = datetime.fromisoformat(today_iso).date()
         except ValueError:
-            today_d = datetime.utcnow().date()
+            # O caller sempre manda o hoje no fuso do usuário; se vier torto,
+            # BRT é bem mais próximo do certo que o UTC do container (que já
+            # está no dia seguinte das 21h em diante).
+            logger.warning("consultar_lancamentos: today_iso inválido (%r)", today_iso)
+            today_d = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
 
         all_card = state.get("cardEntries") or []
         closing = _get_card_closing_day(state)
@@ -1811,9 +1859,12 @@ async def build_card_closing_summary(
     # Vencimento (cardDueDay no próximo mês, clamped)
     from calendar import monthrange
     due_label = ""
-    due_day_raw = settings_d.get("cardDueDay")
-    if isinstance(due_day_raw, (int, float)) and 1 <= int(due_day_raw) <= 31:
-        due_day = int(due_day_raw)
+    # Via _get_card_due_day, que aceita os aliases (dueDay, card_due_day…).
+    # Lendo só "cardDueDay" aqui, o aviso de fechamento omitia o vencimento
+    # que o /consultar_lancamentos mostrava — dois lugares discordando sobre
+    # o mesmo dado.
+    due_day = _get_card_due_day(state)
+    if due_day is not None:
         if today.month == 12:
             dy, dm = today.year + 1, 1
         else:

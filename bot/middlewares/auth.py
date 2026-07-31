@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
@@ -12,8 +13,38 @@ from bot.db.models import User
 
 logger = logging.getLogger(__name__)
 
-# Comandos permitidos antes de autenticar.
-PUBLIC_COMMANDS = {"/start", "/help"}
+# Comandos permitidos antes de autenticar. /help SAIU: ele expõe o guia
+# completo de features (rotina, cidade, integrações) pra qualquer estranho que
+# encontre o bot; quem ainda não passou a senha recebe o convite do /start.
+PUBLIC_COMMANDS = {"/start"}
+
+# Anti-força-bruta na senha: a senha é única e vale pra sempre, e o middleware
+# aceitava tentativas ILIMITADAS em texto plano. Contagem por usuário do
+# Telegram, em memória (reinício zera — o objetivo é frear a rajada, não
+# manter cadastro de bloqueio).
+_MAX_TENTATIVAS = 5
+_JANELA_BLOQUEIO = timedelta(minutes=15)
+_tentativas: dict[int, tuple[int, datetime]] = {}
+
+
+def _bloqueado_ate(user_id: int) -> datetime | None:
+    """Instante em que o bloqueio expira, ou None se pode tentar."""
+    dados = _tentativas.get(user_id)
+    if not dados:
+        return None
+    n, ultima = dados
+    if n < _MAX_TENTATIVAS:
+        return None
+    fim = ultima + _JANELA_BLOQUEIO
+    if datetime.now(timezone.utc) >= fim:
+        _tentativas.pop(user_id, None)
+        return None
+    return fim
+
+
+def _registrar_tentativa(user_id: int) -> None:
+    n, _ = _tentativas.get(user_id, (0, None))
+    _tentativas[user_id] = (n + 1, datetime.now(timezone.utc))
 
 
 class AuthMiddleware(BaseMiddleware):
@@ -82,11 +113,24 @@ class AuthMiddleware(BaseMiddleware):
         if not user.is_authorized and cmd not in PUBLIC_COMMANDS:
             # Tratar texto digitado como tentativa de senha quando ainda não autorizado.
             if text and not text.startswith("/"):
+                ate = _bloqueado_ate(tg_user.id)
+                if ate is not None:
+                    faltam = max(1, int((ate - datetime.now(timezone.utc)).total_seconds() // 60))
+                    logger.warning(
+                        "senha: tentativas bloqueadas para user_id=%s", tg_user.id,
+                    )
+                    await event.answer(
+                        f"🔒 Muitas tentativas. Tente de novo em {faltam} min."
+                    )
+                    return None
                 if text == settings.access_password:
+                    _tentativas.pop(tg_user.id, None)
                     user.is_authorized = True
                     await session.commit()
                     await event.answer("✅ Autorizado. Digite /help para ver os comandos.")
                 else:
+                    _registrar_tentativa(tg_user.id)
+                    logger.info("senha incorreta de user_id=%s", tg_user.id)
                     await event.answer("Senha incorreta. Digite a senha de acesso ou /start.")
                 return None
             await event.answer("🔒 Acesso restrito. Digite /start para iniciar.")

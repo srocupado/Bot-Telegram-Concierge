@@ -55,19 +55,29 @@ _PROACTIVE_CATCHUP_MIN = 20
 
 
 async def _send_html_with_fallback(bot: Bot, chat_id: int, text: str) -> bool:
-    try:
-        await bot.send_message(chat_id, text, parse_mode="HTML", disable_web_page_preview=True)
-        return True
-    except Exception:
-        logger.exception("HTML send failed; retrying as plain text for chat %d", chat_id)
+    """Envia em HTML, com fallback pra texto puro — e QUEBRANDO em blocos.
+
+    Sem o chunk, mensagem acima de 4096 chars falhava nas DUAS tentativas e
+    sumia inteira: digest de congresso em semana cheia e resumo de fatura
+    grande passam disso com folga. Só o chat tinha essa proteção."""
+    from bot.utils import chunk_text
+
+    ok = True
+    for bloco in chunk_text(text, mode="html") or [""]:
         try:
             await bot.send_message(
-                chat_id, text, parse_mode=None, disable_web_page_preview=True
+                chat_id, bloco, parse_mode="HTML", disable_web_page_preview=True,
             )
-            return True
         except Exception:
-            logger.exception("failed to send message to chat %d", chat_id)
-            return False
+            logger.exception("HTML send failed; retrying as plain text for chat %d", chat_id)
+            try:
+                await bot.send_message(
+                    chat_id, bloco, parse_mode=None, disable_web_page_preview=True
+                )
+            except Exception:
+                logger.exception("failed to send message to chat %d", chat_id)
+                ok = False
+    return ok
 
 
 async def run_congress_digest(
@@ -489,10 +499,12 @@ async def run_card_closing_summary(
     from bot.services.proactive import already_notified, mark_notified
 
     now_brt = datetime.now(BRT)
-    # 09:00-09:01 BRT (janela de ~2min). Com tick de ~20s isso são ~6 passagens,
-    # então o dedup abaixo (ProactiveNotice, 1x por dia) é o que evita o envio
-    # repetido — a janela sozinha NÃO basta.
-    if now_brt.hour != 9 or now_brt.minute > 1:
+    # Das 9h ao MEIO-DIA BRT. A janela de 2 minutos que havia aqui só funcionava
+    # se o bot estivesse de pé exatamente às 09:00-09:01: um deploy (o dono faz
+    # `docker compose up -d --build` no Orange Pi) ou uma queda nesse intervalo
+    # perdia o resumo de fechamento DO MÊS. O dedup por dia (ProactiveNotice) é
+    # o que garante 1 envio só — a janela larga é segura por causa dele.
+    if not (9 <= now_brt.hour < 12):
         return
 
     today_key = now_brt.date().isoformat()

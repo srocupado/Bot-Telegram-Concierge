@@ -63,7 +63,7 @@ async def send_html_chunked(
     bloco, reenvia aquele bloco em texto puro. Teclado (se houver) só no último
     bloco. Sem isto, um verbatim grande (ex.: pauta de câmara) estourava e a
     mensagem inteira sumia."""
-    chunks = chunk_text(html_text) or [""]
+    chunks = chunk_text(html_text, mode="html") or [""]
     for i, chunk in enumerate(chunks):
         kb = reply_markup if i == len(chunks) - 1 else None
         try:
@@ -87,7 +87,7 @@ async def answer_llm(
     sem fechar) → Telegram rejeita a mensagem inteira (BadRequest). Nesse caso
     reenvia em texto puro. Respostas longas (>4096) são quebradas em blocos."""
     text = _to_telegram_markdown(text or "(sem resposta)")
-    chunks = chunk_text(text) or [""]
+    chunks = chunk_text(text, mode="markdown") or [""]
     for i, chunk in enumerate(chunks):
         kb = reply_markup if i == len(chunks) - 1 else None
         try:
