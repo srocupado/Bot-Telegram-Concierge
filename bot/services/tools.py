@@ -128,6 +128,21 @@ async def _h_listar_arquivos(_args: dict, ctx: ToolContext) -> str:
     return "ok: " + format_listing()
 
 
+def _falha_verbatim(ctx, fonte: str, detalhe: str) -> str:
+    """Falha de fonte externa vai VERBATIM ao usuário.
+
+    Sem isto o texto "erro: ..." volta pro LLM e modelo leve o converte em
+    "não há reuniões essa semana" — falso negativo. Mesma proteção que o
+    consultar_mp_dou já tinha; aqui aplicada por CLASSE, não caso a caso.
+    """
+    ctx.direct_html = (
+        f"⚠️ Não consegui consultar {fonte} agora ({detalhe}). "
+        "NÃO dá pra afirmar se há ou não resultado — tente de novo em instantes."
+    )
+    ctx.short_circuit = True
+    return "ok: aviso de falha enviado verbatim ao usuário (não escreva nada)"
+
+
 async def _h_ajuda(args: dict, ctx: ToolContext) -> str:
     """Explica COMO USAR o bot: devolve o trecho EXATO do guia (verbatim), sem
     o LLM improvisar a sintaxe dos comandos."""
@@ -314,7 +329,9 @@ async def _h_criar_lembrete_pagamento(args: dict, ctx: ToolContext) -> str:
     if not beneficiario or valor is None or not vencimento_iso:
         return "erro: 'beneficiario', 'valor' e 'vencimento_iso' são obrigatórios"
     try:
-        valor_f = float(valor)
+        valor_f = _parse_valor(valor)
+        if valor_f is None:
+            return f"erro: não entendi o valor {valor!r} — peça ao usuário pra repetir o número"
     except (TypeError, ValueError):
         return "erro: 'valor' deve ser número (em reais)"
 
@@ -658,6 +675,47 @@ def _resolve_data_iso(args: dict, tz_name: str) -> str:
     return datetime.now(ZoneInfo(tz_name)).date().isoformat()
 
 
+def _parse_valor(valor) -> float | None:
+    """Converte o `valor` vindo do LLM em float, tratando formato PT-BR.
+
+    CRÍTICO: `float("1.250")` no Python é 1.25 — um celular de R$ 1.250
+    entrava no Firestore como R$ 1,25, em silêncio, com 1000x de erro. O modelo
+    é instruído a mandar número, mas manda string com frequência.
+
+    Regras: número → direto. String → tira 'R$'/espaço e decide pelo separador:
+      '1.250,50' (ambos)  → ponto é milhar, vírgula é decimal → 1250.50
+      '1.250'   (só ponto, 3 dígitos após) → milhar → 1250.0
+      '1250,50' (só vírgula) → decimal → 1250.50
+      '1250.50' (só ponto, ≠3 dígitos após) → decimal → 1250.50
+    None quando não dá pra interpretar com segurança (o chamador recusa).
+    """
+    if isinstance(valor, bool):
+        return None
+    if isinstance(valor, (int, float)):
+        return float(valor)
+    if not isinstance(valor, str):
+        return None
+    s = valor.strip().lower().replace("r$", "").replace(" ", "").replace(" ", "")
+    if not s:
+        return None
+    tem_ponto, tem_virgula = "." in s, "," in s
+    if tem_ponto and tem_virgula:
+        # o ÚLTIMO separador é o decimal
+        s = s.replace(".", "") if s.rfind(",") > s.rfind(".") else s.replace(",", "")
+        s = s.replace(",", ".")
+    elif tem_virgula:
+        s = s.replace(",", ".")
+    elif tem_ponto:
+        inteiro, _, frac = s.rpartition(".")
+        # '1.250' → milhar (3 casas e parte inteira não-vazia); '1250.50' → decimal
+        if len(frac) == 3 and inteiro and inteiro.isdigit():
+            s = inteiro + frac
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
 _CARD_CUES = ("credito", "crédito", "cartao", "cartão", "parcel")
 
 
@@ -686,7 +744,9 @@ async def _h_lancar_movimento_banco(args: dict, ctx: ToolContext) -> str:
              "categoria": args.get("categoria"), "parcelas": 1}, ctx,
         )
     try:
-        valor_f = float(valor)
+        valor_f = _parse_valor(valor)
+        if valor_f is None:
+            return f"erro: não entendi o valor {valor!r} — peça ao usuário pra repetir o número"
     except (TypeError, ValueError):
         return "erro: 'valor' deve ser número (em reais)"
     if valor_f <= 0:
@@ -732,7 +792,9 @@ async def _h_lancar_despesa_cartao(args: dict, ctx: ToolContext) -> str:
     if not desc or valor is None:
         return "erro: 'desc' e 'valor' são obrigatórios"
     try:
-        valor_f = float(valor)
+        valor_f = _parse_valor(valor)
+        if valor_f is None:
+            return f"erro: não entendi o valor {valor!r} — peça ao usuário pra repetir o número"
     except (TypeError, ValueError):
         return "erro: 'valor' deve ser número (em reais)"
     if valor_f <= 0:
@@ -780,7 +842,9 @@ async def _h_registrar_aporte_tesouro(args: dict, ctx: ToolContext) -> str:
     if not titulo or valor is None:
         return "erro: 'titulo' e 'valor' são obrigatórios"
     try:
-        valor_f = float(valor)
+        valor_f = _parse_valor(valor)
+        if valor_f is None:
+            return f"erro: não entendi o valor {valor!r} — peça ao usuário pra repetir o número"
     except (TypeError, ValueError):
         return "erro: 'valor' deve ser número"
     if valor_f <= 0:
@@ -1216,7 +1280,16 @@ async def _h_consultar_congresso(_args: dict, ctx: ToolContext) -> str:
         ) as client:
             items = await fetch_week_mps(client, today)
     except CongressScrapeError:
-        return "erro: não consegui acessar a agenda do Congresso agora"
+        # Falha de fonte vai VERBATIM: sem isto, modelo leve transforma
+        # "erro" em "não há reuniões essa semana" (falso negativo) — mesma
+        # classe do incidente já corrigido no consultar_mp_dou.
+        ctx.direct_html = (
+            "⚠️ Não consegui acessar a agenda do Congresso agora "
+            "(site fora do ar ou mudou de formato). NÃO dá pra afirmar se há "
+            "ou não pauta — tente de novo em instantes."
+        )
+        ctx.short_circuit = True
+        return "ok: aviso de falha enviado verbatim (não escreva nada)"
     except Exception:
         return "erro: falha ao consultar a pauta do Congresso"
     ctx.direct_html = format_week_message(items, today)
@@ -1242,10 +1315,10 @@ async def _h_consultar_pauta_camara(args: dict, ctx: ToolContext) -> str:
     try:
         texto = await consultar_pauta(comissoes, data, partido=partido, deputado=deputado, tz=ctx.tz)
     except CamaraError as e:
-        return f"erro: API da Câmara indisponível ({e})"
+        return _falha_verbatim(ctx, "a pauta da Câmara", f"API indisponível: {e}")
     except Exception as e:
         logger.exception("camara: falha ao consultar pauta")
-        return f"erro: não consegui montar a pauta da Câmara agora ({type(e).__name__})"
+        return _falha_verbatim(ctx, "a pauta da Câmara", type(e).__name__)
     # \x02/\x03 (marcados no serviço) → <b>/</b>, após o escape do resto do texto.
     ctx.fallback_text = texto.replace("\x02", "").replace("\x03", "")
     ctx.direct_html = _html_escape(texto).replace("\x02", "<b>").replace("\x03", "</b>")
@@ -1260,10 +1333,10 @@ async def _h_listar_comissoes_reuniao(args: dict, ctx: ToolContext) -> str:
     try:
         texto = await listar_reunioes_deliberativas(data, tz=ctx.tz)
     except CamaraError as e:
-        return f"erro: API da Câmara indisponível ({e})"
+        return _falha_verbatim(ctx, "as reuniões da Câmara", f"API indisponível: {e}")
     except Exception as e:
         logger.exception("camara: falha ao listar reuniões")
-        return f"erro: não consegui listar as reuniões da Câmara agora ({type(e).__name__})"
+        return _falha_verbatim(ctx, "as reuniões da Câmara", type(e).__name__)
     if texto.startswith("erro"):
         return texto
     ctx.fallback_text = texto.replace("\x02", "").replace("\x03", "")
@@ -1283,10 +1356,10 @@ async def _h_varrer_comissoes_partido(args: dict, ctx: ToolContext) -> str:
     try:
         texto = await varrer_comissoes_partido(data, partido=partido, deputado=deputado, tz=ctx.tz)
     except CamaraError as e:
-        return f"erro: API da Câmara indisponível ({e})"
+        return _falha_verbatim(ctx, "as comissões da Câmara", f"API indisponível: {e}")
     except Exception as e:
         logger.exception("camara: falha na varredura")
-        return f"erro: não consegui varrer as comissões agora ({type(e).__name__})"
+        return _falha_verbatim(ctx, "as comissões da Câmara", type(e).__name__)
     if texto.startswith("erro"):
         return texto
     ctx.fallback_text = texto.replace("\x02", "").replace("\x03", "")

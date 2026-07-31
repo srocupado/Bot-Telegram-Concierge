@@ -290,7 +290,27 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
                 r.raise_for_status()
                 content = r.content
                 if len(content) < 100 or content[:2] != b"PK":
-                    continue  # não publicada / resposta HTML (legítimo)
+                    # NÃO é ZIP. Antes isso era tratado como "seção não
+                    # publicada (legítimo)" e virava silêncio — mas o Inlabs
+                    # serve com status 200 páginas de manutenção/login/erro
+                    # (com follow_redirects, cookie recusado → tela de login
+                    # em 200). Resultado: "nenhuma MP hoje" com baixa da
+                    # pendência, e o dia nunca mais re-checado.
+                    corpo = content.decode("utf-8", errors="replace")[:2000]
+                    if _MAINT_RE.search(corpo):
+                        raise InlabsMaintenanceError(
+                            "Inlabs em manutenção (página servida com status 200)"
+                        )
+                    # Só é "não publicada" quando a resposta é VAZIA/mínima.
+                    # Qualquer corpo com cara de HTML é falha — vai pra
+                    # failed_sections e o dia entra na retroativa.
+                    if len(content) >= 100:
+                        logger.warning(
+                            "dou: %s devolveu conteúdo não-ZIP (%d bytes) — tratando "
+                            "como FALHA, não como 'não publicada'", section, len(content),
+                        )
+                        failed_sections.append(section)
+                    continue
                 with zipfile.ZipFile(io.BytesIO(content)) as zf:
                     for name in (n for n in zf.namelist() if n.lower().endswith(".xml")):
                         xml_data = zf.read(name).decode("utf-8", errors="replace")
@@ -319,10 +339,28 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
             "indisponíveis no Inlabs) — não dá pra confirmar se houve MP; "
             "tente de novo em instantes."
         )
+    out = MPList(results)
     if failed_sections:
-        logger.warning("dou: %s — seção(ões) %s falharam; lista pode estar "
-                       "incompleta", target_date, failed_sections)
-    return results
+        out.incompleto = True
+        out.secoes_falhas = tuple(failed_sections)
+        logger.warning("dou: %s — seção(ões) %s falharam; lista INCOMPLETA "
+                       "(dia segue pendente pra re-checagem)", target_date, failed_sections)
+    return out
+
+
+class MPList(list):
+    """`list` de MPs com flag de COMPLETUDE.
+
+    Uma seção do DOU pode falhar enquanto a outra responde: antes, a lista
+    parcial voltava indistinguível de uma completa, o dia era dado como
+    checado com sucesso e a pendência retroativa recebia baixa — MP publicada
+    só na edição EXTRA daquele dia sumia em silêncio, pra sempre. Continua
+    sendo uma list (nenhum consumidor quebra); quem precisa saber consulta
+    `incompleto`.
+    """
+
+    incompleto: bool = False
+    secoes_falhas: tuple[str, ...] = ()
 
 
 async def fetch_mps(target_date: date) -> list[dict]:

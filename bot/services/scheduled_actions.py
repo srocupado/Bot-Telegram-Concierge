@@ -150,7 +150,18 @@ async def _run_chat(
         return
     memory.append(chat_id, "user", prompt)
     memory.append(chat_id, "assistant", reply)
-    await bot.send_message(chat_id, f"⏰ <i>(agendado)</i>\n{reply}", parse_mode="HTML")
+    # Envio COM fallback e dentro do caminho protegido: o HTML aqui carrega a
+    # resposta do LLM (que pode trazer '<' solto). Antes, falha no envio subia
+    # pro except do scheduler → o lembrete continuava pendente → a CHAMADA DO
+    # LLM INTEIRA era refeita a cada 60s, indefinidamente, queimando API.
+    try:
+        await bot.send_message(chat_id, f"⏰ <i>(agendado)</i>\n{reply}", parse_mode="HTML")
+    except Exception:
+        logger.warning("scheduled chat: HTML inválido; enviando texto puro", exc_info=True)
+        try:
+            await bot.send_message(chat_id, f"⏰ (agendado)\n{reply}", parse_mode=None)
+        except Exception:
+            logger.exception("scheduled chat: falha definitiva no envio")
 
 
 async def _run_agente(bot: Bot, chat_id: int, prompt: str) -> bool:

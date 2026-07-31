@@ -19,6 +19,7 @@ from bot.services.chat_memory import memory
 from bot.services.llm.base import ToolContext, make_document_message
 from bot.services.llm.factory import get_provider_for_user
 from bot.services.tools import TOOLS
+from bot.services.viagem import effective_tz
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +62,9 @@ async def cmd_pdf(message: Message, user: User, session: AsyncSession) -> None:
     )
     try:
         provider = get_provider_for_user(user, vision_provider_name)
-        ctx = ToolContext(user=user, session=session, tz=user.timezone)
+        ctx = ToolContext(user=user, session=session, tz=effective_tz(user), user_text=caption or "")
         reply = await provider.chat_with_tools(
-            inject_context(history, user.timezone), tools=TOOLS, ctx=ctx,
+            inject_context(history, effective_tz(user)), tools=TOOLS, ctx=ctx,
             system=_build_system_prompt(),
             max_tokens=4000,
         )
@@ -76,7 +77,10 @@ async def cmd_pdf(message: Message, user: User, session: AsyncSession) -> None:
         return
 
     file_label = doc.file_name or "PDF"
-    memory.append(chat_id, "user", f"[PDF: {file_label}]{(' ' + caption) if caption else ''}")
-    memory.append(chat_id, "assistant", reply)
-
-    await message.answer(reply or "(sem resposta)", parse_mode=None)
+    # Entrega pelo ponto único (honra direct_html/short_circuit/fallback/teclados).
+    from bot.handlers.chat import deliver_llm_reply
+    await deliver_llm_reply(
+        message, ctx, reply,
+        user_text=caption or "",
+        memory_user_text=f"[PDF: {file_label}]{(' ' + caption) if caption else ''}",
+    )

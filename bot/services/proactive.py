@@ -236,10 +236,13 @@ async def collect_mp(
     seen: set[str] = set()
     failed: list[date] = []
 
-    async def _colher(d: date) -> list[ProactiveFact]:
-        """Facts das MPs de um dia (dedup por número e por já-notificada).
-        Levanta exceção quando o fetch falha — o caller decide a pendência."""
+    async def _colher(d: date) -> tuple[list[ProactiveFact], bool]:
+        """(facts, completo) das MPs de um dia (dedup por número e por
+        já-notificada). `completo=False` quando uma seção do DOU falhou: o que
+        veio é entregue, mas o dia NÃO recebe baixa da pendência.
+        Levanta exceção quando o fetch falha inteiro — o caller decide."""
         mps = await fetch_mps(d)
+        completo = not getattr(mps, "incompleto", False)
         out: list[ProactiveFact] = []
         for mp in mps:
             key = f"{mp['numero']}/{mp['ano']}"
@@ -254,13 +257,21 @@ async def collect_mp(
                 f"📜 MP {mp['numero']}/{mp['ano']}: {ementa}",
                 date_iso=d.isoformat(),
             ))
-        return out
+        return out, completo
 
     ok_dates: set[date] = set()
     for d in dates:
         try:
-            facts += await _colher(d)
-            ok_dates.add(d)
+            colhidos, completo = await _colher(d)
+            facts += colhidos
+            if completo:
+                ok_dates.add(d)
+            else:
+                # Seção falhou: o que veio é entregue, mas o dia NÃO recebe
+                # baixa — fica pendente pra re-checagem quando o Inlabs voltar
+                # (senão MP só da edição Extra sumiria em silêncio).
+                logger.warning("proactive: %s veio INCOMPLETO; mantendo pendência", d)
+                failed.append(d)
         except Exception as exc:
             logger.warning("proactive: fetch_mps(%s) falhou: %s", d, exc)
             failed.append(d)

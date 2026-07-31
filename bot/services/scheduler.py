@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -260,12 +261,29 @@ async def run_reminders(
                                 InlineKeyboardButton(text="✅ feito", callback_data=f"done:{rem.id}"),
                             ]])
                         prefix = "🔁 *Recorrente*" if rem.recurrence else "🔔 *Lembrete*"
-                        await bot.send_message(
-                            user.id,
-                            f"{prefix}: {rem.text}",
-                            parse_mode="Markdown",
-                            reply_markup=kb,
-                        )
+                        # Fallback pra texto puro: o TEXTO DO USUÁRIO entra cru
+                        # no Markdown — um '_' ou '[' desbalanceado ("pagar
+                        # João_Silva [urgente") fazia o envio falhar, o lembrete
+                        # continuava pendente e o tick retentava A CADA 60s pra
+                        # sempre, sem nunca entregar e sem avisar ninguém.
+                        try:
+                            await bot.send_message(
+                                user.id,
+                                f"{prefix}: {rem.text}",
+                                parse_mode="Markdown",
+                                reply_markup=kb,
+                            )
+                        except TelegramBadRequest:
+                            logger.warning(
+                                "reminder %d: markdown inválido no texto; enviando puro",
+                                rem.id,
+                            )
+                            await bot.send_message(
+                                user.id,
+                                f"{prefix.replace('*', '')}: {rem.text}",
+                                parse_mode=None,
+                                reply_markup=kb,
+                            )
                     if rem.recurrence:
                         # Reagenda: mesmo HH:MM, próximo dia conforme rrule
                         # (cron: avaliado no tz do usuário). Mantém row.

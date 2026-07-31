@@ -476,33 +476,5 @@ async def _dispatch_chat(
         )
         return
 
-    from bot.services.finance_guard import guard_financial_reply
-    reply = guard_financial_reply(text, ctx.financial_logged_ok, reply)
-
-    if ctx.direct_html:
-        from bot.handlers.chat import send_html_chunked
-        memory.append(chat_id, "user", text)
-        memory.append(chat_id, "assistant", ctx.direct_html)
-        loc_kb = None
-        if ctx.request_location:
-            from bot.handlers.route import _build_keyboard
-            loc_kb = _build_keyboard()
-        await send_html_chunked(message, ctx.direct_html, reply_markup=loc_kb)
-        return
-
-    # O Gemini às vezes volta texto vazio após uma tool call; se a tool deixou
-    # um texto pronto, usa ele em vez de "(sem resposta)".
-    if not (reply or "").strip() and ctx.fallback_text:
-        reply = ctx.fallback_text
-
-    memory.append(chat_id, "user", text)
-    memory.append(chat_id, "assistant", reply)
-    kb = None
-    if ctx.dou_mp_found:
-        from bot.handlers.dou_mp import nota_keyboard
-        kb = nota_keyboard(ctx.dou_mp_found["date_iso"])
-    elif ctx.confirm_clear_shopping:
-        from bot.handlers.shopping import clear_keyboard
-        kb = clear_keyboard()
-    from bot.handlers.chat import answer_llm
-    await answer_llm(message, reply, reply_markup=kb)
+    from bot.handlers.chat import deliver_llm_reply
+    await deliver_llm_reply(message, ctx, reply, user_text=text)

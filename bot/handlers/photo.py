@@ -21,6 +21,7 @@ from bot.services.chat_memory import memory
 from bot.services.llm.base import ToolContext, make_image_message
 from bot.services.llm.factory import get_provider_for_user
 from bot.services.tools import TOOLS
+from bot.services.viagem import effective_tz
 
 logger = logging.getLogger(__name__)
 
@@ -88,14 +89,14 @@ async def cmd_photo(message: Message, user: User, session: AsyncSession) -> None
     )
     try:
         provider = get_provider_for_user(user, vision_provider_name)
-        ctx = ToolContext(user=user, session=session, tz=user.timezone, user_text=caption or "")
+        ctx = ToolContext(user=user, session=session, tz=effective_tz(user), user_text=caption or "")
         logger.info(
             "photo analyzing",
             extra={"provider": vision_provider_name, "gemini_model": user.gemini_model},
         )
         reply = await asyncio.wait_for(
             provider.chat_with_tools(
-                inject_context(history, user.timezone), tools=TOOLS, ctx=ctx,
+                inject_context(history, effective_tz(user)), tools=TOOLS, ctx=ctx,
                 system=_build_system_prompt(),
                 max_tokens=4000,
             ),
@@ -117,8 +118,11 @@ async def cmd_photo(message: Message, user: User, session: AsyncSession) -> None
         )
         return
 
-    # Guarda só texto no memory pra próximo turno (sem reusar bytes da imagem).
-    memory.append(chat_id, "user", f"[imagem]{(' ' + caption) if caption else ''}")
-    memory.append(chat_id, "assistant", reply)
-
-    await answer_llm(message, reply)
+    # Entrega pelo ponto único (honra direct_html/short_circuit/fallback/teclados).
+    # Só texto vai pro memory — sem reusar os bytes da imagem no próximo turno.
+    from bot.handlers.chat import deliver_llm_reply
+    await deliver_llm_reply(
+        message, ctx, reply,
+        user_text=caption or "",
+        memory_user_text=f"[imagem]{(' ' + caption) if caption else ''}",
+    )

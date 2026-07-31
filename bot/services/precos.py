@@ -40,10 +40,39 @@ logger = logging.getLogger(__name__)
 _PAGINA_CHARS = 8000
 
 
+# Domínios que NÃO são a loja: agregador/redirect do próprio Google. Ler um
+# desses e chamar de "confirmado na página da loja" seria carimbar procedência
+# falsa em cima do MESMO feed defasado que a confirmação deveria checar —
+# `product_link` do SerpAPI é sempre google.com/shopping/product/..., e item
+# patrocinado vem como google.com/aclk?... / google.com/url?...
+_DOMINIOS_NAO_LOJA = (
+    "google.com", "google.com.br", "googleadservices.com", "googleusercontent.com",
+)
+
+
+def _e_pagina_de_loja(url: str) -> bool:
+    from urllib.parse import urlparse
+
+    p = urlparse(url or "")
+    if p.scheme not in ("http", "https"):
+        return False
+    host = (p.hostname or "").lower().removeprefix("www.")
+    return bool(host) and not any(
+        host == d or host.endswith("." + d) for d in _DOMINIOS_NAO_LOJA
+    )
+
+
 async def _confirmar_na_pagina(url: str) -> str | None:
     """Lê a página da oferta e devolve o trecho pro LLM conferir o preço.
-    None se não abrir (loja que bloqueia, link de redirect, timeout)."""
+    None se não abrir (loja que bloqueia, timeout) OU se a URL não for da
+    loja (agregador/redirect do Google — ver _DOMINIOS_NAO_LOJA)."""
     if not url or not url.startswith("http"):
+        return None
+    if not _e_pagina_de_loja(url):
+        logger.info(
+            "buscar_preco: link do 1º resultado não é da loja (%s) — sem confirmação",
+            url[:80],
+        )
         return None
     from bot.services.websearch import WebSearchError, read_url
 

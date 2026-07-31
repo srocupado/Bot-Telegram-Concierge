@@ -98,6 +98,54 @@ async def answer_llm(
                                  disable_web_page_preview=disable_web_page_preview)
 
 
+async def deliver_llm_reply(
+    message: Message, ctx, reply: str, *, user_text: str, memory_user_text: str | None = None,
+) -> None:
+    """Entrega a resposta do LLM honrando TODO o contrato do ToolContext.
+
+    Ponto ÚNICO usado por chat, voz, foto e PDF — antes cada handler
+    reimplementava isto e os de foto/PDF ficaram pra trás quando o contrato
+    evoluiu: uma tool com short_circuit (ex.: lançar despesa a partir da foto
+    de uma nota) GRAVAVA no Firestore e o usuário via '(sem resposta)', achava
+    que falhou e repetia → lançamento duplicado.
+
+    `user_text` é o texto do pedido (usado pelo guard financeiro);
+    `memory_user_text` é o que vai pro histórico (ex.: '[imagem] caption').
+    """
+    from bot.services.finance_guard import guard_financial_reply
+
+    chat_id = message.chat.id
+    para_memoria = memory_user_text if memory_user_text is not None else user_text
+    reply = guard_financial_reply(user_text, ctx.financial_logged_ok, reply)
+
+    if ctx.direct_html:
+        memory.append(chat_id, "user", para_memoria)
+        memory.append(chat_id, "assistant", ctx.direct_html)
+        loc_kb = None
+        if ctx.request_location:
+            from bot.handlers.route import _build_keyboard
+            loc_kb = _build_keyboard()
+        await send_html_chunked(message, ctx.direct_html, reply_markup=loc_kb)
+        return
+
+    # O Gemini às vezes volta texto vazio após uma tool call; se a tool deixou
+    # um texto pronto, usa ele em vez de "(sem resposta)".
+    if not (reply or "").strip() and ctx.fallback_text:
+        reply = ctx.fallback_text
+
+    memory.append(chat_id, "user", para_memoria)
+    memory.append(chat_id, "assistant", reply)
+
+    kb = None
+    if ctx.dou_mp_found:
+        from bot.handlers.dou_mp import nota_keyboard
+        kb = nota_keyboard(ctx.dou_mp_found["date_iso"])
+    elif ctx.confirm_clear_shopping:
+        from bot.handlers.shopping import clear_keyboard
+        kb = clear_keyboard()
+    await answer_llm(message, reply, reply_markup=kb)
+
+
 _SYSTEM_PROMPT_TEMPLATE = (
     "Você é o Concierge, um assistente pessoal em português brasileiro. "
     "Respostas curtas, diretas e amistosas.\n\n"
@@ -620,32 +668,4 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
         )
         return
 
-    from bot.services.finance_guard import guard_financial_reply
-    reply = guard_financial_reply(user_text, ctx.financial_logged_ok, reply)
-
-    if ctx.direct_html:
-        memory.append(chat_id, "user", user_text)
-        memory.append(chat_id, "assistant", ctx.direct_html)
-        loc_kb = None
-        if ctx.request_location:
-            from bot.handlers.route import _build_keyboard
-            loc_kb = _build_keyboard()
-        await send_html_chunked(message, ctx.direct_html, reply_markup=loc_kb)
-        return
-
-    # O Gemini às vezes volta texto vazio após uma tool call; se a tool deixou
-    # um texto pronto, usa ele em vez de "(sem resposta)".
-    if not (reply or "").strip() and ctx.fallback_text:
-        reply = ctx.fallback_text
-
-    memory.append(chat_id, "user", user_text)
-    memory.append(chat_id, "assistant", reply)
-
-    kb = None
-    if ctx.dou_mp_found:
-        from bot.handlers.dou_mp import nota_keyboard
-        kb = nota_keyboard(ctx.dou_mp_found["date_iso"])
-    elif ctx.confirm_clear_shopping:
-        from bot.handlers.shopping import clear_keyboard
-        kb = clear_keyboard()
-    await answer_llm(message, reply, reply_markup=kb)
+    await deliver_llm_reply(message, ctx, reply, user_text=user_text)

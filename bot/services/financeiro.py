@@ -1515,10 +1515,15 @@ async def consultar_lancamentos(
             parts.append(f"🏦 Banco (últimos {dias}d): sem lançamentos")
         else:
             lines = [f"🏦 Banco (últimos {dias}d):"]
-            saldo = 0.0
+            # Saldo sobre TODOS os lançamentos do período — o acumulador estava
+            # dentro do fatiamento [-15:] e o total refletia só os 15 exibidos,
+            # entregando número errado como se fosse o saldo do período.
+            saldo = sum(float(i.get("amount") or 0) for i in bank)
+            ocultos = max(0, len(bank) - 15)
+            if ocultos:
+                lines.append(f"… ({ocultos} lançamentos mais antigos omitidos, incluídos no saldo)")
             for it in bank[-15:]:
                 amt = float(it.get("amount") or 0)
-                saldo += amt
                 sign = "➕" if amt >= 0 else "➖"
                 lines.append(
                     f"• {_fmt_date_br(it.get('date', ''))} — {it.get('desc', '?')} · "
@@ -1526,7 +1531,10 @@ async def consultar_lancamentos(
                 )
                 if it.get("source") == "bot":
                     internal.append(f"banco · {it.get('desc', '?')} ({_fmt_date_br(it.get('date', ''))}) → #{it.get('id', '?')}")
-            lines.append(f"Saldo do período: {'+' if saldo >= 0 else '−'}{_fmt_brl(abs(saldo))}")
+            lines.append(
+                f"Saldo do período: {'+' if saldo >= 0 else '−'}{_fmt_brl(abs(saldo))} "
+                f"({len(bank)} lançamentos)"
+            )
             parts.append("\n".join(lines))
 
     if mod in ("cartao", "cartão", "tudo"):
