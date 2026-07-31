@@ -140,6 +140,27 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   preços, cardápios). Backend **SearXNG+Jina**
   (self-hosted, custo zero) como primário e **Firecrawl** como fallback.
   Ver [Busca web](#busca-web-buscar_web--buscar).
+- **Preço de produto** (tool `buscar_preco`, híbrido): o **Google Shopping**
+  (SerpAPI) descobre quem vende e o link do anúncio, e o bot **abre a página da
+  primeira oferta** (Jina Reader, atravessa boa parte do anti-bot) pra
+  **confirmar o preço na fonte** — o feed do Shopping costuma estar defasado.
+  As duas coisas vêm rotuladas, com precedência explícita da página; se a loja
+  bloquear a leitura, o bot diz que o valor é só referência. *"quanto custa uma
+  GoPro Hero 13?"*, *"preço do iPhone 16"*. Numa **loja específica**
+  (*"quanto custa o compressor X no site da Pires Martins?"*) lê a página da
+  própria loja, e dá pra comparar loja × mercado lado a lado. Guarda contra
+  troca de modelo: se os resultados forem de outra versão da que você pediu
+  (*"Avata 360"* → *"Avata 2"*), o bot **avisa a divergência** em vez de
+  responder pelo produto errado.
+- **Leitura de página por link** (tool `ler_pagina`): cole uma URL —
+  *"vê o preço nesse link: …"*, *"resume essa matéria: …"* — e o bot lê a
+  página inteira (até 50k chars, com o menu/navegação filtrado) e responde em
+  cima do conteúdo real, não do snippet do buscador.
+- **Clima e cotações por chat**: *"vai chover essa semana?"* → previsão dia a
+  dia (Open-Meteo, saída verbatim); *"quanto está o dólar?"*, *"cotação da
+  PETR4/HGLG11/bitcoin"* → moeda (ExchangeRate), ação/FII/ETF (brapi.dev) e
+  cripto (CoinGecko). Falha de fonte é reportada como falha — nunca vira
+  "não existe".
 - **Cinema (Cinemark)**: horários de sessão e **programação completa** da rede
   Cinemark via **API da Cinemark** (não web scraping — o site é SPA e só mostra
   a aba de hoje). Cobre **toda a rede** (resolução on-demand: estado→cidade→
@@ -175,8 +196,11 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   tools` é mantido fixo — data/hora e o resumo de memória entram na mensagem do
   usuário (via `inject_context`), não no system prompt, pra não furar o cache a
   cada minuto. O uso de tokens (incl. `cached`) é logado nos dois providers.
-- **Acesso restrito por senha** (`ACCESS_PASSWORD`); isolamento por
-  `telegram_user_id`. **Multi-usuário** simultâneo (família, casal): SQLite
+- **Acesso restrito por senha** (`ACCESS_PASSWORD`): só `/start` responde a
+  quem não autenticou (o `/help` exige senha — ele expõe o guia inteiro de
+  features), e a senha tem freio de força-bruta (5 tentativas → 15 min de
+  espera, contagem em memória). Isolamento por `telegram_user_id`.
+  **Multi-usuário** simultâneo (família, casal): SQLite
   configurado em modo WAL + `busy_timeout`, cada user tem seu próprio
   provider/modelo/STT/`firebase_uid`/lembretes/lista/financeiro.
 
@@ -412,6 +436,7 @@ via chat. Tipos owner-only:
 | `/provider modelos [provider]` | Lista dinâmica dos modelos disponíveis na API (metadata, não gasta token) |
 | `/provider_visao anthropic\|openai\|gemini\|auto` | Provider só para imagens (auto = segue o `/provider`). `/provider_visao modelos` lista os que aceitam imagem |
 | `/voice gemini\|openai` | Provider da transcrição de voz (Gemini multimodal vs Whisper). `/voice modelos` lista os que aceitam áudio |
+| `/dou_provider [provider] [id]` | Motor da **nota técnica** do DOU, separado do chat (ex.: `/dou_provider gemini 3.1-lite`, `/dou_provider opus`, `/dou_provider padrao`). Ajusta latência/qualidade sem mexer no `.env` |
 | `/reset` | Limpa o contexto da conversa livre |
 | `/start` | Início + fluxo de senha |
 | `/help` | Lista todos os comandos |
@@ -438,6 +463,9 @@ Mande um áudio. O bot transcreve e roteia:
 Atalhos de comando por voz (provider `gemini`):
 
 1. **Slash literal**: *"barra trânsito agora casa"* → `/transito_agora casa`.
+   Vale pra **qualquer** comando do bot — a tabela de voz é gerada a partir dos
+   handlers e um teste (`tests/test_voice_dispatch.py`) falha se algum comando
+   novo ficar de fora.
 2. **Trânsito**: *"trânsito para casa"*, *"trânsito pro trabalho"* → `/transito_agora …`.
 3. **Congresso**: *"pauta de MP do congresso agora"* → `/congresso_agora`.
 4. **Rota**: *"rota para casa"*, *"como chegar em Avenida Paulista 1000"* → `/rota …`.
@@ -457,7 +485,7 @@ O bot ecoa a transcrição antes da resposta. Áudios acima de `VOICE_MAX_SECOND
 | Comando | Ação |
 |---|---|
 | `/tradutor <idioma>` | liga o modo (ex.: `/tradutor japonês`, `/tradutor en`) |
-| `/tradutor off` | desliga |
+| `/tradutor off` | desliga (ou fale *"desliga o tradutor"* no próprio áudio) |
 | `/tradutor` | status |
 | `/tradutor_provider` | mostra motor + modelo atual |
 | `/tradutor_provider openai\|gemini [id]` | escolhe o motor (e opcionalmente o modelo de entendimento por id; aliases do Gemini valem: `3.1-lite`) |
@@ -488,6 +516,13 @@ usuário é avaliado no seu fuso efetivo); cotação da moeda local no briefing
 (se configurada). Período sem ano rola pro futuro (`28/12 a 03/01` cruza o
 ano). No fim do período desliga sozinho. Sem chave do Maps, avisa e mantém
 clima/fuso de casa. Por usuário (casal: cada um ativa o seu).
+
+Validações na configuração (erram alto na hora, não semanas depois no
+briefing): a **moeda** é consultada na hora e, se não for reconhecida, o bot
+avisa que ela **não** vai aparecer no briefing; o **fuso** só é gravado se o
+`zoneinfo` resolver; e período **maior que 180 dias** é recusado (datas
+invertidas viravam uma viagem de ~1 ano já ativa). A moeda aceita nome
+composto (*"moeda peso argentino"*).
 
 ## Stack
 
@@ -621,7 +656,11 @@ o provider/modelo por usuário se ajusta em runtime via `/tradutor_provider`.
 ### Aniversário do dono
 
 ```bash
-OWNER_BIRTHDAY=24/08   # DD/MM; mensagem calorosa 1x/ano na hora do briefing
+OWNER_BIRTHDAY=24/08   # DD/MM; mensagem calorosa 1x/ano, entre a hora do
+                       # briefing e o meio-dia — no FUSO EFETIVO do dono, então
+                       # em viagem chega às 7h de onde ele está, não de Brasília.
+                       # A janela é larga de propósito: o dedup é anual, e um
+                       # deploy às 7h01 não pode custar a mensagem do ano.
                        # (independe do proativo; vazio desliga)
 ```
 
@@ -843,9 +882,14 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-Cobrem a lógica **determinística** (funções puras, sem rede nem API) — ex.:
-seleção do melhor horário pra sair, parsing de horários. `tests/conftest.py`
-já injeta `BOT_TOKEN`/`ACCESS_PASSWORD` dummy, então roda sem `.env`.
+Cobrem a lógica **determinística** (funções puras, sem rede nem API):
+seleção do melhor horário pra sair, parsing de horários, sessões de cinema,
+quebra de mensagem longa (tag/cerca de código atravessando blocos), matemática
+da fatura do cartão (fechamento em todos os dias do mês, parcelamento com dado
+torto), freio da senha, ticker da B3, parâmetro de teto de tokens por modelo da
+OpenAI e a cobertura do dispatch de voz (um comando novo sem entrada lá **falha
+o teste**). `tests/conftest.py` já injeta `BOT_TOKEN`/`ACCESS_PASSWORD` dummy,
+então roda sem `.env`.
 
 ## Rodar com Docker
 
@@ -902,10 +946,15 @@ para `concierge.db` e colocar dentro de `./data/`.
 ## Modelo de dados
 
 - **`users`**: `id` (telegram_id), `chat_id`, `username`, `first_name`,
-  `is_authorized`, `provider`, `gemini_model` (modelo Gemini por usuário),
-  `vision_provider`, `voice_stt_provider`, `timezone`; subscriptions de
-  `traffic_*`, `congress_*`, `dou_mp_subscribed`, `proactive_enabled`; e a
-  integração financeira (`firebase_uid`).
+  `is_authorized`, `timezone`; escolha de LLM por usuário (`provider`,
+  `gemini_model`, `anthropic_model`, `openai_model`, `vision_provider`),
+  de voz (`voice_stt_provider`, `voice_stt_model`) e da nota do DOU
+  (`dou_mp_provider`, `dou_mp_model`); **modo tradutor** (`translator_lang`,
+  `translator_tts_provider`, `translator_model`); **modo viagem**
+  (`viagem_destino`, `viagem_inicio`, `viagem_fim`, `viagem_tz`,
+  `viagem_coords`, `viagem_moeda`); subscriptions de `traffic_*`,
+  `congress_*`, `dou_mp_subscribed`, `proactive_enabled`; e a integração
+  financeira (`firebase_uid`, `awaiting_firebase_json_until`).
 - **`tasks`**: `id`, `user_id`, `text`, `done`, `created_at`, `done_at`.
 - **`reminders`**: `id`, `user_id`, `text`, `due_at` (UTC), `sent`, `sent_at`,
   `command_kind`/`command_args` (ações agendadas), `recurrence` (recorrência).
@@ -932,6 +981,11 @@ para `concierge.db` e colocar dentro de `./data/`.
   verificação (`watch_id`, `price`, `currency`, `raw` JSON). Purge >90 dias.
 - **`travel_alerts`**: log de alertas enviados (`watch_id`, `snapshot_id`,
   `price`, `reason` below_max/new_min). Purge >90 dias.
+- **`kv_settings`**: configuração que não cabe no `.env` — hoje a **service
+  account do Firebase** (JSON), enviada por documento no `/financeiro_setup`
+  e guardada no banco, nunca em arquivo do repo.
+- **`action_log`**: o que o bot criou (lançamento, tarefa, lembrete, item de
+  lista), com o id externo — é a base do **desfazer** (*"errei, cancela"*).
 
 Idempotência dos digests é via timestamps `last_*_digest_at` no User. Migrações
 de coluna são aplicadas inline em `init_db` (ALTER TABLE guardado por PRAGMA).
@@ -945,7 +999,9 @@ bot/
 ├── db/
 │   └── base.py, models.py, session.py
 ├── middlewares/
-│   └── auth.py, db.py
+│   └── auth.py, db.py            # senha + freio de tentativas, sessão do SQLAlchemy
+├── utils/
+│   └── text.py, datetime.py      # chunk de mensagem (tags/cercas), as_utc
 ├── handlers/
 │   ├── start.py, ping.py, provider.py, reset.py, search.py
 │   ├── traffic.py                # /transito_*
@@ -961,12 +1017,23 @@ bot/
 │   ├── viagem.py                 # /viagem (modo viagem)
 │   ├── photo.py                  # F.photo → visão multimodal
 │   ├── document.py               # F.document (PDF) → multimodal
-│   └── chat.py                   # catch-all texto livre
+│   ├── agent.py                  # /agente_* (execução de código, owner-only)
+│   ├── upload.py                 # /arquivos + captura de anexos
+│   └── chat.py                   # catch-all texto livre + entregador único
 ├── services/
-│   ├── llm/                      # base + factory + anthropic/openai/gemini
-│   ├── tools.py                  # registry de tools acionáveis pelo LLM
+│   ├── llm/                      # base + factory + catalog (Models API)
+│   │                             #   + anthropic/openai/gemini
+│   ├── travels/                  # SerpAPI (voos/hotéis), tools e watches diários
+│   ├── tools.py                  # registry de tools acionáveis pelo LLM (57)
 │   ├── scheduled_actions.py      # dispatch de ações agendadas
+│   ├── agent_runner.py, agent_config.py   # claude-agent-sdk + overrides runtime
+│   ├── websearch.py              # SearXNG+Jina / Firecrawl + ler_pagina
+│   ├── precos.py                 # buscar_preco (Shopping + confirmação na página)
+│   ├── places.py                 # dados de estabelecimento (Google Places)
+│   ├── cotacao.py, quotes.py     # moeda/cripto/B3 (brapi) + carteira
 │   ├── traffic.py, weather.py, traffic_baseline.py, geocoding.py
+│   ├── departure.py              # melhor horário pra sair
+│   ├── camara.py                 # comissões e pautas (Dados Abertos)
 │   ├── congress.py               # scraper pauta do Congresso
 │   ├── cinema.py                 # sessões/programação Cinemark (API + cache)
 │   ├── dou_monitor.py            # Inlabs/DOU + nota técnica + DOCX
@@ -977,6 +1044,9 @@ bot/
 │   ├── shopping.py               # lista de compras
 │   ├── tasks.py, reminders.py
 │   ├── chat_memory.py            # in-memory TTL 30min
+│   ├── memoria.py                # persistência + resumo rolante + busca FTS5
+│   ├── user_facts.py             # fatos do usuário (lembrar/esquecer)
+│   ├── uploads.py                # arquivos guardados pelo dono
 │   ├── route_pending.py
 │   ├── voice.py                  # STT (Gemini multimodal / OpenAI Whisper)
 │   ├── translator.py, tts.py     # tradutor bidirecional + síntese de voz (OGG/Opus)
