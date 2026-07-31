@@ -2715,7 +2715,11 @@ TOOLS: list[Tool] = [
             "que o da lista (o do Shopping vem de feed e atrasa). Se a resposta "
             "disser que não confirmou na página, apresente os valores como "
             "REFERÊNCIA e mande conferir no link — nunca como preço atual. Se o "
-            "Shopping estiver fora/sem cota, cai pra busca web."
+            "Shopping estiver fora/sem cota, cai pra busca web. "
+            "SEMPRE diga ao usuário a PROCEDÊNCIA em uma expressão curta: "
+            "'confirmado na página da loja' ou 'referência do Google Shopping "
+            "(não consegui abrir a página)'. Ele precisa saber se o número foi "
+            "verificado na fonte ou não."
         ),
         parameters={
             "type": "object",
