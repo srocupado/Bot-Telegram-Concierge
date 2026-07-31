@@ -2801,9 +2801,19 @@ TOOLS: list[Tool] = [
     Tool(
         name="criar_watch_voo",
         description=(
-            "Cria um monitor diário de preço de passagem. Toda manhã (8h BRT) "
-            "o bot verifica e avisa quando o preço cair abaixo do mínimo "
-            "histórico ou do `max_price` (se setado)."
+            "Cria um monitor diário de preço de PASSAGEM AÉREA. Toda manhã (8h "
+            "BRT) o bot verifica e avisa quando o preço cair abaixo do mínimo "
+            "histórico ou do `max_price` (se setado). "
+            "SÓ para voo — exige origem/destino IATA e datas REAIS ditas pelo "
+            "usuário. NUNCA use pra monitorar preço de PRODUTO (drone, "
+            "eletrônico, link de loja/Mercado Livre): não existe watch de "
+            "produto no bot, e forçar aqui cria um alerta de VOO com dados "
+            "errados (caso real: pedido de monitorar um drone virou watch da "
+            "viagem BSB→FOR e disparou alerta de passagem). Pediram monitorar "
+            "produto? DIGA que o bot ainda não monitora preço de produto e "
+            "ofereça consultar o preço na hora (buscar_preco/ler_pagina) ou "
+            "agendar uma consulta recorrente com agendar_comando "
+            "(tipo='chat', recorrencia semanal)."
         ),
         parameters={
             "type": "object",
