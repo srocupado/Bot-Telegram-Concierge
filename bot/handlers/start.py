@@ -33,7 +33,7 @@ HELP_TEXT = (
     "• <i>\"quais comissões com reunião hoje têm projeto do Podemos?\"</i> → varre as comissões e cruza autoria/relatoria de um partido/deputado (leva alguns segundos).\n\n"
     "<b>Medidas Provisórias — publicação no Diário Oficial</b>:\n"
     "• <code>/mp_dou_on</code> / <code>/mp_dou_off</code> — assina/desassina o digest diário de MPs novas no DOU\n"
-    "• <code>/mp_dou_agora [AAAA-MM-DD]</code> — busca agora; entrega nota técnica (gerada por IA) + DOCX\n"
+    "• <code>/mp_dou_agora [AAAA-MM-DD]</code> — busca agora; entrega nota técnica (gerada por IA) + DOCX. A nota roda em SEGUNDO PLANO (leva alguns minutos): o bot confirma na hora e continua respondendo você normalmente enquanto gera\n"
     "• <code>/dou_provider</code> — escolhe o motor da nota técnica (ex.: <code>/dou_provider 3.5</code>, <code>/dou_provider gemini 3.1-lite</code>, <code>/dou_provider anthropic sonnet</code>, <code>/dou_provider opus</code>, <code>/dou_provider padrao</code>). Ajusta latência/qualidade sem mexer no .env\n"
     "• Por voz/texto: <i>\"saiu MP nova hoje?\"</i> → lista número + ementa\n\n"
     "<b>Agente proativo</b> (opt-in):\n"
@@ -263,7 +263,9 @@ _HELP_KEYWORDS: dict[str, str] = {
     "fuso": "viagens", "modo viagem": "viagens",
     "viajar": "viagens", "viajo": "viagens", "viajando": "viagens",
     "mp": "diario oficial", "dou": "diario oficial", "medida provisoria": "diario oficial",
-    "nota tecnica": "diario oficial",
+    "nota tecnica": "diario oficial", "nota": "diario oficial",
+    "demora": "diario oficial", "demorando": "diario oficial",
+    "travando": "diario oficial", "travou": "diario oficial",
     "congresso": "pauta do congresso", "pauta": "pauta do congresso",
     "financeiro": "gerenciador financeiro", "cartao": "gerenciador financeiro",
     "despesa": "gerenciador financeiro", "fatura": "gerenciador financeiro",

@@ -18,6 +18,7 @@ import os
 import re
 import time
 import zipfile
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from xml.etree import ElementTree as ET
 
@@ -248,6 +249,38 @@ def _inlabs_call(do_request, *, tries: int = 3):
     raise last
 
 
+@contextmanager
+def _fase(nome: str, **extra):
+    """Cronometra uma fase e loga quanto durou.
+
+    O pipeline da nota tem 5 fases com custos MUITO diferentes (login, download
+    dos ZIPs, unzip+parse do XML, pesquisa de contexto, redação). Sem medir,
+    não dá pra saber qual delas segurou o bot — e o remédio de cada uma é
+    diferente (thread, streaming pra disco, outro provider…)."""
+    t0 = time.monotonic()
+    try:
+        yield
+    finally:
+        dt = time.monotonic() - t0
+        rss = _rss_mb()
+        logger.info(
+            "dou[fase] %s: %.1fs%s%s", nome, dt,
+            "".join(f" {k}={v}" for k, v in extra.items()),
+            f" rss={rss:.0f}MB" if rss else "",
+        )
+
+
+def _rss_mb() -> float | None:
+    try:
+        with open("/proc/self/status") as fh:
+            for linha in fh:
+                if linha.startswith("VmRSS:"):
+                    return int(linha.split()[1]) / 1024
+    except Exception:
+        pass
+    return None
+
+
 def _fetch_mps_sync(target_date: date) -> list[dict]:
     email = settings.inlabs_email
     password = settings.inlabs_password.get_secret_value() if settings.inlabs_password else None
@@ -282,9 +315,10 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
         for section in DOU_SECTIONS:
             url = f"{INLABS_BASE}/index.php?p={date_str}&dl={date_str}-{section}.zip"
             try:
-                r = _inlabs_call(lambda: client.get(
-                    url, headers={"Cookie": f"inlabs_session_cookie={cookie}"}, timeout=60.0,
-                ))
+                with _fase(f"download {section}"):
+                    r = _inlabs_call(lambda: client.get(
+                        url, headers={"Cookie": f"inlabs_session_cookie={cookie}"}, timeout=60.0,
+                    ))
                 if r.status_code == 404:
                     continue  # seção não publicada nessa data (legítimo)
                 r.raise_for_status()
@@ -311,16 +345,17 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
                         )
                         failed_sections.append(section)
                     continue
-                with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                    for name in (n for n in zf.namelist() if n.lower().endswith(".xml")):
-                        xml_data = zf.read(name).decode("utf-8", errors="replace")
-                        if "MEDIDA PROVIS" not in xml_data.upper():
-                            continue
-                        for mp in _parse_dou_xml(client, xml_data, target_date):
-                            if mp["numero"] not in seen_numeros:
-                                seen_numeros.add(mp["numero"])
-                                mp["edicao"] = "Extra" if section == "DO1E" else "Normal"
-                                results.append(mp)
+                with _fase(f"unzip+parse {section}", zip_mb=round(len(content) / 1e6, 1)):
+                    with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                        for name in (n for n in zf.namelist() if n.lower().endswith(".xml")):
+                            xml_data = zf.read(name).decode("utf-8", errors="replace")
+                            if "MEDIDA PROVIS" not in xml_data.upper():
+                                continue
+                            for mp in _parse_dou_xml(client, xml_data, target_date):
+                                if mp["numero"] not in seen_numeros:
+                                    seen_numeros.add(mp["numero"])
+                                    mp["edicao"] = "Extra" if section == "DO1E" else "Normal"
+                                    results.append(mp)
             except InlabsMaintenanceError:
                 raise  # manutenção → mensagem clara, não é "seção incompleta"
             except zipfile.BadZipFile:
@@ -934,7 +969,8 @@ async def deliver_to_user(
     Levanta DouError se o fetch falhar (credencial, rede)."""
     from aiogram.types import BufferedInputFile
 
-    mps = await fetch_mps(target_date)
+    with _fase(f"fetch DOU {target_date.isoformat()}"):
+        mps = await fetch_mps(target_date)
     if only_numeros:
         alvo = set(only_numeros)
         mps = [mp for mp in mps if mp["numero"] in alvo]
@@ -969,12 +1005,14 @@ async def deliver_to_user(
     async def _nota_e_docx(mp: dict) -> None:
         try:
             logger.info("dou: gerando nota técnica MP %s/%s…", mp["numero"], mp["ano"])
-            nota = await generate_nota_tecnica(
-                mp,
-                provider=getattr(user, "dou_mp_provider", None),
-                model=getattr(user, "dou_mp_model", None),
-            )
-            docx_bytes = await asyncio.to_thread(build_docx, mp, nota)
+            with _fase(f"nota MP {mp['numero']} (pesquisa+redação)"):
+                nota = await generate_nota_tecnica(
+                    mp,
+                    provider=getattr(user, "dou_mp_provider", None),
+                    model=getattr(user, "dou_mp_model", None),
+                )
+            with _fase(f"docx MP {mp['numero']}"):
+                docx_bytes = await asyncio.to_thread(build_docx, mp, nota)
             await bot.send_document(
                 user.id,
                 BufferedInputFile(docx_bytes, filename=docx_filename(mp)),

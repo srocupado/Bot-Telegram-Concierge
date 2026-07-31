@@ -60,7 +60,10 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   23/dez–1º/fev), como o Congresso adota — não são dias corridos. A detecção de
   MP nova está integrada ao **agente proativo** (avisa nas janelas do dia e
   cobre a véspera no briefing); a nota completa vem sob demanda (`/mp_dou_agora`
-  — aceita `DD/MM/AAAA`, `DD-MM-AA`, `DD/MM` e ISO — ou botão "gerar nota").
+  — aceita `DD/MM/AAAA`, `DD-MM-AA`, `DD/MM` e ISO — ou botão "gerar nota"),
+  e roda em **segundo plano**: o bot confirma na hora e segue respondendo
+  normalmente enquanto gera (o pipeline leva minutos e antes ficava dentro do
+  handler, segurando a sessão de banco do update).
   Se o Inlabs estiver fora, o bot **avisa** que não
   conseguiu checar (nunca um falso "sem MP"), registra o dia como pendente e
   faz **checagem retroativa automática** quando o Inlabs volta (incl. edições
@@ -1021,6 +1024,8 @@ bot/
 │   ├── upload.py                 # /arquivos + captura de anexos
 │   └── chat.py                   # catch-all texto livre + entregador único
 ├── services/
+│   ├── jobs.py                   # trabalhos longos em background (nota do DOU)
+│   ├── loop_watchdog.py          # mede atraso do event loop (diagnóstico)
 │   ├── llm/                      # base + factory + catalog (Models API)
 │   │                             #   + anthropic/openai/gemini
 │   ├── travels/                  # SerpAPI (voos/hotéis), tools e watches diários

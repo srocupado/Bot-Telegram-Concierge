@@ -140,11 +140,17 @@ async def main() -> None:
     await _notify_restart(bot)
 
     scheduler_task = asyncio.create_task(scheduler_loop(bot, SessionLocal))
+    # Mede o atraso do event loop: é o que distingue "o bot está esperando a
+    # rede" de "o bot está TRAVADO" quando uma requisição longa parece segurar
+    # todas as outras. Ver bot/services/loop_watchdog.py.
+    from bot.services.loop_watchdog import watchdog_loop
+    watchdog_task = asyncio.create_task(watchdog_loop())
     try:
         logger.info("starting polling")
         await dp.start_polling(bot, handle_signals=True)
     finally:
-        scheduler_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await scheduler_task
+        for t in (scheduler_task, watchdog_task):
+            t.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await t
         await bot.session.close()

@@ -83,6 +83,60 @@ async def cb_nota_nao(query: CallbackQuery, user: User) -> None:
         pass
 
 
+async def _rodar_nota(
+    bot, user_id: int, target: date, only_numeros: list[str] | None,
+) -> None:
+    """Pipeline da nota em background, com sessão PRÓPRIA.
+
+    Sai do handler de propósito: o pipeline leva minutos (download do DOU +
+    pesquisa + redação + DOCX, uma MP por vez) e, rodando dentro do handler,
+    segurava a sessão de banco do update por todo esse tempo. Aqui o usuário
+    recebe a confirmação na hora e o trabalho segue sozinho.
+
+    Os erros são reportados AQUI (o handler já respondeu): DouError vira fila
+    de nota pendente — o proativo re-tenta e entrega quando o Inlabs voltar —
+    e o resto vira aviso explícito. Nunca silêncio."""
+    from bot.db.session import SessionLocal
+
+    async with SessionLocal() as session:
+        # Recarrega o usuário NA SESSÃO DO JOB: o objeto do handler pertence a
+        # uma sessão que já fechou, e objeto ORM de sessão morta estoura em
+        # DetachedInstanceError no primeiro atributo não carregado.
+        user = await session.get(User, user_id)
+        if user is None or not user.is_authorized:
+            return
+        try:
+            n = await deliver_to_user(
+                bot, session, user, target, force=True, only_numeros=only_numeros,
+            )
+        except DouError as e:
+            from bot.services.proactive import already_notified, mark_notified
+            key = f"{target.isoformat()}:{','.join(only_numeros) if only_numeros else 'all'}"
+            if not await already_notified(session, user.id, "nota_pendente", key):
+                await mark_notified(session, user.id, "nota_pendente", key)
+            await bot.send_message(
+                user.id,
+                f"⚠️ {e}\n📄 Deixei a nota na fila: assim que o Inlabs voltar, "
+                "gero e te envio automaticamente (sem precisar pedir de novo).",
+                parse_mode=None,
+            )
+            return
+        except Exception:
+            logger.exception("nota em background falhou (%s)", target)
+            await bot.send_message(
+                user.id, "⚠️ Erro ao gerar a nota técnica.", parse_mode=None,
+            )
+            return
+        if n == 0:
+            await bot.send_message(
+                user.id, "Nenhuma MP encontrada nessa data.", parse_mode=None,
+            )
+
+
+def _chave_nota(user_id: int, target: date) -> str:
+    return f"nota:{user_id}:{target.isoformat()}"
+
+
 @router.callback_query(F.data.startswith("doump:y:"))
 async def cb_nota_sim(query: CallbackQuery, user: User, session: AsyncSession) -> None:
     """callback_data = 'doump:y:<AAAA-MM-DD>' (todas as MPs do dia) ou
@@ -104,29 +158,23 @@ async def cb_nota_sim(query: CallbackQuery, user: User, session: AsyncSession) -
         await query.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
-    try:
-        n = await deliver_to_user(query.bot, session, user, target,
-                                  force=True, only_numeros=only_numeros)
-    except DouError as e:
-        # MP já DETECTADA mas a nota não saiu (Inlabs fora na hora de re-baixar
-        # o DOU) → entra na FILA: o proativo re-tenta sozinho a cada janela e
-        # entrega quando o Inlabs voltar (kind nota_pendente).
-        from bot.services.proactive import already_notified, mark_notified
-        key = f"{target.isoformat()}:{','.join(only_numeros) if only_numeros else 'all'}"
-        if not await already_notified(session, user.id, "nota_pendente", key):
-            await mark_notified(session, user.id, "nota_pendente", key)
+
+    # Em BACKGROUND: o pipeline leva minutos e não pode segurar este handler
+    # (nem a sessão de banco dele). Ver bot/services/jobs.py.
+    from bot.services import jobs
+    chave = _chave_nota(user.id, target)
+    bot_ = query.bot
+    if not jobs.spawn(chave, lambda: _rodar_nota(bot_, user.id, target, only_numeros)):
         await query.message.answer(
-            f"⚠️ {e}\n📄 Deixei a nota na fila: assim que o Inlabs voltar, "
-            "gero e te envio automaticamente (sem precisar pedir de novo).",
+            "📄 Já estou gerando a nota dessa data — te mando assim que sair.",
             parse_mode=None,
         )
         return
-    except Exception:
-        logger.exception("doump callback failed")
-        await query.message.answer("⚠️ Erro ao gerar a nota técnica.", parse_mode=None)
-        return
-    if n == 0:
-        await query.message.answer("Nenhuma MP encontrada nessa data.", parse_mode=None)
+    await query.message.answer(
+        "📄 Gerando a nota técnica… leva alguns minutos (pesquisa + redação + "
+        "DOCX). Pode seguir usando o bot normalmente; te aviso quando sair.",
+        parse_mode=None,
+    )
 
 
 @router.message(Command("dou_provider"))
@@ -348,21 +396,19 @@ async def cmd_agora(
     else:
         target = hoje
 
+    # Mesmo tratamento do botão: o pipeline sai do handler (ver _rodar_nota).
+    from bot.services import jobs
+    chave = _chave_nota(user.id, target)
+    bot_ = message.bot
+    if not jobs.spawn(chave, lambda: _rodar_nota(bot_, user.id, target, None)):
+        await message.answer(
+            f"📄 Já estou processando o DOU de {target.strftime('%d/%m/%Y')} — "
+            "te mando assim que sair.", parse_mode=None,
+        )
+        return
     await message.answer(
-        f"🔎 Buscando MPs publicadas no DOU em {target.strftime('%d/%m/%Y')}…",
+        f"🔎 Buscando MPs publicadas no DOU em {target.strftime('%d/%m/%Y')}… "
+        "se houver, a nota técnica leva alguns minutos e vem em seguida. "
+        "Pode seguir usando o bot normalmente.",
         parse_mode=None,
     )
-    try:
-        n = await deliver_to_user(message.bot, session, user, target, force=True)
-    except DouError as e:
-        await message.answer(f"⚠️ {e}", parse_mode=None)
-        return
-    except Exception:
-        logger.exception("mp_dou_agora failed")
-        await message.answer("⚠️ Erro ao consultar o DOU.", parse_mode=None)
-        return
-    if n == 0:
-        await message.answer(
-            "Nenhuma MP encontrada no DOU nessa data.",
-            parse_mode=None,
-        )
