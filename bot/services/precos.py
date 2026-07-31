@@ -57,6 +57,36 @@ async def _confirmar_na_pagina(url: str) -> str | None:
         return None
 
 
+def _tokens_numericos(texto: str) -> set[str]:
+    """Tokens com dígito ('360', '13', '2', '110l') — é o que distingue modelo
+    ('Avata 2' vs 'Avata 360'). Minúsculas, sem pontuação."""
+    import re as _re
+    return set(_re.findall(r"\d+\w*", (texto or "").lower()))
+
+
+def _aviso_modelo_divergente(query: str, items: list[dict]) -> str:
+    """Se algum token numérico da BUSCA não aparece em NENHUM dos títulos do
+    topo, o Shopping devolveu outro modelo (caso real: pediu 'Avata 360',
+    veio 'Avata 2' — e o bot apresentou como se fosse o pedido, em silêncio).
+    Devolve um aviso pro LLM repassar, ou '' quando os modelos batem."""
+    alvo = _tokens_numericos(query)
+    if not alvo:
+        return ""
+    titulos = " ".join(str(i.get("title") or "") for i in items[:3])
+    achados = _tokens_numericos(titulos)
+    faltando = alvo - achados
+    if not faltando:
+        return ""
+    return (
+        f"⚠️ MODELO DIVERGENTE: a busca era por '{query}' mas os resultados "
+        f"não contêm '{', '.join(sorted(faltando))}' no título — são de OUTRO "
+        "modelo/versão. DIGA isso ao usuário explicitamente e apresente os "
+        "preços como sendo do modelo encontrado, NUNCA do que ele pediu. Se o "
+        "produto pedido for lançamento recente, diga que não achou preço dele "
+        "no Brasil ainda.\n\n"
+    )
+
+
 async def buscar_preco(query: str) -> str:
     # 1) Google Shopping — descobre QUEM vende (loja + link direto).
     items: list[dict] = []
@@ -70,7 +100,7 @@ async def buscar_preco(query: str) -> str:
             logger.warning("buscar_preco: SerpAPI falhou (%s) — fallback web", e)
 
     if items:
-        lista = format_shopping(query, items)
+        lista = _aviso_modelo_divergente(query, items) + format_shopping(query, items)
         # 2) Confirma o preço lendo a página do 1º (mais relevante).
         primeiro = items[0]
         pagina = await _confirmar_na_pagina(primeiro.get("link") or "")
