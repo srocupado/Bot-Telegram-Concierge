@@ -120,7 +120,7 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "- adicionar_lista_compras, listar_compras, marcar_comprado, desmarcar_compra, remover_lista_compras, limpar_comprados, zerar_lista_compras\n"
     "- analisar_gastos, desfazer_ultima_acao\n"
     "- consultar_mp_dou, consultar_congresso, consultar_pauta_camara, listar_comissoes_reuniao, varrer_comissoes_partido\n"
-    "- buscar_web, ler_pagina, buscar_local, buscar_preco, consultar_sessoes_cinema, buscar_voo, buscar_hotel, criar_watch_voo, criar_watch_hotel, listar_watches_viagem, cancelar_watch_viagem\n"
+    "- buscar_web, ler_pagina, buscar_local, buscar_preco, consultar_sessoes_cinema, buscar_voo, buscar_hotel, criar_watch_voo, criar_watch_hotel, criar_watch_produto, listar_watches_viagem, cancelar_watch_viagem\n"
     "- executar_agente, listar_arquivos, ajuda\n\n"
     "AJUDA / COMO USAR O BOT: quando o usuário pergunta COMO fazer algo no bot "
     "ou como o bot funciona ('como crio um lembrete?', 'como coloco algo na "

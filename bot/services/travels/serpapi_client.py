@@ -416,6 +416,46 @@ def extract_shopping_results(raw: dict[str, Any], limit: int = 7) -> list[dict[s
     return out[:limit]
 
 
+def extract_best_product(raw: dict[str, Any]) -> tuple[float, dict[str, Any]] | None:
+    """Menor preço entre os resultados do Google Shopping, com a loja/link.
+
+    Preço vem de `extracted_price` (NÚMERO da API, não texto raspado) — é o que
+    torna o watch de produto determinístico o bastante pra rodar sozinho no
+    scheduler. Ignora item sem preço e sem título.
+    """
+    priced: list[tuple[float, dict[str, Any]]] = []
+    for it in raw.get("shopping_results") or []:
+        if not isinstance(it, dict) or not it.get("title"):
+            continue
+        p = it.get("extracted_price")
+        if isinstance(p, (int, float)) and p > 0:
+            priced.append((float(p), it))
+    if not priced:
+        return None
+    return min(priced, key=lambda t: t[0])
+
+
+def format_product(price: float, payload: dict[str, Any]) -> str:
+    """Cartão do produto pro alerta do watch."""
+    lines = [f"💰 <b>R$ {price:.2f}</b>"]
+    title = payload.get("title")
+    if title:
+        lines.append(f"📦 {_h(title)}")
+    source = payload.get("source")
+    if source:
+        lines.append(f"🏪 {_h(source)}")
+    rating = payload.get("rating")
+    if rating:
+        r = f"⭐ {_h(rating)}"
+        if payload.get("reviews"):
+            r += f" ({_h(payload['reviews'])})"
+        lines.append(r)
+    link = payload.get("link") or payload.get("product_link")
+    if link:
+        lines.append(f'🔗 <a href="{_h(link)}">Ver anúncio</a>')
+    return "\n".join(lines)
+
+
 def format_shopping(query: str, items: list[dict[str, Any]]) -> str:
     """Texto plano pro LLM sintetizar (não HTML) — preço, loja e link por item."""
     lines = [

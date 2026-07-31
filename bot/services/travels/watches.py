@@ -24,11 +24,13 @@ from bot.services.travels.serpapi_client import (
     attach_return_leg,
     extract_best_flight,
     extract_best_hotel,
+    extract_best_product,
     extract_price_insights,
     find_best_flight_in_window,
     find_best_hotel_in_window,
     format_flight,
     format_hotel,
+    format_product,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,7 +67,7 @@ def _should_alert(
 
 
 def _headline(kind: str, summary: str, price: float, reason: str) -> str:
-    emoji = "✈️" if kind == "flight" else "🏨"
+    emoji = {"flight": "✈️", "hotel": "🏨"}.get(kind, "📦")
     motivo = {
         "below_max": " (atingiu seu teto)",
         "new_min": " (mínimo histórico)",
@@ -183,6 +185,13 @@ async def check_watch(
                     currency=watch.currency,
                 )
                 best = extract_best_hotel(raw)
+        elif watch.kind == "product":
+            query = (watch.params or {}).get("query") or ""
+            if not query:
+                logger.warning("travels: watch de produto %d sem query", watch.id)
+                return
+            raw = await serpapi.search_shopping(query, watch.currency)
+            best = extract_best_product(raw)
         else:
             logger.warning("travels: unknown watch kind: %s", watch.kind)
             return
@@ -214,11 +223,12 @@ async def check_watch(
 
     if fire:
         headline = _headline(watch.kind, watch.summary or watch.kind, price, reason)
-        details = (
-            format_flight(price, payload, chosen_dep, chosen_ret, insights)
-            if watch.kind == "flight"
-            else format_hotel(price, payload, chosen_ci, chosen_co)
-        )
+        if watch.kind == "flight":
+            details = format_flight(price, payload, chosen_dep, chosen_ret, insights)
+        elif watch.kind == "product":
+            details = format_product(price, payload)
+        else:
+            details = format_hotel(price, payload, chosen_ci, chosen_co)
         message = f"{headline}\n\n{details}"
         user = await session.get(User, watch.user_id)
         if user is not None:
