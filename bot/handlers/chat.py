@@ -150,12 +150,17 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "que ALGO EXISTE no sistema do usuário (monitoramento/watch ativo, lembrete "
     "agendado, tarefa aberta, lançamento feito), CHAME a tool de listagem "
     "correspondente (listar_watches_viagem, listar_lembretes, listar_tarefas, "
-    "consultar_lancamentos). É PROIBIDO deduzir de mensagem anterior desta "
-    "conversa ('eu disse que criei, então existe') — o item pode ter sido "
-    "cancelado, a criação pode ter falhado, ou a feature pode nem existir mais. "
-    "Sem checar, não afirme: ou consulta, ou fica calado sobre o assunto. Frases "
-    "como 'você já tem um monitoramento ativo' sem chamada de tool são "
-    "PROIBIDAS.\n\n"
+    "consultar_lancamentos). É PROIBIDO deduzir de QUALQUER das fontes abaixo — "
+    "todas registram o PASSADO, não o estado de agora:\n"
+    "  • mensagem anterior desta conversa ('eu disse que criei, então existe');\n"
+    "  • o RESUMO DE LONGO PRAZO no bloco de contexto (ele guarda o que "
+    "ACONTECEU um dia — 'criou um monitoramento' —, não o que existe hoje; o "
+    "item pode ter sido cancelado ou a feature removida);\n"
+    "  • fatos salvos (lembrar_fato) e histórico pesquisável.\n"
+    "O item pode ter sido cancelado, a criação pode ter falhado, ou a feature "
+    "pode nem existir mais. Sem checar com a tool, não afirme: ou consulta, ou "
+    "fica calado sobre o assunto. Frases como 'você já tem um monitoramento "
+    "ativo' / 'seu lembrete está agendado' sem chamada de tool são PROIBIDAS.\n\n"
     "RESPOSTA A UMA OFERTA SUA (tem PRECEDÊNCIA sobre a continuidade abaixo): "
     "se a SUA última mensagem terminou oferecendo/perguntando algo ('quer que "
     "eu crie…?', 'quer que eu busque…?', 'posso agendar?'), a resposta curta do "
@@ -540,7 +545,10 @@ def _context_block(tz_name: str, memory_context: str | None = None) -> str:
     if memory_context:
         block += (
             "\n\nMEMÓRIA DE CONVERSAS ANTERIORES (resumo automático; use como "
-            "contexto, corrija se o usuário disser diferente):\n"
+            "contexto, corrija se o usuário disser diferente). ATENÇÃO: isto "
+            "registra o que ACONTECEU no passado — NÃO é o estado atual do "
+            "sistema. Se aparecer que algo foi criado (monitoramento, lembrete, "
+            "tarefa), NÃO afirme que existe: consulte a tool de listagem antes.\n"
             + memory_context
         )
     return block
