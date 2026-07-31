@@ -86,7 +86,6 @@ from bot.services.travels.tool_handlers import (
     _h_cancelar_watch_viagem,
     _h_criar_watch_hotel,
     _h_criar_watch_voo,
-    _h_criar_watch_produto,
     _h_listar_watches_viagem,
 )
 
@@ -2831,39 +2830,6 @@ TOOLS: list[Tool] = [
             "required": ["origin_iata", "destination_iata", "depart_date"],
         },
         handler=_h_criar_watch_voo,
-    ),
-    Tool(
-        name="criar_watch_produto",
-        description=(
-            "Cria um monitor DIÁRIO de preço de PRODUTO (drone, eletrônico, "
-            "ferramenta…). Todo dia o bot consulta o Google Shopping e avisa "
-            "quando o preço cair abaixo do `max_price` (ou, sem teto, a cada "
-            "novo mínimo histórico). USE quando pedirem 'monitora o preço "
-            "desse produto', 'me avisa quando baixar de R$ X'. "
-            "Monitora o MENOR preço DO MERCADO, não um anúncio específico — "
-            "se o usuário mandar um link, o nome sai do próprio link (loja "
-            "como Mercado Livre bloqueia leitura da página); avise-o disso. "
-            "Pra passagem/hotel use criar_watch_voo/criar_watch_hotel."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "produto": {
-                    "type": "string",
-                    "description": "Nome do produto pra busca (ex: 'DJI Avata 2 Fly Smart Combo'). Se só houver link, pode omitir que o nome é extraído dele.",
-                },
-                "url": {
-                    "type": "string",
-                    "description": "Link do produto (opcional) — guardado como referência e usado pra derivar o nome quando 'produto' não vier.",
-                },
-                "max_price": {
-                    "type": "number",
-                    "description": "Teto em R$: avisa quando o preço ficar igual ou abaixo. Sem ele, avisa a cada novo mínimo histórico.",
-                },
-            },
-            "required": [],
-        },
-        handler=_h_criar_watch_produto,
     ),
     Tool(
         name="criar_watch_hotel",

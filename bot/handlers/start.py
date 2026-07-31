@@ -131,12 +131,7 @@ HELP_TEXT = (
     "<i>\"hospedagem barata em Salvador semana que vem\"</i> → busca diárias.\n"
     "• <i>\"monitora esse trecho até R$1500\"</i> / <i>\"me avisa quando esse hotel cair\"</i> → "
     "cria watch que roda 1x/dia e alerta na queda.\n"
-    "• <b>Monitor de preço de PRODUTO</b>: <i>\"monitora o preço do DJI Avata 2 "
-    "e me avisa quando baixar de R$ 6.900\"</i> (pode mandar o link — o nome sai "
-    "dele) → checa 1x/dia no Google Shopping e alerta na queda. Acompanha o "
-    "MENOR preço do mercado, não um anúncio específico.\n"
-    "• <i>\"minhas viagens monitoradas\"</i> / <i>\"meus monitores de preço\"</i> "
-    "→ lista os watches ativos (✈️ voo, 🏨 hotel, 📦 produto). "
+    "• <i>\"minhas viagens monitoradas\"</i> → lista watches ativos. "
     "<i>\"cancela o watch #3\"</i> → encerra.\n"
     "• Cidades viram IATA automaticamente (Brasília=BSB, NY=JFK, etc.); datas relativas (\"sexta\", \"15/07\") também.\n"
     "• <code>/viagem &lt;destino&gt; DD/MM a DD/MM [moeda &lt;nome&gt;]</code> — modo viagem: clima do destino no briefing, lembretes e avisos no fuso local, cotação da moeda local (ex.: <code>/viagem Tóquio 01/11 a 15/11 moeda iene</code>). <code>/viagem off</code> desliga; no fim do período desliga sozinho.\n\n"
@@ -267,9 +262,6 @@ _HELP_KEYWORDS: dict[str, str] = {
     "rota": "rota", "chegar": "rota", "caminho": "rota", "trajeto": "rota",
     "voo": "viagens", "voos": "viagens", "passagem": "viagens", "passagens": "viagens",
     "hotel": "viagens", "hospedagem": "viagens", "viagem": "viagens", "viagens": "viagens",
-    "monitorar": "viagens", "monitora": "viagens", "monitoro": "viagens",
-    "monitorando": "viagens", "monitoramento": "viagens", "watch": "viagens",
-    "watches": "viagens", "monitor": "viagens", "monitores": "viagens",
     "fuso": "viagens", "modo viagem": "viagens",
     "viajar": "viagens", "viajo": "viagens", "viajando": "viagens",
     "mp": "diario oficial", "dou": "diario oficial", "medida provisoria": "diario oficial",

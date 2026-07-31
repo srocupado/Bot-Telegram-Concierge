@@ -19,7 +19,6 @@ from bot.services.travels.serpapi_client import (
     attach_return_leg,
     extract_best_flight,
     extract_best_hotel,
-    extract_best_product,
     extract_price_insights,
     format_flight,
     extract_source_rates,
@@ -193,72 +192,6 @@ async def _h_criar_watch_voo(args: dict, ctx: ToolContext) -> str:
     return f"ok: watch #{watch.id} criado pra {summary}"
 
 
-def _produto_da_url(url: str) -> str:
-    """Extrai um nome de produto do SLUG da URL — 'mercadolivre.com.br/
-    drone-dji-avata-2-fly-smart-combo-br-dji073/p/MLB...' → 'drone dji avata 2
-    fly smart combo'. Serve quando o usuário manda só o link: o Mercado Livre
-    (e outros) bloqueia leitura automática da página, mas o slug carrega o nome
-    e alimenta a busca do Google Shopping."""
-    import re as _re
-    from urllib.parse import urlparse
-
-    caminho = urlparse(url).path
-    melhor = ""
-    for parte in caminho.split("/"):
-        # descarta ids (MLB123, /p/) e fica com o segmento textual mais longo
-        limpo = _re.sub(r"-?\b[a-z]{2,4}\d{3,}\b", "", parte, flags=_re.I).strip("-")
-        if limpo.count("-") >= 2 and len(limpo) > len(melhor):
-            melhor = limpo
-    return melhor.replace("-", " ").strip()
-
-
-async def _h_criar_watch_produto(args: dict, ctx: ToolContext) -> str:
-    produto = (args.get("produto") or "").strip()
-    url = (args.get("url") or "").strip()
-    max_price = args.get("max_price")
-    if not produto and url:
-        produto = _produto_da_url(url)
-    if not produto:
-        return (
-            "erro: precisa de 'produto' (nome pra busca). Se só há link e o "
-            "nome não sai dele, peça ao usuário o nome do produto."
-        )
-    client = _serpapi_or_error()
-    if isinstance(client, str):
-        return client
-    # Leitura inicial: valida que o produto é encontrável ANTES de gravar o
-    # watch (evita monitor que nunca acha nada) e já dá o preço atual.
-    try:
-        async with client as serpapi:
-            raw = await serpapi.search_shopping(produto, "BRL")
-            best = extract_best_product(raw)
-    except SerpAPIError as e:
-        return f"erro SerpAPI: {e}"
-    if best is None:
-        return f"erro: não achei preço pra '{produto}' no Google Shopping — confira o nome"
-    preco, payload = best
-
-    params = {"query": produto}
-    if url:
-        params["url"] = url
-    watch = TravelWatch(
-        user_id=ctx.user.id, kind="product", params=params,
-        max_price=float(max_price) if max_price is not None else None,
-        summary=produto[:256], last_price=preco, min_price_seen=preco,
-    )
-    ctx.session.add(watch)
-    await ctx.session.commit()
-
-    teto = f" (avisa abaixo de R$ {float(max_price):.2f})" if max_price is not None else " (avisa a cada mínimo histórico)"
-    loja = payload.get("source") or "—"
-    return (
-        f"ok: watch #{watch.id} criado pra '{produto}'{teto}. "
-        f"Preço agora: R$ {preco:.2f} em {loja}. Checagem 1x/dia. "
-        "Diga ao usuário que monitora o MENOR preço do mercado (Google "
-        "Shopping), não o anúncio específico de um link."
-    )
-
-
 async def _h_criar_watch_hotel(args: dict, ctx: ToolContext) -> str:
     location = (args.get("location") or "").strip()
     ci = (args.get("check_in") or "").strip()
@@ -288,10 +221,10 @@ async def _h_listar_watches_viagem(_args: dict, ctx: ToolContext) -> str:
     ).order_by(TravelWatch.id.desc())
     items = list((await ctx.session.scalars(stmt)).all())
     if not items:
-        return "nenhum monitor de preço ativo (viagem ou produto)"
+        return "nenhum watch de viagem ativo"
     lines = []
     for w in items:
-        icon = {"flight": "✈️", "hotel": "🏨"}.get(w.kind, "📦")
+        icon = "✈️" if w.kind == "flight" else "🏨"
         teto = f" · teto R$ {w.max_price:.2f}" if w.max_price else ""
         ultimo = f" · último R$ {w.last_price:.2f}" if w.last_price else ""
         lines.append(f"#{w.id} {icon} {w.summary}{teto}{ultimo}")
