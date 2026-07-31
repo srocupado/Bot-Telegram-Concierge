@@ -59,17 +59,32 @@ async def _confirmar_na_pagina(url: str) -> str | None:
 
 def _tokens_numericos(texto: str) -> set[str]:
     """Tokens com dígito ('360', '13', '2', '110l') — é o que distingue modelo
-    ('Avata 2' vs 'Avata 360'). Minúsculas, sem pontuação."""
+    ('Avata 2' vs 'Avata 360'). Minúsculas, sem pontuação. Descarta o que tem
+    cara de DINHEIRO/parcela, não de modelo: '6900' (teto de preço), '12x',
+    '6.900,00' — senão 'me avisa abaixo de 6900' dispararia aviso falso."""
     import re as _re
-    return set(_re.findall(r"\d+\w*", (texto or "").lower()))
+    out: set[str] = set()
+    for t in _re.findall(r"\d[\w.,]*", (texto or "").lower()):
+        t = t.rstrip(".,")
+        if _re.fullmatch(r"\d+x", t):          # parcela: 12x, 10x
+            continue
+        if "," in t or "." in t:               # 6.900,00 / 3.303,00 → dinheiro
+            continue
+        if len(t) >= 4 and t.isdigit():        # 6900, 11190 → dinheiro/limite
+            continue
+        out.add(t)
+    return out
 
 
-def _aviso_modelo_divergente(query: str, items: list[dict]) -> str:
-    """Se algum token numérico da BUSCA não aparece em NENHUM dos títulos do
-    topo, o Shopping devolveu outro modelo (caso real: pediu 'Avata 360',
-    veio 'Avata 2' — e o bot apresentou como se fosse o pedido, em silêncio).
-    Devolve um aviso pro LLM repassar, ou '' quando os modelos batem."""
-    alvo = _tokens_numericos(query)
+def _aviso_modelo_divergente(query: str, items: list[dict], user_text: str = "") -> str:
+    """Aviso quando os resultados são de OUTRO modelo. Compara com os títulos:
+    - os tokens da QUERY (pega o Shopping devolvendo outro produto), e
+    - os tokens do TEXTO ORIGINAL do usuário (pega o LLM REESCREVENDO a busca:
+      caso real — usuário pediu 'Avata 360', o modelo não conhecia o produto
+      [lançado após seu treino], 'corrigiu' pra 'Avata 2' ANTES de buscar, e
+      o aviso antigo ficava mudo porque query e títulos combinavam entre si).
+    Devolve '' quando tudo bate."""
+    alvo = _tokens_numericos(query) | _tokens_numericos(user_text)
     if not alvo:
         return ""
     titulos = " ".join(str(i.get("title") or "") for i in items[:3])
@@ -78,16 +93,17 @@ def _aviso_modelo_divergente(query: str, items: list[dict]) -> str:
     if not faltando:
         return ""
     return (
-        f"⚠️ MODELO DIVERGENTE: a busca era por '{query}' mas os resultados "
-        f"não contêm '{', '.join(sorted(faltando))}' no título — são de OUTRO "
-        "modelo/versão. DIGA isso ao usuário explicitamente e apresente os "
-        "preços como sendo do modelo encontrado, NUNCA do que ele pediu. Se o "
-        "produto pedido for lançamento recente, diga que não achou preço dele "
-        "no Brasil ainda.\n\n"
+        f"⚠️ MODELO DIVERGENTE: o usuário pediu algo com "
+        f"'{', '.join(sorted(faltando))}' e os resultados NÃO contêm isso no "
+        "título — são de OUTRO modelo/versão (talvez a busca tenha sido "
+        "reescrita; produtos recentes existem mesmo que você não os conheça — "
+        "seu treino tem data de corte). DIGA a troca ao usuário explicitamente, "
+        "apresente os preços como sendo do modelo ENCONTRADO, e refaça a busca "
+        "com as palavras EXATAS do usuário se ainda não fez.\n\n"
     )
 
 
-async def buscar_preco(query: str) -> str:
+async def buscar_preco(query: str, user_text: str = "") -> str:
     # 1) Google Shopping — descobre QUEM vende (loja + link direto).
     items: list[dict] = []
     if settings.serpapi_key is not None:
@@ -100,7 +116,7 @@ async def buscar_preco(query: str) -> str:
             logger.warning("buscar_preco: SerpAPI falhou (%s) — fallback web", e)
 
     if items:
-        lista = _aviso_modelo_divergente(query, items) + format_shopping(query, items)
+        lista = _aviso_modelo_divergente(query, items, user_text) + format_shopping(query, items)
         # 2) Confirma o preço lendo a página do 1º (mais relevante).
         primeiro = items[0]
         pagina = await _confirmar_na_pagina(primeiro.get("link") or "")

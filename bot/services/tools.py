@@ -201,7 +201,7 @@ async def _h_buscar_preco(args: dict, ctx: ToolContext) -> str:
     query = (args.get("query") or "").strip()
     if not query:
         return "erro: precisa de 'query' (nome do produto)"
-    return await buscar_preco(query)
+    return await buscar_preco(query, user_text=ctx.user_text)
 
 
 async def _h_consultar_sessoes_cinema(args: dict, ctx: ToolContext) -> str:
@@ -2708,7 +2708,7 @@ TOOLS: list[Tool] = [
             "'quanto custa [produto]?', 'preço do [produto]', 'tem o link?', "
             "'onde comprar [produto] mais barato?'. É a fonte CERTA pra preço/"
             "link de produto — NÃO use buscar_web (marketplace bloqueia e o link "
-            "sai genérico). Passe em 'query' o nome do produto (ex: 'DJI Avata 2 "
+            "sai genérico). Passe em 'query' o nome EXATAMENTE como o usuário disse — NÃO 'corrija' modelo que você não reconhece (seu treino tem data de corte; o produto pode ser lançamento). Ex: 'DJI Avata 2 "
             "Fly More Combo'). A tool é HÍBRIDA: o Shopping acha quem vende e ela "
             "ainda LÊ a página do 1º resultado pra confirmar o preço na fonte. "
             "OBEDEÇA a precedência que vier na resposta: preço da PÁGINA vale mais "
