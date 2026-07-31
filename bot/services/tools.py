@@ -2709,9 +2709,13 @@ TOOLS: list[Tool] = [
             "'onde comprar [produto] mais barato?'. É a fonte CERTA pra preço/"
             "link de produto — NÃO use buscar_web (marketplace bloqueia e o link "
             "sai genérico). Passe em 'query' o nome do produto (ex: 'DJI Avata 2 "
-            "Fly More Combo'). Se o Google Shopping estiver fora/sem cota, a tool "
-            "cai automaticamente pra busca web (preço aproximado). Resposta já "
-            "vem com preços/lojas/links — repasse os relevantes."
+            "Fly More Combo'). A tool é HÍBRIDA: o Shopping acha quem vende e ela "
+            "ainda LÊ a página do 1º resultado pra confirmar o preço na fonte. "
+            "OBEDEÇA a precedência que vier na resposta: preço da PÁGINA vale mais "
+            "que o da lista (o do Shopping vem de feed e atrasa). Se a resposta "
+            "disser que não confirmou na página, apresente os valores como "
+            "REFERÊNCIA e mande conferir no link — nunca como preço atual. Se o "
+            "Shopping estiver fora/sem cota, cai pra busca web."
         ),
         parameters={
             "type": "object",
