@@ -1207,9 +1207,23 @@ async def deliver_to_user(
             caption=None if nota else "⚠️ Nota gerada sem análise da IA (texto base).",
         )
 
-    # Serial dentro da chamada; entre chamadas quem serializa é o _SEM_NOTA
-    # (ver o comentário dele). Este laço sozinho nunca protegeu de duas
-    # gerações simultâneas vindas de caminhos diferentes.
+    # Serial (não paralelo) DENTRO da chamada. Entre chamadas quem serializa é
+    # o _SEM_NOTA — este laço sozinho nunca protegeu de duas gerações
+    # simultâneas vindas de caminhos diferentes.
+    #
+    # ALERTA pra quem mexer aqui: a tentação é paralelizar (`asyncio.gather`)
+    # pra entregar as notas do dia mais rápido. NÃO faça sem manter o
+    # semáforo. A chave e o plano do LLM são de QUEM USA, não do projeto:
+    # basta um usuário da casa num free tier pra duas gerações concorrentes
+    # virarem 429. E 429 aqui não é só lentidão — `_nota_e_docx` captura a
+    # exceção, avisa e segue, e a MP NÃO volta pra fila: a nota é PERDIDA em
+    # definitivo. Se precisar de mais vazão, suba _NOTA_MAX_POR_JANELA (as
+    # notas enfileiram no semáforo) em vez de remover a serialização.
+    #
+    # Histórico: em 01/08/2026 eu defendi o teto de 1 alegando risco de quota
+    # com "o provedor é pago". Premissa errada — o plano não é do projeto. O
+    # semáforo torna a garantia independente de plano, provedor e de todo
+    # chamador se comportar.
     for mp in avisadas:
         await _nota_e_docx(mp)
     return len(avisadas)
