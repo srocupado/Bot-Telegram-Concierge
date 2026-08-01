@@ -49,6 +49,9 @@ class _FakeSession:
     async def scalars(self, _stmt):
         return list(self._respostas.pop(0)) if self._respostas else []
 
+    async def commit(self):
+        return None
+
 
 def _colher_com(monkeypatch, resultado, marcadas: list[tuple[str, str]]):
     async def _fetch(_d):
@@ -67,7 +70,8 @@ def _colher_com(monkeypatch, resultado, marcadas: list[tuple[str, str]]):
     monkeypatch.setattr(proactive, "already_notified", _false)
     monkeypatch.setattr(proactive, "mark_notified", _mark)
     monkeypatch.setattr(proactive, "unmark_notified", _none)
-    user = SimpleNamespace(id=77, dou_mp_subscribed=True, is_authorized=True)
+    user = SimpleNamespace(id=77, dou_mp_subscribed=True, is_authorized=True,
+                            dou_ultimo_dia_ok=None)
     hoje = datetime.now(proactive.BRT).date()
     return asyncio.run(proactive.collect_mp(_FakeSession([], []), user, [hoje])), hoje
 

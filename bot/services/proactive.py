@@ -285,6 +285,70 @@ async def _mp_dias_pendentes(
     return sorted(out)
 
 
+async def _cobrir_lacuna(
+    session: AsyncSession, user: User, hoje: date,
+) -> list[ProactiveFact]:
+    """Transforma em pendência os dias que o bot NUNCA olhou.
+
+    A pendência retroativa só nascia de uma tentativa que FALHOU. Dia em que o
+    bot sequer rodou (container fora, queda de luz no Orange Pi, deploy longo,
+    fim de semana com a máquina desligada) não deixava rastro: na volta ele
+    olhava só hoje (+ontem no briefing) e o resto sumia em silêncio — sem
+    pendência, sem aviso, sem ninguém pra notar.
+
+    A marca d'água (`dou_ultimo_dia_ok`) fecha isso: tudo entre ela e ontem
+    que não foi checado entra na fila retroativa.
+    """
+    marca = user.dou_ultimo_dia_ok
+    if marca is None:
+        # Primeira janela com a coluna: adota ontem, sem varrer o passado.
+        # Enfileirar 14 dias de uma vez custaria um fetch de ~6s cada e
+        # inundaria o dono de avisos sobre dias que ele nunca esperou.
+        user.dou_ultimo_dia_ok = hoje - timedelta(days=1)
+        await session.commit()
+        return []
+
+    # Hoje fica de fora: está sendo checado nesta janela.
+    lacuna = [marca + timedelta(days=i) for i in range(1, (hoje - marca).days)]
+    if not lacuna:
+        return []
+
+    limite = hoje - timedelta(days=_MP_RETRO_EXPIRA_DIAS)
+    for d in (d for d in lacuna if d >= limite):
+        if not await already_notified(session, user.id, "mp_pendente", d.isoformat()):
+            await mark_notified(session, user.id, "mp_pendente", d.isoformat())
+    logger.warning("proactive: lacuna de %d dia(s) no DOU (marca=%s, hoje=%s)",
+                   len(lacuna), marca, hoje)
+
+    # Dia velho demais pra retroativa NÃO pode sumir calado — é justamente o
+    # caso em que o bot ficou fora por muito tempo e mais provavelmente perdeu
+    # MP. Avisa uma vez, com as datas, e diz o que fazer.
+    facts: list[ProactiveFact] = []
+    velhos = [d for d in lacuna if d < limite]
+    if velhos:
+        key = f"lacuna:{velhos[0].isoformat()}:{velhos[-1].isoformat()}"
+        if not await already_notified(session, user.id, "mp_lacuna", key):
+            periodo = (
+                velhos[0].strftime("%d/%m") if len(velhos) == 1
+                else f"{velhos[0].strftime('%d/%m')} a {velhos[-1].strftime('%d/%m')}"
+            )
+            facts.append(ProactiveFact(
+                "mp", "mp_lacuna", key,
+                f"⚠️ <b>Fiquei sem checar o DOU</b> de {periodo} "
+                f"({len(velhos)} dia(s)) — passou dos {_MP_RETRO_EXPIRA_DIAS} "
+                "dias da re-checagem automática. Esses dias NÃO foram "
+                "verificados; se precisar, rode "
+                f"<code>/mp_dou_agora {velhos[0].strftime('%d/%m/%Y')}</code>.",
+                date_iso=None,
+            ))
+
+    # A lacuna está contabilizada (na fila ou avisada): a marca avança pra não
+    # re-enfileirar tudo na próxima janela.
+    user.dou_ultimo_dia_ok = hoje - timedelta(days=1)
+    await session.commit()
+    return facts
+
+
 @dataclass
 class _Colheita:
     """Resultado de checar UM dia de DOU.
@@ -340,6 +404,10 @@ async def collect_mp(
                 date_iso=d.isoformat(),
             ))
         return _Colheita(out, completo, provisorio)
+
+    # ANTES de varrer: dias que o bot nunca olhou viram pendência (marca
+    # d'água). Sem isso, o que ele perdeu enquanto esteve fora é invisível.
+    facts += await _cobrir_lacuna(session, user, datetime.now(BRT).date())
 
     ok_dates: set[date] = set()
     for d in dates:
@@ -430,6 +498,16 @@ async def collect_mp(
             f"✅ Checagem retroativa do DOU de {d.strftime('%d/%m')} concluída — {detalhe}.",
             date_iso=None,
         ))
+
+    # Marca d'água avança com o dia mais recente que recebeu baixa. É o que
+    # permite detectar a lacuna na próxima volta — sem isso ela congelaria em
+    # "ontem" e um período fora do ar de 3 dias viraria só 1 dia de pendência.
+    checados = ok_dates | set(resolvidos)
+    if checados:
+        novo = max(checados)
+        if user.dou_ultimo_dia_ok is None or novo > user.dou_ultimo_dia_ok:
+            user.dou_ultimo_dia_ok = novo
+            await session.commit()
 
     # NOTAS na fila (pedidas com o Inlabs fora): linha de status em TODA janela
     # (kind nota_fila não é dedupado no run) até a entrega dar baixa.

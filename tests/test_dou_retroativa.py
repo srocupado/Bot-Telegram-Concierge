@@ -32,6 +32,9 @@ class _FakeSession:
     async def scalars(self, _stmt):
         return list(self._respostas.pop(0)) if self._respostas else []
 
+    async def commit(self):
+        return None
+
 
 def _sem_dedup(monkeypatch) -> None:
     async def _false(*a, **kw):
@@ -57,7 +60,8 @@ def _cenario(monkeypatch, resultado):
     monkeypatch.setattr(dou_monitor, "fetch_mps", _fetch)
     _sem_dedup(monkeypatch)
     session = _FakeSession([SimpleNamespace(key=ontem.isoformat())], [])
-    user = SimpleNamespace(id=4242, dou_mp_subscribed=True, is_authorized=True)
+    user = SimpleNamespace(id=4242, dou_mp_subscribed=True, is_authorized=True,
+                            dou_ultimo_dia_ok=None)
     return session, user, hoje, ontem
 
 

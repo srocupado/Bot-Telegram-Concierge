@@ -83,6 +83,12 @@ class User(Base):
     # quando o provider efetivo for gemini.
     dou_mp_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
     dou_mp_model: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    # MARCA D'ÁGUA: último dia de DOU checado com sucesso. Sem ela, dia que o
+    # bot NUNCA olhou (container fora, queda de luz, deploy longo) não deixava
+    # rastro nenhum — a pendência só nascia de uma tentativa que falhou, então
+    # o buraco era invisível. Com a marca, o intervalo entre ela e hoje vira
+    # pendência automática na volta.
+    dou_ultimo_dia_ok: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     # Agente proativo (opt-in): avisos automáticos (vencimentos, briefing, nudges, MP)
     proactive_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
