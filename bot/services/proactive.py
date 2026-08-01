@@ -285,6 +285,27 @@ async def _mp_dias_pendentes(
     return sorted(out)
 
 
+@dataclass
+class _Colheita:
+    """Resultado de checar UM dia de DOU.
+
+    É um objeto (e não a tupla que era antes) de propósito: a tupla foi a
+    causa de um bug que derrubava a janela proativa inteira — um call site
+    fazia `facts += await _colher(d)` e continuou "funcionando" quando a tupla
+    ganhou um segundo elemento, contaminando a lista de fatos. Com atributos
+    nomeados, um campo novo não passa despercebido por call site nenhum.
+    """
+
+    facts: list[ProactiveFact]
+    completo: bool      # nenhuma seção FALHOU (erro de rede, ZIP inválido…)
+    provisorio: bool    # 404 numa seção com o dia ainda aberto
+
+    @property
+    def baixa(self) -> bool:
+        """Se o dia pode ser dado como checado. Um lugar só decide isso."""
+        return self.completo and not self.provisorio
+
+
 async def collect_mp(
     session: AsyncSession, user: User, dates: list[date], *, force: bool = False,
 ) -> list[ProactiveFact]:
@@ -294,14 +315,16 @@ async def collect_mp(
     facts: list[ProactiveFact] = []
     seen: set[str] = set()
     failed: list[date] = []
+    provisorios: list[date] = []
 
-    async def _colher(d: date) -> tuple[list[ProactiveFact], bool]:
-        """(facts, completo) das MPs de um dia (dedup por número e por
+    async def _colher(d: date) -> _Colheita:
+        """Colheita das MPs de um dia (dedup por número e por
         já-notificada). `completo=False` quando uma seção do DOU falhou: o que
         veio é entregue, mas o dia NÃO recebe baixa da pendência.
         Levanta exceção quando o fetch falha inteiro — o caller decide."""
         mps = await fetch_mps(d)
         completo = not getattr(mps, "incompleto", False)
+        provisorio = bool(getattr(mps, "provisorio", False))
         out: list[ProactiveFact] = []
         for mp in mps:
             key = f"{mp['numero']}/{mp['ano']}"
@@ -316,28 +339,33 @@ async def collect_mp(
                 f"📜 MP {mp['numero']}/{mp['ano']}: {ementa}",
                 date_iso=d.isoformat(),
             ))
-        return out, completo
+        return _Colheita(out, completo, provisorio)
 
     ok_dates: set[date] = set()
     for d in dates:
         try:
-            colhidos, completo = await _colher(d)
-            facts += colhidos
-            if completo:
+            c = await _colher(d)
+            facts += c.facts
+            if c.baixa:
                 ok_dates.add(d)
-            else:
+            elif not c.completo:
                 # Seção falhou: o que veio é entregue, mas o dia NÃO recebe
                 # baixa — fica pendente pra re-checagem quando o Inlabs voltar
                 # (senão MP só da edição Extra sumiria em silêncio).
                 logger.warning("proactive: %s veio INCOMPLETO; mantendo pendência", d)
                 failed.append(d)
+            else:
+                # Só 404 com o dia aberto: pendência SEM aviso (não houve
+                # falha — a seção pode simplesmente ainda não ter saído).
+                provisorios.append(d)
         except Exception as exc:
             logger.warning("proactive: fetch_mps(%s) falhou: %s", d, exc)
             failed.append(d)
 
     # Dia que falhou vira PENDÊNCIA persistente — gravada JÁ (não no pós-envio):
-    # precisa sobreviver mesmo que o envio desta janela falhe.
-    for d in failed:
+    # precisa sobreviver mesmo que o envio desta janela falhe. Provisório entra
+    # na mesma fila: a diferença entre os dois é só o aviso, logo abaixo.
+    for d in failed + provisorios:
         if not await already_notified(session, user.id, "mp_pendente", d.isoformat()):
             await mark_notified(session, user.id, "mp_pendente", d.isoformat())
 
@@ -380,16 +408,18 @@ async def collect_mp(
     restantes = [d for d in pendentes if d not in dates][:_MP_RETRO_MAX_POR_JANELA]
     for d in restantes:
         try:
-            colhidos, completo = await _colher(d)
+            c = await _colher(d)
         except Exception as exc:
             logger.warning("proactive: retroativa DOU %s ainda falhando: %s", d, exc)
             continue
-        facts += colhidos
-        if not completo:
-            # Voltou incompleto (uma seção falhou): entrega o que veio, mas o
-            # dia NÃO recebe baixa — continua pendente, igual à varredura
-            # normal. Dar baixa aqui perderia a edição Extra em silêncio.
-            logger.warning("proactive: retroativa %s veio INCOMPLETA; mantendo pendência", d)
+        facts += c.facts
+        if not c.baixa:
+            # Incompleta (seção falhou) ou provisória (404 com o dia ainda
+            # aberto): entrega o que veio, mas o dia NÃO recebe baixa —
+            # continua pendente, igual à varredura normal. Dar baixa aqui
+            # perderia a edição Extra em silêncio.
+            logger.warning("proactive: retroativa %s sem baixa (completo=%s "
+                           "provisorio=%s)", d, c.completo, c.provisorio)
             continue
         resolvidos.append(d)
     for d in sorted(resolvidos):

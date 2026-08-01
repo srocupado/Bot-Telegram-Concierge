@@ -21,6 +21,7 @@ import zipfile
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from xml.etree import ElementTree as ET
+from zoneinfo import ZoneInfo
 
 import httpx
 from bs4 import BeautifulSoup
@@ -35,6 +36,29 @@ logger = logging.getLogger(__name__)
 PLANALTO_BASE = "https://www.planalto.gov.br"
 INLABS_BASE = "https://inlabs.in.gov.br"
 DOU_SECTIONS = ["DO1E", "DO1"]
+
+BRT = ZoneInfo("America/Sao_Paulo")
+
+# A partir de que hora do dia SEGUINTE um 404 do Inlabs vira definitivo.
+# Antes disso, 404 é "ainda não saiu" — a edição extra (DO1E), onde sai
+# crédito extraordinário, pode ser publicada a qualquer hora do dia, inclusive
+# à noite. 6h dá margem e ainda deixa o briefing das 7h fechar o dia anterior.
+_HORA_FECHAMENTO = 6
+
+
+def _dia_encerrado(d: date, agora: datetime | None = None) -> bool:
+    """True quando a data já não pode mais receber edição do DOU.
+
+    É o que separa 404 legítimo ("não publicado", dia fechado) de 404 espúrio
+    ou prematuro ("ainda não saiu" / Inlabs instável). Sem essa régua, um 404
+    dava baixa imediata no dia e a MP publicada depois — ou não servida por
+    instabilidade — sumia em silêncio, sem pendência e sem aviso.
+    """
+    agora = agora or datetime.now(BRT)
+    limite = datetime.combine(
+        d + timedelta(days=1), datetime.min.time(), tzinfo=BRT,
+    ) + timedelta(hours=_HORA_FECHAMENTO)
+    return agora >= limite
 
 _HEADERS = {
     "User-Agent": (
@@ -321,6 +345,7 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
 
         date_str = target_date.strftime("%Y-%m-%d")
         failed_sections: list[str] = []
+        sections_404: list[str] = []
         for section in DOU_SECTIONS:
             url = f"{INLABS_BASE}/index.php?p={date_str}&dl={date_str}-{section}.zip"
             try:
@@ -329,7 +354,13 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
                         url, headers={"Cookie": f"inlabs_session_cookie={cookie}"}, timeout=60.0,
                     ))
                 if r.status_code == 404:
-                    continue  # seção não publicada nessa data (legítimo)
+                    # "Não publicada" é a leitura ÓBVIA — e errada enquanto o
+                    # dia pode receber edição. Vale pra TODA seção: o Inlabs
+                    # instável devolve 404 de arquivo que existe, e a DO1E
+                    # (crédito extraordinário) costuma sair tarde. Registra e
+                    # deixa o dia pendente; quem decide é `_dia_encerrado`.
+                    sections_404.append(section)
+                    continue
                 r.raise_for_status()
                 content = r.content
                 if len(content) < 100 or content[:2] != b"PK":
@@ -384,6 +415,16 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
             "tente de novo em instantes."
         )
     out = MPList(results)
+    if sections_404 and not _dia_encerrado(target_date):
+        # Dia ainda aberto: o 404 não prova ausência. NÃO é falha (nada de
+        # aviso "não consegui checar" — seria alarme falso todo dia útil, já
+        # que a DO1E só existe quando há edição extra); é só motivo pra não
+        # dar baixa ainda. A retroativa re-checa e o dia fecha sozinho.
+        out.provisorio = True
+        out.secoes_404 = tuple(sections_404)
+        logger.info("dou: %s — seção(ões) %s em 404 com o dia ainda aberto; "
+                    "sem baixa (re-checa nas próximas janelas)",
+                    target_date, sections_404)
     if failed_sections:
         out.incompleto = True
         out.secoes_falhas = tuple(failed_sections)
@@ -405,6 +446,12 @@ class MPList(list):
 
     incompleto: bool = False
     secoes_falhas: tuple[str, ...] = ()
+
+    # 404 numa seção de um dia que AINDA PODE receber edição. Não é falha (não
+    # vale aviso), mas também não é "não publicado" — é cedo demais pra saber.
+    # Ver `_dia_encerrado`.
+    provisorio: bool = False
+    secoes_404: tuple[str, ...] = ()
 
 
 async def fetch_mps(target_date: date) -> list[dict]:
