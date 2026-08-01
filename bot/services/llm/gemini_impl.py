@@ -52,10 +52,20 @@ def _log_usage(where: str, resp: Any) -> None:
 _MIN_OUTPUT_TOKENS = 8192
 
 
+# Modelos que RECUSARAM o thinking_budget configurado (400 INVALID_ARGUMENT),
+# aprendidos em runtime. Adivinhar por nome já falhou: o clamp abaixo cobria só
+# "pro" e o gemini-3.6-flash passou batido, derrubando TODO chat com
+# GEMINI_THINKING_BUDGET=0. A lista de modelos do Gemini muda toda semana, então
+# quem decide é a API, não um heurístico de substring.
+_SEM_THINKING_BUDGET: set[str] = set()
+
+
 def _thinking_config(model: str):
     """ThinkingConfig conforme settings.gemini_thinking_budget. None = automático
     (sem alteração); -1 idem; 0 desliga; N fixa. O pro não permite desligar
     (mín ~128), então clampa pra 128 quando o budget global for 0 — evita 400."""
+    if model in _SEM_THINKING_BUDGET:
+        return None
     from bot.config import settings as _s
     budget = getattr(_s, "gemini_thinking_budget", -1)
     if budget is None or budget == -1:
@@ -69,7 +79,47 @@ def _thinking_config(model: str):
         return None
 
 
-def _log_payload(onde, model, contents, system, thinking, max_tokens) -> None:
+def _e_argumento_invalido(exc: Exception) -> bool:
+    return "INVALID_ARGUMENT" in str(exc)
+
+
+def _gerar(client, model: str, contents, onde: str, **config_kwargs):
+    """`generate_content` com queda automática do thinking_config.
+
+    O budget que um modelo aceita, outro recusa com 400 INVALID_ARGUMENT — e a
+    resposta não diz qual argumento é o inválido, então o sintoma é "todo chat
+    quebrado" sem pista. Em vez de manter lista de quem aceita o quê, tenta;
+    se levar 400 COM thinking_config, repete UMA vez sem ele e memoriza o
+    modelo, pra não pagar a ida e volta dupla nas mensagens seguintes.
+    """
+    tc = _thinking_config(model)
+
+    def _chamar(thinking):
+        return client.models.generate_content(
+            model=model, contents=contents,
+            config=types.GenerateContentConfig(thinking_config=thinking, **config_kwargs),
+        )
+
+    try:
+        return _chamar(tc)
+    except Exception as exc:
+        if tc is None or not _e_argumento_invalido(exc):
+            _log_payload(onde, model, contents, config_kwargs, tc)
+            raise
+        _SEM_THINKING_BUDGET.add(model)
+        logger.warning(
+            "gemini[%s]: %s recusou thinking_budget=%s (400) — repetindo sem "
+            "thinking_config e desligando esse ajuste para este modelo",
+            onde, model, getattr(tc, "thinking_budget", "?"),
+        )
+        try:
+            return _chamar(None)
+        except Exception:
+            _log_payload(onde, model, contents, config_kwargs, None)
+            raise
+
+
+def _log_payload(onde, model, contents, config_kwargs, thinking) -> None:
     """Formato do que foi enviado (NÃO o conteúdo: sem vazar conversa)."""
     try:
         budget = getattr(thinking, "thinking_budget", None) if thinking else None
@@ -77,12 +127,14 @@ def _log_payload(onde, model, contents, system, thinking, max_tokens) -> None:
             f"{getattr(c, 'role', '?')}:{len(getattr(c, 'parts', []) or [])}p"
             for c in contents
         ]
+        system = config_kwargs.get("system_instruction")
         logger.error(
             "gemini[%s] FALHOU — model=%s contents=%d %s system=%s "
-            "max_output_tokens=%s thinking_budget=%s",
+            "max_output_tokens=%s tools=%s thinking_budget=%s",
             onde, model, len(contents), forma,
             f"{len(system)}ch" if system else "ausente",
-            max(max_tokens, _MIN_OUTPUT_TOKENS), budget,
+            config_kwargs.get("max_output_tokens"),
+            len(config_kwargs.get("tools") or []), budget,
         )
     except Exception:
         logger.error("gemini[%s] FALHOU (e o log do payload também)", onde)
@@ -151,23 +203,11 @@ class GeminiProvider(LLMProvider):
         contents = _messages_to_contents(messages)
 
         def _call() -> str:
-            tc = _thinking_config(self.model_name)
-            config = types.GenerateContentConfig(
+            resp = _gerar(
+                self.client, self.model_name, contents, "chat",
                 system_instruction=system,
                 max_output_tokens=max(max_tokens, _MIN_OUTPUT_TOKENS),
-                thinking_config=tc,
             )
-            try:
-                resp = self.client.models.generate_content(
-                    model=self.model_name, contents=contents, config=config,
-                )
-            except Exception:
-                # O 400 do Gemini não diz QUAL argumento é inválido. Sem o
-                # formato do que foi enviado, o diagnóstico vira adivinhação —
-                # e um id válido com corpo recusado é indistinguível de id
-                # errado pra quem lê só a mensagem de erro.
-                _log_payload("chat", self.model_name, contents, system, tc, max_tokens)
-                raise
             _log_usage("chat", resp)
             return (resp.text or "").strip()
 
@@ -205,14 +245,11 @@ class GeminiProvider(LLMProvider):
 
         for _ in range(max_iterations):
             def _call() -> Any:
-                config = types.GenerateContentConfig(
+                return _gerar(
+                    self.client, self.model_name, contents, "chat_with_tools",
                     system_instruction=system,
                     tools=genai_tools,
                     max_output_tokens=max(max_tokens, _MIN_OUTPUT_TOKENS),
-                    thinking_config=_thinking_config(self.model_name),
-                )
-                return self.client.models.generate_content(
-                    model=self.model_name, contents=contents, config=config,
                 )
 
             resp = await asyncio.to_thread(_call)
@@ -282,17 +319,14 @@ class GeminiProvider(LLMProvider):
         def _final() -> Any:
             # Declarações continuam (o histórico tem function_call/response),
             # com function calling em modo NONE: só texto sai daqui.
-            config = types.GenerateContentConfig(
+            return _gerar(
+                self.client, self.model_name, contents, "chat_with_tools[limite]",
                 system_instruction=system,
                 tools=genai_tools,
                 tool_config=types.ToolConfig(
                     function_calling_config=types.FunctionCallingConfig(mode="NONE"),
                 ),
                 max_output_tokens=max(max_tokens, _MIN_OUTPUT_TOKENS),
-                thinking_config=_thinking_config(self.model_name),
-            )
-            return self.client.models.generate_content(
-                model=self.model_name, contents=contents, config=config,
             )
 
         try:
