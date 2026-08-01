@@ -741,6 +741,21 @@ async def run_for_user(
     if not briefing:
         facts += await collect_carteira(session, user, now_brt, force=force)
 
+    # Fila de notas técnicas pendentes (pedidas com Inlabs fora): só AGENDA a
+    # re-tentativa (task própria) — a geração leva minutos e não pode atrasar
+    # a mensagem da janela nem o lembrete que vencer no meio.
+    #
+    # ANTES do `if not facts`: a fila NÃO depende de haver mensagem a enviar.
+    # Ficava depois e só funcionava porque a própria fila gera a linha de
+    # status `nota_fila`, que mantinha `facts` não-vazio — acoplamento, não
+    # desenho: silenciar aquela linha um dia mataria a re-tentativa EM
+    # SILÊNCIO, com o bot tendo prometido "te envio automaticamente".
+    if user.dou_mp_subscribed:
+        try:
+            await _processar_notas_pendentes(bot, session, user)
+        except Exception:
+            logger.exception("proactive: fila de notas pendentes falhou p/ user %s", user.id)
+
     if not facts:
         logger.info("proactive: user %d window=%s sem fatos", user.id, window)
         return False
@@ -782,14 +797,6 @@ async def run_for_user(
                     session, user.id, "mp_pendente", f.key.removeprefix("retro:"),
                 )
 
-    # Fila de notas técnicas pendentes (pedidas com Inlabs fora): só AGENDA a
-    # re-tentativa (task própria) — a geração leva minutos e não pode atrasar
-    # a mensagem da janela nem o lembrete que vencer no meio.
-    if user.dou_mp_subscribed:
-        try:
-            await _processar_notas_pendentes(bot, session, user)
-        except Exception:
-            logger.exception("proactive: fila de notas pendentes falhou p/ user %s", user.id)
     return sent
 
 

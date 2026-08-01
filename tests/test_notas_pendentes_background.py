@@ -119,6 +119,41 @@ def test_fila_anda_mesmo_com_uma_nota_em_andamento(monkeypatch) -> None:
     asyncio.run(main())
 
 
+def test_fila_roda_mesmo_na_janela_sem_nada_a_enviar(monkeypatch) -> None:
+    """A re-tentativa não pode depender de haver mensagem na janela.
+
+    O `if not facts: return False` do run_for_user ficava ANTES da fila, que
+    só rodava porque a própria fila gerava a linha de status `nota_fila`.
+    Silenciar aquela linha mataria a entrega em silêncio — com o bot tendo
+    prometido "te envio automaticamente".
+    """
+    chamou: list[int] = []
+
+    async def _nada(*a, **kw):
+        return []
+
+    for coletor in (
+        "collect_vencimentos", "collect_tarefas", "collect_mp",
+        "collect_nudges", "collect_carteira",
+    ):
+        monkeypatch.setattr(proactive, coletor, _nada)
+
+    async def _fila(bot, session, user):
+        chamou.append(user.id)
+
+    monkeypatch.setattr(proactive, "_processar_notas_pendentes", _fila)
+
+    async def main() -> None:
+        enviou = await proactive.run_for_user(
+            None, _FakeSession([]), _user(9004),
+            datetime.now(proactive.BRT), window="tarde", force=True,
+        )
+        assert enviou is False, "sem fatos, nada a enviar (só a fila roda)"
+        assert chamou == [9004], "a fila não rodou na janela sem fatos"
+
+    asyncio.run(main())
+
+
 def test_chave_do_job_e_a_mesma_do_comando_manual() -> None:
     """O dedup acima depende disso; se alguém mudar um lado, quebra aqui."""
     from bot.handlers.dou_mp import _chave_nota
