@@ -46,6 +46,18 @@ BRT = ZoneInfo("America/Sao_Paulo")
 # à noite. 6h dá margem e ainda deixa o briefing das 7h fechar o dia anterior.
 _HORA_FECHAMENTO = 6
 
+# UMA nota por vez em todo o processo. A geração é web search + LLM + DOCX, e
+# nada mais impede duas simultâneas: job da fila + /mp_dou_agora, DOIS USUÁRIOS
+# da casa pedindo ao mesmo tempo, ou o teto de notas por janela acima de 1.
+#
+# Por que importa mesmo com plano pago: a chave e o plano são de quem usa. Se
+# qualquer usuário estiver num provedor de RPM apertado (free tier), duas
+# gerações concorrentes viram 429 — e 429 aqui NÃO devolve a MP pra fila:
+# `_nota_e_docx` captura, avisa e segue, então a nota é PERDIDA. O semáforo
+# protege independente do plano, em vez de depender de todo chamador se
+# comportar. Custo: a segunda nota espera ~1min; ela roda em background.
+_SEM_NOTA = asyncio.Semaphore(1)
+
 
 def _dia_encerrado(d: date, agora: datetime | None = None) -> bool:
     """True quando a data já não pode mais receber edição do DOU.
@@ -1157,23 +1169,14 @@ async def deliver_to_user(
             await mark_seen(session, user.id, mp)
         avisadas.append(mp)
 
-    # 2) nota técnica + DOCX de cada MP, EM PARALELO (best-effort).
+    # 2) nota técnica + DOCX de cada MP (best-effort, uma por vez).
     async def _nota_e_docx(mp: dict) -> None:
         try:
-            logger.info("dou: gerando nota técnica MP %s/%s…", mp["numero"], mp["ano"])
-            with _fase(f"nota MP {mp['numero']} (pesquisa+redação)"):
-                nota = await generate_nota_tecnica(
-                    mp,
-                    provider=getattr(user, "dou_mp_provider", None),
-                    model=getattr(user, "dou_mp_model", None),
-                )
-            with _fase(f"docx MP {mp['numero']}"):
-                docx_bytes = await asyncio.to_thread(build_docx, mp, nota)
-            await bot.send_document(
-                user.id,
-                BufferedInputFile(docx_bytes, filename=docx_filename(mp)),
-                caption=None if nota else "⚠️ Nota gerada sem análise da IA (texto base).",
-            )
+            if _SEM_NOTA.locked():
+                logger.info("dou: MP %s/%s aguardando outra nota terminar",
+                            mp["numero"], mp["ano"])
+            async with _SEM_NOTA:
+                await _gerar_e_enviar(mp)
         except Exception:
             logger.exception("dou: falha ao gerar/enviar nota da MP %s/%s",
                              mp["numero"], mp["ano"])
@@ -1187,18 +1190,26 @@ async def deliver_to_user(
             except Exception:
                 pass
 
-    # Serial (não paralelo). PREMISSA ATUAL (01/08/2026): provedor pago —
-    # Anthropic no plano pago pra nota, Gemini fora do free tier —, então
-    # concorrência não é risco de quota hoje e o serial aqui é só ordem
-    # previsível de entrega.
-    #
-    # ALERTA pra quem mexer: se o monitor voltar a apontar pra um provedor com
-    # RPM apertado (free tier), este laço protege só DENTRO de uma chamada.
-    # Nada impede DUAS gerações simultâneas — job da fila + /mp_dou_agora, ou
-    # o teto de notas por janela (_NOTA_MAX_POR_JANELA) acima de 1. E 429 aqui
-    # não devolve a MP pra fila: `_nota_e_docx` captura, avisa e segue, então a
-    # nota seria PERDIDA. Nesse cenário, serialize globalmente (semáforo de 1
-    # em volta de _nota_e_docx) em vez de baixar o teto.
+    async def _gerar_e_enviar(mp: dict) -> None:
+        """Pipeline de UMA nota. Sempre chamada sob o _SEM_NOTA."""
+        logger.info("dou: gerando nota técnica MP %s/%s…", mp["numero"], mp["ano"])
+        with _fase(f"nota MP {mp['numero']} (pesquisa+redação)"):
+            nota = await generate_nota_tecnica(
+                mp,
+                provider=getattr(user, "dou_mp_provider", None),
+                model=getattr(user, "dou_mp_model", None),
+            )
+        with _fase(f"docx MP {mp['numero']}"):
+            docx_bytes = await asyncio.to_thread(build_docx, mp, nota)
+        await bot.send_document(
+            user.id,
+            BufferedInputFile(docx_bytes, filename=docx_filename(mp)),
+            caption=None if nota else "⚠️ Nota gerada sem análise da IA (texto base).",
+        )
+
+    # Serial dentro da chamada; entre chamadas quem serializa é o _SEM_NOTA
+    # (ver o comentário dele). Este laço sozinho nunca protegeu de duas
+    # gerações simultâneas vindas de caminhos diferentes.
     for mp in avisadas:
         await _nota_e_docx(mp)
     return len(avisadas)

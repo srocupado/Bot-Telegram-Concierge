@@ -160,10 +160,10 @@ _MP_RETRO_EXPIRA_DIAS = 14
 # Inlabs caiu na hora de gerar — o pedido fica na fila (kind nota_pendente,
 # key "AAAA-MM-DD:num1,num2|all") e é re-tentado silenciosamente a cada janela
 # até sair. Teto por janela porque a nota é LENTA (68s medidos: web search +
-# LLM + DOCX), não porque seja arriscada: o provedor é pago (Anthropic pra
-# nota, Gemini fora do free tier), então gerar duas em paralelo não esbarra em
-# quota. Se um dia voltar a apontar pra provedor com RPM apertado, ver o
-# ALERTA em dou_monitor, no laço serial de _nota_e_docx.
+# LLM + DOCX) — não por risco de quota: quem garante uma geração por vez em
+# todo o processo é o _SEM_NOTA (dou_monitor), inclusive entre usuários da
+# casa e entre a fila e o /mp_dou_agora. Subir este número faz a fila drenar
+# mais rápido sem criar concorrência: os jobs esperam no semáforo.
 _NOTA_MAX_POR_JANELA = 2
 _NOTA_PENDENTE_EXPIRA_DIAS = 14
 
