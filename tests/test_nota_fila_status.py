@@ -128,3 +128,40 @@ def test_ordem_e_por_data(monkeypatch) -> None:
     o disparo usa, senão a linha diria uma coisa e o bot faria outra."""
     linhas = _linhas(monkeypatch, [D3, D1, D2])
     assert "30/07" in linhas[0] and "31/07" in linhas[1] and "01/08" in linhas[2]
+
+
+# ─────────────── correção pós-disparo (sem corrida) ───────────────
+
+def test_linha_vira_gerando_agora_apos_o_disparo() -> None:
+    """A linha nasce em collect_mp, ANTES do disparo, então diria "tento na
+    próxima janela" pra uma nota que começou a ser gerada na MESMA execução.
+    A correção acontece depois, com as datas que o disparo devolveu."""
+    fatos = [
+        proactive.ProactiveFact("mp", "nota_fila", f"{D2.isoformat()}:1381",
+                                "📄 Nota técnica (MP 1381 de 31/07) — tento na próxima janela."),
+        proactive.ProactiveFact("mp", "nota_fila", f"{D3.isoformat()}:all",
+                                "📄 Nota técnica (todas as MPs de 01/08) — aguardando a vez."),
+        proactive.ProactiveFact("venc", "card_due", "x", "💳 Fatura vence."),
+    ]
+
+    proactive._marcar_geradas_agora(fatos, [D2])
+
+    assert "gerando agora" in fatos[0].text
+    assert "MP 1381" in fatos[0].text, "o alvo tem que sobreviver à reescrita"
+    assert "31/07" in fatos[0].text
+    assert "gerando agora" not in fatos[1].text, "só a data disparada muda"
+    assert fatos[2].text == "💳 Fatura vence.", "não pode tocar em outros fatos"
+
+
+def test_sem_disparo_nada_muda() -> None:
+    original = "📄 Nota técnica (MP 1381 de 31/07) — tento na próxima janela."
+    fatos = [proactive.ProactiveFact("mp", "nota_fila", f"{D2.isoformat()}:1381", original)]
+    proactive._marcar_geradas_agora(fatos, [])
+    assert fatos[0].text == original
+
+
+def test_texto_e_montado_num_lugar_so() -> None:
+    """Montagem e reescrita compartilham `_texto_fila` — texto duplicado nos
+    dois lugares sairia do ar um dia sem ninguém notar."""
+    linha = proactive._texto_fila(f"{D2.isoformat()}:1381,1382", "qualquer estado")
+    assert linha == "📄 Nota técnica (MP 1381, 1382 de 31/07) — qualquer estado."

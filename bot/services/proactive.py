@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -200,8 +200,13 @@ async def _entregar_nota_pendente(
         logger.info("nota pendente %s entregue", key)
 
 
-async def _processar_notas_pendentes(bot, session: AsyncSession, user: User) -> None:
+async def _processar_notas_pendentes(
+    bot, session: AsyncSession, user: User,
+) -> list[date]:
     """Agenda as re-tentativas da fila de notas — NÃO espera por elas.
+
+    Devolve as datas efetivamente disparadas, pro caller corrigir a linha de
+    status (ver `_marcar_geradas_agora`).
 
     A geração leva minutos (mesmo pipeline do botão: Inlabs + pesquisa + LLM +
     DOCX). Rodando dentro do tick, segurava a sessão e o próprio tick por todo
@@ -217,7 +222,7 @@ async def _processar_notas_pendentes(bot, session: AsyncSession, user: User) -> 
         )
     ))
     if not rows:
-        return
+        return []
     hoje = datetime.now(BRT).date()
     fila: list[tuple[date, list[str] | None, str]] = []
     for r in rows:
@@ -247,15 +252,18 @@ async def _processar_notas_pendentes(bot, session: AsyncSession, user: User) -> 
         t for t in sorted(fila, key=lambda t: t[0])
         if not jobs.job_em_andamento(chave_job_nota(user.id, t[0]))
     ]
+    disparadas: list[date] = []
     for d, numeros, key in prontas[:_NOTA_MAX_POR_JANELA]:
-        jobs.spawn(
+        if jobs.spawn(
             chave_job_nota(user.id, d),
             # Argumentos fixados por default: sem isso a lambda leria o d/key
             # do fim do laço (late binding) e re-tentaria a data errada.
             lambda d=d, numeros=numeros, key=key: _entregar_nota_pendente(
                 bot, user.id, d, numeros, key,
             ),
-        )
+        ):
+            disparadas.append(d)
+    return disparadas
 
 
 async def _mp_dias_pendentes(
@@ -287,6 +295,40 @@ async def _mp_dias_pendentes(
             continue
         out.append(d)
     return sorted(out)
+
+
+_ESTADO_GERANDO = "<b>gerando agora</b>, chega em alguns minutos"
+
+
+def _texto_fila(key: str, estado: str) -> str:
+    """Linha de status de uma entrada da fila. Compartilhada entre a montagem
+    (collect_mp) e a correção pós-disparo (_marcar_geradas_agora) — texto
+    duplicado nos dois lugares sairia do ar um dia sem ninguém notar."""
+    d = _data_da_chave(key)
+    _, _, nums = (key or "").partition(":")
+    alvo = ("todas as MPs" if (not nums or nums == "all")
+            else f"MP {nums.replace(',', ', ')}")
+    quando = d.strftime("%d/%m") if d else "?"
+    return f"📄 Nota técnica ({alvo} de {quando}) — {estado}."
+
+
+def _marcar_geradas_agora(facts: list[ProactiveFact], disparadas: list[date]) -> None:
+    """Corrige as linhas cuja nota COMEÇOU a ser gerada nesta execução.
+
+    A linha nasce em `collect_mp`, antes do disparo, então diria "tento na
+    próxima janela" pra uma nota que já está rodando. Corrigir DEPOIS (em vez
+    de disparar antes de coletar) é deliberado: adiantar o disparo poria o
+    fetch do job concorrendo com o fetch do coletor na MESMA data — dois
+    downloads do Inlabs no Orange Pi e, pior, a MP podendo aparecer duas vezes
+    (uma na mensagem da janela, outra na entrega do job, que ainda não marcou
+    como vista). A mensagem só é composta adiante, então dá tempo.
+    """
+    if not disparadas:
+        return
+    alvo = set(disparadas)
+    for i, f in enumerate(facts):
+        if f.kind == "nota_fila" and _data_da_chave(f.key) in alvo:
+            facts[i] = replace(f, text=_texto_fila(f.key, _ESTADO_GERANDO))
 
 
 def _data_da_chave(key: str) -> date | None:
@@ -618,16 +660,14 @@ async def collect_mp(
         _, _, nums = r.key.partition(":")
         alvo = "todas as MPs" if (not nums or nums == "all") else f"MP {nums.replace(',', ', ')}"
         if jobs.job_em_andamento(chave_job_nota(user.id, d)):
-            estado = "<b>gerando agora</b>, chega em alguns minutos"
+            estado = _ESTADO_GERANDO
         elif pos >= _NOTA_MAX_POR_JANELA:
             estado = (f"aguardando a vez (gero até {_NOTA_MAX_POR_JANELA} por "
                       "janela) — envio assim que sair")
         else:
             estado = "tento na próxima janela e envio assim que sair"
         facts.append(ProactiveFact(
-            "mp", "nota_fila", r.key,
-            f"📄 Nota técnica ({alvo} de {d.strftime('%d/%m')}) — {estado}.",
-            date_iso=None,
+            "mp", "nota_fila", r.key, _texto_fila(r.key, estado), date_iso=None,
         ))
     return facts
 
@@ -993,9 +1033,11 @@ async def run_for_user(
     # SILÊNCIO, com o bot tendo prometido "te envio automaticamente".
     if user.dou_mp_subscribed:
         try:
-            await _processar_notas_pendentes(bot, session, user)
+            disparadas = await _processar_notas_pendentes(bot, session, user)
         except Exception:
             logger.exception("proactive: fila de notas pendentes falhou p/ user %s", user.id)
+            disparadas = []
+        _marcar_geradas_agora(facts, disparadas)
 
     if not facts:
         logger.info("proactive: user %d window=%s sem fatos", user.id, window)
