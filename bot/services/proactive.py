@@ -700,10 +700,17 @@ async def collect_tarefas(
     return facts
 
 
-async def collect_clima(user: User, now_brt: datetime) -> list[ProactiveFact]:
+async def collect_clima(
+    session: AsyncSession, user: User, now_brt: datetime,
+) -> list[ProactiveFact]:
     """Previsão do tempo do dia (Open-Meteo) pro briefing matinal. Em MODO
     VIAGEM ativo, usa as coords/fuso do DESTINO (com rótulo); senão HOME_COORDS.
-    Roda todo dia; sem dedup (leitura fresca); falha não derruba o briefing."""
+    Roda todo dia; sem dedup (leitura fresca); falha não derruba o briefing.
+
+    Falha e falta de configuração são DITAS, não engolidas: os dois caminhos
+    devolviam lista vazia, e briefing sem linha de clima é indistinguível de
+    briefing com clima que não deu notícia — o dono não tinha como saber que
+    devia haver algo ali."""
     from bot.services.viagem import effective_coords, effective_tz
     coords = effective_coords(user)
     label = f" em {user.viagem_destino}" if coords else ""
@@ -711,15 +718,33 @@ async def collect_clima(user: User, now_brt: datetime) -> list[ProactiveFact]:
     if not coords:
         coords = settings.home_coords
     if not coords:
-        return []
+        # Falta de configuração é permanente: avisa UMA vez (dedup pelo kind)
+        # em vez de sumir pra sempre ou repetir todo dia.
+        logger.warning("proactive: sem HOME_COORDS — briefing sai sem clima")
+        if await already_notified(session, user.id, "clima_sem_coords", ""):
+            return []
+        return [ProactiveFact(
+            "clima", "clima_sem_coords", "",
+            "ℹ️ O briefing está saindo <b>sem previsão do tempo</b>: falta "
+            "<code>HOME_COORDS</code> no .env (ex.: <code>-15.79,-47.88</code>). "
+            "Configurando, a linha do clima volta sozinha.",
+        )]
     import httpx
     from bot.services.weather import fetch_today_weather, format_weather_line
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             w = await fetch_today_weather(client, coords, tz=tz)
-    except Exception:
+    except Exception as exc:
+        # Silêncio aqui vira falso negativo: briefing sem linha de clima passa
+        # como "dia sem nada digno de nota" quando na verdade não se checou.
+        # Mesma regra do DOU — fonte externa que falha é DITA.
         logger.warning("proactive: previsão do tempo falhou", exc_info=True)
-        return []
+        return [ProactiveFact(
+            "clima", "clima_falhou", now_brt.date().isoformat(),
+            f"⚠️ Não consegui checar a <b>previsão do tempo</b> agora "
+            f"({type(exc).__name__}). NÃO assuma tempo firme — confira antes "
+            "de sair.",
+        )]
     linha = format_weather_line(w)
     if label:
         linha = f"✈️ {label.strip()}: {linha}"
@@ -919,7 +944,7 @@ async def run_for_user(
 
     facts: list[ProactiveFact] = []
     if briefing:
-        facts += await collect_clima(user, now_brt)
+        facts += await collect_clima(session, user, now_brt)
         facts += await collect_transito(user, now_brt)
         facts += await collect_moeda_viagem(user)
     facts += await collect_vencimentos(session, user, now_brt, force=force)
