@@ -20,13 +20,17 @@ HOJE = datetime.now(proactive.BRT).date()
 
 
 class _FakeSession:
-    def __init__(self, recebidas=()):
-        self._recebidas = [
-            SimpleNamespace(numero=n, ano=a) for n, a in recebidas
+    """scalars é chamado 2x em mps_nao_recebidas: notas entregues
+    (dou_seen_mps) e MPs AVISADAS no proativo (ProactiveNotice kind='mp')."""
+
+    def __init__(self, recebidas=(), avisadas=()):
+        self._respostas = [
+            [SimpleNamespace(numero=n, ano=a) for n, a in recebidas],
+            [SimpleNamespace(key=f"{n}/{a}") for n, a in avisadas],
         ]
 
     async def scalars(self, _stmt):
-        return list(self._recebidas)
+        return list(self._respostas.pop(0)) if self._respostas else []
 
     async def commit(self):
         return None
@@ -43,10 +47,10 @@ def _camara_com(monkeypatch, mps):
     monkeypatch.setattr(camara, "mpvs_do_ano", _lista)
 
 
-def _faltando(monkeypatch, mps, recebidas=()):
+def _faltando(monkeypatch, mps, recebidas=(), avisadas=()):
     _camara_com(monkeypatch, mps)
     return asyncio.run(
-        dou_monitor.mps_nao_recebidas(_FakeSession(recebidas), 1, HOJE)
+        dou_monitor.mps_nao_recebidas(_FakeSession(recebidas, avisadas), 1, HOJE)
     )
 
 
@@ -190,3 +194,27 @@ def test_falha_da_camara_nao_repete_no_mesmo_dia(monkeypatch) -> None:
 
     facts = asyncio.run(proactive._conferir_camara(_FakeSession(), user, HOJE))
     assert facts == []
+
+
+def test_mp_avisada_sem_nota_nao_e_acusada(monkeypatch) -> None:
+    """dou_seen_mps só registra MP com NOTA entregue. A MP que o dono viu no
+    briefing e dispensou ("Não" no botão) tem só ProactiveNotice(kind="mp") —
+    e seria acusada de perdida, com dia enfileirado e ZIPs re-baixados à toa.
+    A pergunta certa é "o dono ficou sabendo?", não "recebeu o DOCX?".
+    """
+    saiu = HOJE - timedelta(days=5)
+    faltando = _faltando(
+        monkeypatch, [_mp("1381", saiu)], recebidas=(), avisadas=[("1381", saiu.year)],
+    )
+    assert faltando == []
+
+
+def test_chave_de_aviso_corrompida_nao_derruba(monkeypatch) -> None:
+    """Chave fora do formato "numero/ano" não pode estourar a conferência —
+    ela é a última rede contra perder MP."""
+    saiu = HOJE - timedelta(days=5)
+    _camara_com(monkeypatch, [_mp("1381", saiu)])
+    sessao = _FakeSession()
+    sessao._respostas = [[], [SimpleNamespace(key="lixo-sem-barra")]]
+    faltando = asyncio.run(dou_monitor.mps_nao_recebidas(sessao, 1, HOJE))
+    assert [mp["numero"] for mp in faltando] == ["1381"]

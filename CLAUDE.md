@@ -17,6 +17,39 @@ Histórico que motivou a regra: cinema/clima/cotações/câmara/saldo ficaram me
 sem documentação (surpresas no `ajuda`); o bullet do /viagem falhou num replace
 silencioso e só foi pego por pergunta do dono.
 
+## PREMISSA INEGOCIÁVEL: não perder MP (regra do dono)
+
+Nenhuma mudança pode aumentar a chance de uma Medida Provisória publicada não
+chegar ao dono. Quando houver conflito, esta premissa vence — inclusive contra
+economia de requisição, elegância de código ou silêncio de notificação.
+
+Em decisão duvidosa, escolher SEMPRE o lado que erra pra mais:
+
+1. **Na dúvida, é pendência.** Resposta que não dá pra classificar com certeza
+   (corpo estranho do Inlabs, timeout, erro novo) → dia PENDENTE e re-checado,
+   nunca "não houve MP". Só dar baixa com evidência positiva.
+2. **Trabalho caro é registrado ANTES de começar** (padrão outbox: a nota vira
+   `nota_pendente` antes de gerar e recebe baixa no fim). Restart do container
+   no meio não pode fazer a tarefa sumir — a task morre com o processo e não
+   deixa exceção pra ninguém capturar.
+3. **Duplicar é melhor que perder.** DOCX repetido incomoda; MP que nunca
+   chegou é invisível — o dono não sente falta do que não sabe que existiu.
+4. **Desistir exige aviso.** Expiração de pendência, nota abandonada, dia não
+   verificado: sempre com mensagem dizendo o que ficou de fora e como
+   recuperar (`/mp_dou_agora <data>`).
+5. **A conferência com a Câmara é a última rede.** Ela responde "o dono FICOU
+   SABENDO desta MP?" — considerar TODAS as formas de ter sabido (nota
+   entregue em `dou_seen_mps` E aviso do proativo em `ProactiveNotice`
+   kind="mp"). Comparar contra uma fonte só gera alarme falso e re-download.
+6. **Identidade da MP vem da MP**, não da requisição: número e ano saem do
+   título ("MP nº 1.381, DE 30 DE JULHO DE 2026"), porque MP assinada em 31/12
+   sai no DOU de 01/01 e o ano errado quebra dedup, Planalto e conferência.
+
+Histórico: a retroativa derrubava a janela proativa inteira justo quando o
+Inlabs voltava (14 dias sem nenhum aviso); 404 e "dia sem edição" eram lidos
+como ausência definitiva; dia em que o bot ficou desligado não deixava rastro.
+Os três perdiam MP em SILÊNCIO — o pior modo de falha deste projeto.
+
 ## Outras convenções deste projeto
 
 - Dados determinísticos (câmara, cinema, cotação, lembretes, DOU) vão VERBATIM

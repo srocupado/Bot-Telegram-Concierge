@@ -29,7 +29,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
-from bot.db.models import DouSeenMP
+from bot.db.models import DouSeenMP, ProactiveNotice
 from bot.services.llm.gemini_impl import gerar
 
 logger = logging.getLogger(__name__)
@@ -52,10 +52,12 @@ _HORA_FECHAMENTO = 6
 #
 # Por que importa mesmo com plano pago: a chave e o plano são de quem usa. Se
 # qualquer usuário estiver num provedor de RPM apertado (free tier), duas
-# gerações concorrentes viram 429 — e 429 aqui NÃO devolve a MP pra fila:
-# `_nota_e_docx` captura, avisa e segue, então a nota é PERDIDA. O semáforo
-# protege independente do plano, em vez de depender de todo chamador se
-# comportar. Custo: a segunda nota espera ~1min; ela roda em background.
+# gerações concorrentes viram 429 — e 429 na redação NÃO derruba a entrega:
+# `_gen_nota_*` captura e devolve None, então o DOCX sai com o texto base e a
+# legenda "sem análise da IA". Perde-se a ANÁLISE, não a nota, e com aviso.
+# Ainda assim vale evitar: a análise é o produto. O semáforo protege
+# independente do plano, em vez de depender de todo chamador se comportar.
+# Custo: a segunda nota espera ~1min; ela roda em background.
 _SEM_NOTA = asyncio.Semaphore(1)
 
 
@@ -143,6 +145,75 @@ def _parse_pubdate(s: str | None) -> date | None:
     return None
 
 
+# Título da MP dentro do corpo: "MEDIDA PROVISÓRIA Nº 1.381, DE 30 DE JULHO
+# DE 2026". Serve pra duas coisas: achar onde a ementa REALMENTE começa e ler
+# o ANO da própria MP.
+_TITULO_NO_CORPO_RE = re.compile(
+    r"MEDIDA\s+PROVIS[ÓO]RIA\s+N[ºo°\.\s]*[\d\.]+\s*,?\s*DE\s+\d{1,2}\s+DE\s+"
+    r"[A-ZÇÃÕÁÉÍÓÚÂÊÔa-zçãõáéíóúâêô]+\s+DE\s+(\d{4})",
+    re.IGNORECASE,
+)
+_FIM_EMENTA_RE = re.compile(r"\s+(O\s+PRESIDENTE|A\s+PRESIDENTA|O\s+VICE)", re.IGNORECASE)
+
+
+def _corta_em_palavra(texto: str, limite: int = 300) -> str:
+    """Trunca sem partir palavra e sem deixar pontuação solta.
+
+    O corte cego (`[:300]`) produzia coisas como "…para os fi" na mensagem que
+    o dono recebe — visível em toda MP cuja página do Planalto não respondeu.
+    """
+    texto = texto.strip()
+    if len(texto) <= limite:
+        return texto
+    corte = texto[:limite]
+    # Preferir terminar numa frase; se não houver ponto, no último espaço.
+    ponto = max(corte.rfind(". "), corte.rfind("; "))
+    if ponto >= limite // 2:
+        return corte[:ponto + 1].strip()
+    espaco = corte.rfind(" ")
+    return (corte[:espaco] if espaco > 0 else corte).rstrip(" ,;:-") + "…"
+
+
+def _ementa_do_excerpt(text_excerpt: str) -> str:
+    """Ementa a partir do trecho do DOU, quando o Planalto não respondeu.
+
+    O excerpt costuma trazer ementa + título + ementa de novo. Antes o fallback
+    pegava do início e cortava em 300 chars, então a ementa saía DUPLICADA e
+    truncada no meio da palavra. Agora começa DEPOIS do título (que é onde a
+    ementa oficial de fato começa) e termina antes do "O PRESIDENTE…".
+    """
+    limpo = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text_excerpt or "")).strip()
+    if not limpo:
+        return ""
+    m = _TITULO_NO_CORPO_RE.search(limpo)
+    corpo = limpo[m.end():].strip() if m else limpo
+    fim = _FIM_EMENTA_RE.search(corpo)
+    if fim:
+        corpo = corpo[:fim.start()].strip()
+    # Sobrou só o título/nada aproveitável: melhor devolver o trecho inteiro
+    # cortado direito do que uma string vazia (o dono fica sem ementa nenhuma).
+    return _corta_em_palavra(corpo or limpo)
+
+
+def ano_da_mp(text_excerpt: str, padrao: int) -> int:
+    """Ano da PRÓPRIA MP, lido do título; `padrao` (ano da data consultada) só
+    quando o título não trouxer.
+
+    Importa na virada de ano: MP assinada em 31/12 sai no DOU de 01/01, e usar
+    o ano da consulta gravaria 1400/2027 pra uma MP que é 1400/2026 — quebrando
+    o dedup, a URL do Planalto e o cruzamento com a Câmara (que devolve o ano
+    correto), justamente onde a checagem serve pra não perder MP.
+    """
+    m = _TITULO_NO_CORPO_RE.search(
+        re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text_excerpt or ""))
+    )
+    if not m:
+        return padrao
+    ano = int(m.group(1))
+    # Guarda contra lixo de OCR/parse: só aceita ano vizinho do consultado.
+    return ano if padrao - 1 <= ano <= padrao + 1 else padrao
+
+
 def _build_mp_dict(
     client: httpx.Client, numero: str, year: int, text_excerpt: str,
     target_date: date, pub_date: date | None = None,
@@ -155,12 +226,7 @@ def _build_mp_dict(
     if ementa_page and " " in ementa_page and len(ementa_page) > 20:
         ementa = ementa_page
     else:
-        stripped = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text_excerpt)).strip()
-        m = re.search(
-            r"DE\s+\d{4}\s+(.+?)(?=\s+O\s+PRESIDENTE|\s+A\s+PRESIDENTA|\s+O\s+VICE)",
-            stripped, re.IGNORECASE | re.DOTALL,
-        )
-        ementa = (re.sub(r"\s+", " ", m.group(1)).strip()[:300] if m else stripped[:300])
+        ementa = _ementa_do_excerpt(text_excerpt)
     return {
         "numero": numero,
         "ano": year,
@@ -204,13 +270,18 @@ def _parse_dou_xml(client: httpx.Client, xml_content: str, target_date: date) ->
             return
         seen.add(numero)
         pub = _pubdate_for(elem) if elem is not None else None
+        # Ano da PRÓPRIA MP (título), não da data consultada — ver ano_da_mp.
+        ano = ano_da_mp(body_text or title_text, year)
+        if ano != year:
+            logger.info("dou: MP %s — ano do título=%s difere do ano consultado=%s; "
+                        "usando o do título", numero, ano, year)
         logger.info(
             "dou: MP %s — pubDate do XML=%s | target=%s | base usada=%s",
             numero, pub.isoformat() if pub else "NÃO ENCONTRADO",
             target_date.isoformat(), (pub or target_date).isoformat(),
         )
         results.append(
-            _build_mp_dict(client, numero, year, body_text or title_text, target_date, pub_date=pub)
+            _build_mp_dict(client, numero, ano, body_text or title_text, target_date, pub_date=pub)
         )
 
     try:
@@ -1106,6 +1177,23 @@ async def mps_nao_recebidas(
         select(DouSeenMP).where(DouSeenMP.user_id == user_id)
     )
     recebidas = {(r.numero, r.ano) for r in rows}
+    # DouSeenMP só registra MP com NOTA entregue. A detecção normal do proativo
+    # avisa a MP e grava ProactiveNotice(kind="mp") — sem isso, MP que o dono
+    # leu no briefing e dispensou a nota ("Não" no botão) seria acusada de
+    # perdida, com dia enfileirado e ZIPs re-baixados à toa. As duas fontes
+    # juntas respondem "o dono FICOU SABENDO desta MP?", que é a pergunta.
+    avisos = await session.scalars(
+        select(ProactiveNotice).where(
+            ProactiveNotice.user_id == user_id,
+            ProactiveNotice.kind == "mp",
+        )
+    )
+    for r in avisos:
+        num, _, ano = (r.key or "").partition("/")
+        try:
+            recebidas.add((num, int(ano)))
+        except ValueError:
+            logger.warning("dou: chave de aviso de MP inesperada: %r", r.key)
     faltando = [
         mp for mp in candidatas if (mp["numero"], mp["ano"]) not in recebidas
     ]
@@ -1124,6 +1212,59 @@ async def mark_seen(session: AsyncSession, user_id: int, mp: dict) -> None:
 
 
 # ──────────────────────── entrega (mensagem + DOCX) ────────────────────────
+
+async def _pendencias_da_data(session: AsyncSession, user_id: int, d: date) -> list[str]:
+    """Chaves de nota_pendente já existentes para a data (key = "data:nums")."""
+    rows = await session.scalars(
+        select(ProactiveNotice).where(
+            ProactiveNotice.user_id == user_id,
+            ProactiveNotice.kind == "nota_pendente",
+        )
+    )
+    return [r.key for r in rows if (r.key or "").startswith(f"{d.isoformat()}:")]
+
+
+async def _abrir_outbox(
+    session: AsyncSession, user_id: int, d: date, avisadas: list[dict],
+) -> str | None:
+    """Garante que existe pendência da data ANTES de gerar as notas.
+
+    Devolve a chave criada aqui, ou None quando já havia uma (caso do job da
+    fila, que tem a sua) — assim não aparecem duas linhas de status pro mesmo
+    dia nem se desfaz a entrada de outro dono.
+    """
+    if not avisadas:
+        return None
+    from bot.services.proactive import mark_notified
+    if await _pendencias_da_data(session, user_id, d):
+        return None
+    chave = f"{d.isoformat()}:{','.join(mp['numero'] for mp in avisadas)}"
+    await mark_notified(session, user_id, "nota_pendente", chave)
+    logger.info("dou: outbox aberto %s (%d nota[s] a gerar)", chave, len(avisadas))
+    return chave
+
+
+async def _fechar_outbox(
+    session: AsyncSession, user_id: int, d: date, chave: str | None,
+    falhas: list[str],
+) -> None:
+    """Baixa da pendência aberta aqui + registro do que FALHOU.
+
+    A entrada de falha vale mesmo quando o outbox era de outro (job da fila):
+    aquele job dá baixa por ter concluído a chamada, e sem esta linha as notas
+    que falharam sumiriam da fila.
+    """
+    from bot.services.proactive import mark_notified, unmark_notified
+    if chave:
+        await unmark_notified(session, user_id, "nota_pendente", chave)
+    if not falhas:
+        return
+    chave_falha = f"{d.isoformat()}:{','.join(falhas)}"
+    if chave_falha not in await _pendencias_da_data(session, user_id, d):
+        await mark_notified(session, user_id, "nota_pendente", chave_falha)
+    logger.warning("dou: %d nota(s) falharam em %s — de volta pra fila (%s)",
+                   len(falhas), d, chave_falha)
+
 
 async def deliver_to_user(
     bot, session: AsyncSession, user, target_date: date, *, force: bool = False,
@@ -1170,13 +1311,14 @@ async def deliver_to_user(
         avisadas.append(mp)
 
     # 2) nota técnica + DOCX de cada MP (best-effort, uma por vez).
-    async def _nota_e_docx(mp: dict) -> None:
+    async def _nota_e_docx(mp: dict) -> bool:
         try:
             if _SEM_NOTA.locked():
                 logger.info("dou: MP %s/%s aguardando outra nota terminar",
                             mp["numero"], mp["ano"])
             async with _SEM_NOTA:
                 await _gerar_e_enviar(mp)
+            return True
         except Exception:
             logger.exception("dou: falha ao gerar/enviar nota da MP %s/%s",
                              mp["numero"], mp["ano"])
@@ -1189,6 +1331,7 @@ async def deliver_to_user(
                 )
             except Exception:
                 pass
+            return False
 
     async def _gerar_e_enviar(mp: dict) -> None:
         """Pipeline de UMA nota. Sempre chamada sob o _SEM_NOTA."""
@@ -1215,15 +1358,27 @@ async def deliver_to_user(
     # pra entregar as notas do dia mais rápido. NÃO faça sem manter o
     # semáforo. A chave e o plano do LLM são de QUEM USA, não do projeto:
     # basta um usuário da casa num free tier pra duas gerações concorrentes
-    # virarem 429. E 429 aqui não é só lentidão — `_nota_e_docx` captura a
-    # exceção, avisa e segue, e a MP NÃO volta pra fila: a nota é PERDIDA em
-    # definitivo. Se precisar de mais vazão, suba _NOTA_MAX_POR_JANELA (as
-    # notas enfileiram no semáforo) em vez de remover a serialização.
+    # virarem 429 — e aí o DOCX sai só com o texto base ("sem análise da IA").
+    # A nota chega, mas sem o produto. Se precisar de mais vazão, suba
+    # _NOTA_MAX_POR_JANELA (as notas enfileiram no semáforo) em vez de remover
+    # a serialização.
     #
     # Histórico: em 01/08/2026 eu defendi o teto de 1 alegando risco de quota
     # com "o provedor é pago". Premissa errada — o plano não é do projeto. O
     # semáforo torna a garantia independente de plano, provedor e de todo
     # chamador se comportar.
+    # OUTBOX: a pendência é registrada ANTES de gerar e só recebe baixa no
+    # fim. Sem isso, a MP já estava marcada como VISTA (mark_seen, acima) e um
+    # restart do container no meio dos ~68s da nota matava a task junto com o
+    # processo: nota nunca gerada, dedup impedindo nova tentativa, e NENHUM
+    # aviso. Perda silenciosa — o modo de falha que este monitor existe pra
+    # não ter. Na dúvida, prefere-se DOCX repetido a nota que nunca chega.
+    chave_outbox = await _abrir_outbox(session, user.id, target_date, avisadas)
+
+    falhas: list[str] = []
     for mp in avisadas:
-        await _nota_e_docx(mp)
+        if not await _nota_e_docx(mp):
+            falhas.append(mp["numero"])
+
+    await _fechar_outbox(session, user.id, target_date, chave_outbox, falhas)
     return len(avisadas)
