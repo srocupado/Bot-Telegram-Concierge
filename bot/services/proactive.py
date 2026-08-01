@@ -349,6 +349,74 @@ async def _cobrir_lacuna(
     return facts
 
 
+async def _conferir_camara(
+    session: AsyncSession, user: User, hoje: date,
+) -> list[ProactiveFact]:
+    """Confere o que o bot entregou contra a lista de MPs da Câmara.
+
+    Toda a detecção depende do Inlabs, e o pior modo de falha dele é mudo:
+    404 em arquivo que existe, ZIP truncado servido como válido. O bot conclui
+    "não houve MP" e nada no estado dele denuncia o buraco. A Câmara é outro
+    órgão e outra infraestrutura — é o único jeito de saber o que se perdeu.
+
+    Achando MP não entregue, enfileira o DIA dela como pendência: a retroativa
+    que já existe busca no DOU e entrega com nota, sem caminho novo de entrega.
+    """
+    from bot.services.dou_monitor import (
+        _JANELA_CONFERENCIA_DIAS, mps_nao_recebidas,
+    )
+    try:
+        faltando = await mps_nao_recebidas(session, user.id, hoje)
+    except Exception as exc:
+        # Conferência que falha em silêncio é pior que conferência nenhuma:
+        # passa a sensação de cobertura que não existe. Avisa 1x/dia (a API da
+        # Câmara tem 502/504 transitório; alarme a cada janela seria ruído).
+        logger.warning("proactive: conferência com a Câmara falhou: %s", exc)
+        key = f"conf_fail:{hoje.isoformat()}"
+        if await already_notified(session, user.id, "mp_conf_fail", key):
+            return []
+        return [ProactiveFact(
+            "mp", "mp_conf_fail", key,
+            "⚠️ Não consegui conferir as MPs com a Câmara hoje (API fora). "
+            "A checagem do DOU seguiu normal; só a conferência cruzada ficou "
+            "de fora desta rodada.",
+            date_iso=None,
+        )]
+
+    facts: list[ProactiveFact] = []
+    for mp in faltando:
+        key = f"conf:{mp['numero']}/{mp['ano']}"
+        if await already_notified(session, user.id, "mp_conferencia", key):
+            continue
+        d = mp["data"]
+        recuperavel = (hoje - d).days <= _MP_RETRO_EXPIRA_DIAS
+        if recuperavel and not await already_notified(
+            session, user.id, "mp_pendente", d.isoformat()
+        ):
+            await mark_notified(session, user.id, "mp_pendente", d.isoformat())
+        ementa = _clean_ementa(mp.get("ementa") or "")
+        if recuperavel:
+            saida = ("Já coloquei o dia na fila — vou buscar no DOU e te "
+                     "mandar com a nota técnica.")
+        else:
+            saida = (f"Passou dos {_MP_RETRO_EXPIRA_DIAS} dias da re-checagem "
+                     f"automática; pra recuperar, rode "
+                     f"<code>/mp_dou_agora {d.strftime('%d/%m/%Y')}</code>.")
+        facts.append(ProactiveFact(
+            "mp", "mp_conferencia", key,
+            f"⚠️ <b>MP {mp['numero']}/{mp['ano']}</b> ({d.strftime('%d/%m')}) "
+            f"saiu e você NÃO recebeu — achei conferindo com a Câmara. "
+            f"{ementa} {saida}",
+            date_iso=None,
+        ))
+    if faltando and not facts:
+        logger.info("proactive: conferência — %d MP(s) faltando, todas já "
+                    "avisadas antes", len(faltando))
+    logger.info("proactive: conferência com a Câmara ok (janela de %d dias)",
+                _JANELA_CONFERENCIA_DIAS)
+    return facts
+
+
 @dataclass
 class _Colheita:
     """Resultado de checar UM dia de DOU.
@@ -371,7 +439,8 @@ class _Colheita:
 
 
 async def collect_mp(
-    session: AsyncSession, user: User, dates: list[date], *, force: bool = False,
+    session: AsyncSession, user: User, dates: list[date], *,
+    force: bool = False, conferir: bool = False,
 ) -> list[ProactiveFact]:
     if not user.dou_mp_subscribed:
         return []
@@ -407,7 +476,13 @@ async def collect_mp(
 
     # ANTES de varrer: dias que o bot nunca olhou viram pendência (marca
     # d'água). Sem isso, o que ele perdeu enquanto esteve fora é invisível.
-    facts += await _cobrir_lacuna(session, user, datetime.now(BRT).date())
+    hoje_ = datetime.now(BRT).date()
+    facts += await _cobrir_lacuna(session, user, hoje_)
+    # Conferência com a Câmara: 1x/dia (briefing), não a cada janela — é uma
+    # rede de segurança, não uma fonte primária, e a MP recém-publicada leva
+    # até 1 dia pra aparecer lá.
+    if conferir:
+        facts += await _conferir_camara(session, user, hoje_)
 
     ok_dates: set[date] = set()
     for d in dates:
@@ -851,7 +926,9 @@ async def run_for_user(
     # Tarefas abertas no briefing matinal e no resumo do fim do dia.
     if briefing or end_of_day:
         facts += await collect_tarefas(session, user, now_brt)
-    facts += await collect_mp(session, user, mp_dates, force=force)
+    facts += await collect_mp(
+        session, user, mp_dates, force=force, conferir=briefing or force,
+    )
     facts += await collect_nudges(session, user, now_brt, force=force)
     if not briefing:
         facts += await collect_carteira(session, user, now_brt, force=force)

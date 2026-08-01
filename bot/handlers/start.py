@@ -35,7 +35,8 @@ HELP_TEXT = (
     "• <code>/mp_dou_on</code> / <code>/mp_dou_off</code> — assina/desassina o digest diário de MPs novas no DOU\n"
     "• <code>/mp_dou_agora [AAAA-MM-DD]</code> — busca agora; entrega nota técnica (gerada por IA) + DOCX. A nota roda em SEGUNDO PLANO (leva alguns minutos): o bot confirma na hora e continua respondendo você normalmente enquanto gera\n"
     "• <code>/dou_provider</code> — escolhe o motor da nota técnica (ex.: <code>/dou_provider 3.5</code>, <code>/dou_provider gemini 3.1-lite</code>, <code>/dou_provider anthropic sonnet</code>, <code>/dou_provider opus</code>, <code>/dou_provider padrao</code>). Ajusta latência/qualidade sem mexer no .env\n"
-    "• Por voz/texto: <i>\"saiu MP nova hoje?\"</i> → lista número + ementa\n\n"
+    "• Por voz/texto: <i>\"saiu MP nova hoje?\"</i> → lista número + ementa\n"
+    "• <b>Conferência automática</b> (1x/dia, no briefing): o bot compara o que te entregou com a lista oficial de MPs da Câmara. Se alguma escapou (Inlabs fora do ar, dia em que o bot ficou desligado), ele avisa QUAL escapou e busca sozinho no DOU pra te mandar com a nota. Dia que ele não conseguiu checar vira pendência e é re-tentado por 14 dias — e se desistir, ele DIZ; nunca vira silêncio\n\n"
     "<b>Agente proativo</b> (opt-in):\n"
     "• <code>/proativo_on</code> / <code>/proativo_off</code> — liga/desliga avisos automáticos (vencimentos chegando, briefing matinal, MP nova, lembretes de hábito)\n"
     "• <code>/proativo</code> — status e janelas\n"
@@ -266,6 +267,12 @@ _HELP_KEYWORDS: dict[str, str] = {
     "nota tecnica": "diario oficial", "nota": "diario oficial",
     "demora": "diario oficial", "demorando": "diario oficial",
     "travando": "diario oficial", "travou": "diario oficial",
+    "conferencia": "diario oficial", "conferir": "diario oficial",
+    "conferindo": "diario oficial", "confere": "diario oficial",
+    "perdi": "diario oficial", "perdeu": "diario oficial",
+    "perder": "diario oficial", "perdida": "diario oficial",
+    "escapou": "diario oficial", "faltou": "diario oficial",
+    "inlabs": "diario oficial", "pendencia": "diario oficial",
     "congresso": "pauta do congresso", "pauta": "pauta do congresso",
     "financeiro": "gerenciador financeiro", "cartao": "gerenciador financeiro",
     "despesa": "gerenciador financeiro", "fatura": "gerenciador financeiro",
@@ -316,7 +323,10 @@ def find_help_sections(query: str) -> list[str]:
     """Blocos HTML do HELP_TEXT que casam com o assunto perguntado. Casa por
     palavra-chave (LIMITE DE PALAVRA — senão 'mp' casaria dentro de 'co-mp-ras')
     e também direto contra o título da seção. Vazio se nada bate."""
-    q = _strip_accents(query or "")
+    # `_` é caractere de palavra pro regex, então `\bmp\b` NÃO casa dentro de
+    # "/mp_dou_agora" — perguntar pelo comando pelo nome não achava nada.
+    # Vira espaço: nenhuma keyword tem underscore, então não quebra as outras.
+    q = _strip_accents(query or "").replace("_", " ")
     alvos: set[str] = set()
     for kw, alvo in _HELP_KEYWORDS.items():
         if re.search(rf"\b{re.escape(kw)}\b", q):

@@ -13,12 +13,15 @@ Tudo dado oficial — o agente não inventa: se não houver pauta/reunião, diz 
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import unicodedata
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 _API = "https://dadosabertos.camara.leg.br/api/v2"
 _HEADERS = {"Accept": "application/json", "User-Agent": "Bot-Telegram-Concierge/1.0"}
@@ -63,6 +66,49 @@ async def _get(client: httpx.AsyncClient, path: str, params: dict | None = None)
     raise CamaraError(
         f"API da Câmara instável (504/timeout) após {_RETRIES} tentativas"
     ) from last
+
+
+async def mpvs_do_ano(ano: int) -> list[dict]:
+    """MPs do ano segundo a Câmara: [{numero, ano, ementa, data}].
+
+    Serve de SEGUNDA FONTE pro monitor do DOU. O monitor depende só do Inlabs,
+    e o Inlabs é a peça instável: quando cai, 404 arquivo que existe, ou serve
+    ZIP truncado como se fosse válido, não há como o bot saber que perdeu uma
+    MP — o silêncio é indistinguível de "não houve MP". Esta API é de outro
+    órgão e outra infraestrutura, então não cai junto.
+
+    Toda MP vai ao Congresso na publicação, então `dataApresentacao` bate com
+    a data do DOU (pode ficar 1 dia atrás enquanto a Câmara registra — quem
+    consome deve dar folga; ver `_FOLGA_CAMARA_DIAS`).
+    """
+    out: list[dict] = []
+    async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as client:
+        pagina, ITENS = 1, 100
+        while True:
+            dados = await _get(client, "/proposicoes", {
+                "siglaTipo": "MPV", "ano": ano, "itens": ITENS,
+                "pagina": pagina, "ordem": "ASC", "ordenarPor": "id",
+            })
+            for d in dados:
+                apresentacao = (d.get("dataApresentacao") or "")[:10]
+                try:
+                    quando = date.fromisoformat(apresentacao)
+                except ValueError:
+                    # Sem data utilizável não dá pra recuperar o dia no DOU;
+                    # ignorar em silêncio esconderia MP, então avisa no log.
+                    logger.warning("camara: MPV %s/%s sem dataApresentacao (%r)",
+                                   d.get("numero"), ano, d.get("dataApresentacao"))
+                    continue
+                out.append({
+                    "numero": str(d.get("numero")),
+                    "ano": int(d.get("ano") or ano),
+                    "ementa": (d.get("ementa") or "").strip(),
+                    "data": quando,
+                })
+            if len(dados) < ITENS:
+                break
+            pagina += 1
+    return out
 
 
 # ── Cache: comissões permanentes + mapa deputado→partido ─────────────────────

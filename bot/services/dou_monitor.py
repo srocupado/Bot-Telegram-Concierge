@@ -1006,6 +1006,59 @@ async def filter_unseen(session: AsyncSession, user_id: int, mps: list[dict]) ->
     return [mp for mp in mps if (mp["numero"], mp["ano"]) not in seen]
 
 
+# Folga pra Câmara registrar a MP publicada. Sem ela, a MP de hoje apareceria
+# como "faltando" só porque o registro lá ainda não entrou — alarme falso que
+# treina o dono a ignorar o aviso.
+_FOLGA_CAMARA_DIAS = 2
+# Até onde olhar pra trás. Não é o histórico inteiro: MP anterior à assinatura
+# do monitor nunca foi "perdida", e listar tudo viraria enxurrada na 1ª rodada.
+_JANELA_CONFERENCIA_DIAS = 30
+
+
+async def mps_nao_recebidas(
+    session: AsyncSession, user_id: int, hoje: date,
+) -> list[dict]:
+    """MPs que a Câmara registrou e o bot NUNCA entregou a este usuário.
+
+    Existe porque toda a detecção depende de uma fonte só (Inlabs), e o modo
+    de falha mais perigoso dela é silencioso: 404 em arquivo que existe, ou ZIP
+    válido porém truncado. Nesses casos o bot conclui "não houve MP" e não há
+    nada no estado dele que denuncie o buraco — só a comparação com uma fonte
+    independente.
+
+    Levanta CamaraError se a API falhar; o caller reporta (nunca vira silêncio,
+    senão a conferência que existe pra achar falso negativo criaria um).
+    """
+    from bot.services.camara import mpvs_do_ano
+
+    inicio = hoje - timedelta(days=_JANELA_CONFERENCIA_DIAS)
+    limite = hoje - timedelta(days=_FOLGA_CAMARA_DIAS)
+    anos = {inicio.year, hoje.year}          # cobre a virada de ano
+    candidatas: list[dict] = []
+    for ano in sorted(anos):
+        candidatas += [
+            mp for mp in await mpvs_do_ano(ano)
+            if inicio <= mp["data"] <= limite
+        ]
+    if not candidatas:
+        return []
+
+    rows = await session.scalars(
+        select(DouSeenMP).where(DouSeenMP.user_id == user_id)
+    )
+    recebidas = {(r.numero, r.ano) for r in rows}
+    faltando = [
+        mp for mp in candidatas if (mp["numero"], mp["ano"]) not in recebidas
+    ]
+    if faltando:
+        logger.warning(
+            "dou: conferência achou %d MP(s) na Câmara que o usuário %s não "
+            "recebeu: %s", len(faltando), user_id,
+            ", ".join(f"{mp['numero']}/{mp['ano']}" for mp in faltando),
+        )
+    return sorted(faltando, key=lambda mp: mp["data"])
+
+
 async def mark_seen(session: AsyncSession, user_id: int, mp: dict) -> None:
     session.add(DouSeenMP(user_id=user_id, numero=mp["numero"], ano=mp["ano"]))
     await session.commit()
