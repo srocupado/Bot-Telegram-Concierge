@@ -69,15 +69,43 @@ def _thinking_config(model: str):
         return None
 
 
+def _log_payload(onde, model, contents, system, thinking, max_tokens) -> None:
+    """Formato do que foi enviado (NÃO o conteúdo: sem vazar conversa)."""
+    try:
+        budget = getattr(thinking, "thinking_budget", None) if thinking else None
+        forma = [
+            f"{getattr(c, 'role', '?')}:{len(getattr(c, 'parts', []) or [])}p"
+            for c in contents
+        ]
+        logger.error(
+            "gemini[%s] FALHOU — model=%s contents=%d %s system=%s "
+            "max_output_tokens=%s thinking_budget=%s",
+            onde, model, len(contents), forma,
+            f"{len(system)}ch" if system else "ausente",
+            max(max_tokens, _MIN_OUTPUT_TOKENS), budget,
+        )
+    except Exception:
+        logger.error("gemini[%s] FALHOU (e o log do payload também)", onde)
+
+
 def _to_genai_parts(content: Any) -> list[types.Part]:
-    """Converte content (str ou list[block]) pra lista de Part do google-genai."""
+    """Converte content (str ou list[block]) pra lista de Part do google-genai.
+
+    Texto VAZIO não vira part: `{"text": ""}` no corpo é recusado com
+    400 INVALID_ARGUMENT ("Request contains an invalid argument"), sem dizer
+    qual argumento. Basta uma mensagem vazia no histórico — resposta que veio
+    em branco, turno só de tool call — pra derrubar toda conversa seguinte.
+    """
     if isinstance(content, str):
-        return [types.Part.from_text(text=content)]
+        return [types.Part.from_text(text=content)] if content.strip() else []
     parts: list[types.Part] = []
     for b in content:
         bt = b.get("type")
         if bt == "text":
-            parts.append(types.Part.from_text(text=b.get("text", "")))
+            texto = b.get("text", "")
+            if not texto.strip():
+                continue
+            parts.append(types.Part.from_text(text=texto))
         elif bt in ("image", "document"):
             import base64 as _b64
             data_bytes = _b64.b64decode(b.get("data", ""))
@@ -87,11 +115,18 @@ def _to_genai_parts(content: Any) -> list[types.Part]:
 
 
 def _messages_to_contents(messages: list[ChatMessage]) -> list[types.Content]:
-    """Converte messages do nosso formato pra list[Content] do google-genai."""
+    """Converte messages do nosso formato pra list[Content] do google-genai.
+
+    Mensagem que ficou SEM parts é descartada: `Content` com lista vazia é o
+    mesmo 400 INVALID_ARGUMENT do part vazio.
+    """
     contents: list[types.Content] = []
     for m in messages:
         role = "user" if m["role"] == "user" else "model"
         parts = _to_genai_parts(m["content"])
+        if not parts:
+            logger.debug("gemini: mensagem %s sem conteúdo utilizável — fora do payload", role)
+            continue
         contents.append(types.Content(role=role, parts=parts))
     return contents
 
@@ -116,14 +151,23 @@ class GeminiProvider(LLMProvider):
         contents = _messages_to_contents(messages)
 
         def _call() -> str:
+            tc = _thinking_config(self.model_name)
             config = types.GenerateContentConfig(
                 system_instruction=system,
                 max_output_tokens=max(max_tokens, _MIN_OUTPUT_TOKENS),
-                thinking_config=_thinking_config(self.model_name),
+                thinking_config=tc,
             )
-            resp = self.client.models.generate_content(
-                model=self.model_name, contents=contents, config=config,
-            )
+            try:
+                resp = self.client.models.generate_content(
+                    model=self.model_name, contents=contents, config=config,
+                )
+            except Exception:
+                # O 400 do Gemini não diz QUAL argumento é inválido. Sem o
+                # formato do que foi enviado, o diagnóstico vira adivinhação —
+                # e um id válido com corpo recusado é indistinguível de id
+                # errado pra quem lê só a mensagem de erro.
+                _log_payload("chat", self.model_name, contents, system, tc, max_tokens)
+                raise
             _log_usage("chat", resp)
             return (resp.text or "").strip()
 
