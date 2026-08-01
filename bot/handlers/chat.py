@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.db.models import User
 from bot.services.chat_memory import memory
 from bot.services.llm.base import ToolContext
-from bot.services.llm.factory import get_provider_for_user
+from bot.services.llm.factory import get_provider_for_user, modelo_do_user
 from bot.services.tools import TOOLS
 from bot.services.viagem import effective_tz
 from bot.utils import chunk_text
@@ -673,7 +673,8 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
     except Exception as e:
         logger.exception("chat failed")
         await message.answer(
-            f"❌ erro no LLM ({user.provider}): {e}", parse_mode=None,
+            f"❌ erro no LLM ({user.provider}/{modelo_do_user(user)}): {e}",
+            parse_mode=None,
         )
         return
 

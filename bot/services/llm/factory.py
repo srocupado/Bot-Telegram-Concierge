@@ -49,4 +49,17 @@ def get_provider_for_user(user, name: str | None = None) -> LLMProvider:
     )
 
 
+def modelo_do_user(user) -> str:
+    """Id do modelo que ESTE usuário está usando de fato (override ou .env).
+
+    Serve pra mensagem de erro: "erro no LLM (gemini)" não diz se o problema é
+    a chave, a API ou o id que o dono acabou de escolher no /provider — e o id
+    escolhido é a causa mais comum e a mais fácil de desfazer.
+    """
+    try:
+        return get_provider_for_user(user).model
+    except Exception:
+        return "?"
+
+
 SUPPORTED_PROVIDERS = ("anthropic", "openai", "gemini")

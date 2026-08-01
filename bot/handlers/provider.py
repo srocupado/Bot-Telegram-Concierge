@@ -67,17 +67,26 @@ _GEMINI_VARIANTS = {
 }
 
 
-async def _is_valid_id(provider: str, model_id: str) -> bool:
+async def _is_valid_id(provider: str, model_id: str) -> bool | None:
     """Confere o id contra a lista viva da Models API (aceita modelos novos sem
-    mexer no código). Se a API falhar, aceita o id pra não travar o usuário."""
+    mexer no código).
+
+    Devolve None quando NÃO deu pra conferir (API fora, chave ausente). Isso
+    não é o mesmo que "válido": o id segue aceito pra não travar o dono, mas
+    quem chama precisa DIZER que não validou — antes devolvia True e o bot
+    respondia "✅ definido" com a mesma cara de um id conferido, então um id
+    errado só aparecia depois, como '❌ erro no LLM' em toda mensagem.
+    """
     modelos = await catalog.list_models(provider)
     if not modelos:
-        return True
+        return None
     return any(mid == model_id for mid, _ in modelos)
 
 
 async def _is_valid_gemini_id(model_id: str) -> bool:
-    return await _is_valid_id("gemini", model_id)
+    """Versão booleana pro /voice: "não deu pra conferir" conta como aceito,
+    igual ao comportamento anterior. Só o /provider trata o None à parte."""
+    return await _is_valid_id("gemini", model_id) is not False
 
 
 @router.message(Command("provider"))
@@ -123,13 +132,28 @@ async def cmd_provider(
         await message.answer(f"Provider inválido. Opções: {opts}")
         return
 
+    # None = a Models API não respondeu, então o id foi aceito SEM conferência.
+    # Vira ressalva no ✅ lá embaixo: id errado que passa por aqui só apareceria
+    # depois, como "❌ erro no LLM" em toda mensagem.
+    sem_conferir = False
+
     if prov == "gemini":
         if variant is None:
             user.gemini_model = None  # volta ao GEMINI_MODEL do .env
         elif variant in _GEMINI_VARIANTS:
             user.gemini_model = _GEMINI_VARIANTS[variant]
-        elif variant.startswith("gemini-") and await _is_valid_id("gemini", variant):
+        elif variant.startswith("gemini-"):
+            ok = await _is_valid_id("gemini", variant)
+            if ok is False:
+                await message.answer(
+                    f"Modelo <code>{_html_escape(variant)}</code> não existe na "
+                    "sua conta Gemini. Veja os válidos em "
+                    "<code>/provider modelos</code>.",
+                    parse_mode="HTML",
+                )
+                return
             user.gemini_model = variant
+            sem_conferir = ok is None
         else:
             await message.answer(
                 "Variante inválida. Use um alias (pro | flash | flash-lite | 3.5 | "
@@ -141,8 +165,18 @@ async def cmd_provider(
     elif prov == "anthropic":
         if variant is None:
             user.anthropic_model = None  # volta ao ANTHROPIC_MODEL do .env
-        elif variant.startswith("claude-") and await _is_valid_id("anthropic", variant):
+        elif variant.startswith("claude-"):
+            ok = await _is_valid_id("anthropic", variant)
+            if ok is False:
+                await message.answer(
+                    f"Modelo <code>{_html_escape(variant)}</code> não existe na "
+                    "sua conta Anthropic. Veja os válidos em "
+                    "<code>/provider modelos anthropic</code>.",
+                    parse_mode="HTML",
+                )
+                return
             user.anthropic_model = variant
+            sem_conferir = ok is None
         else:
             await message.answer(
                 "Modelo inválido. Passe um id Claude completo "
@@ -154,8 +188,18 @@ async def cmd_provider(
     elif prov == "openai":
         if variant is None:
             user.openai_model = None  # volta ao OPENAI_MODEL do .env
-        elif variant.startswith(("gpt-", "o1", "o3", "o4", "chatgpt")) and await _is_valid_id("openai", variant):
+        elif variant.startswith(("gpt-", "o1", "o3", "o4", "chatgpt")):
+            ok = await _is_valid_id("openai", variant)
+            if ok is False:
+                await message.answer(
+                    f"Modelo <code>{_html_escape(variant)}</code> não existe na "
+                    "sua conta OpenAI. Veja os válidos em "
+                    "<code>/provider modelos openai</code>.",
+                    parse_mode="HTML",
+                )
+                return
             user.openai_model = variant
+            sem_conferir = ok is None
         else:
             await message.answer(
                 "Modelo inválido. Passe um id de chat da OpenAI "
@@ -173,7 +217,20 @@ async def cmd_provider(
         label = f"anthropic ({user.anthropic_model or settings.anthropic_model})"
     elif prov == "openai":
         label = f"openai ({user.openai_model or settings.openai_model})"
-    await message.answer(f"✅ Provider definido como *{label}*.", parse_mode="Markdown")
+    aviso = ""
+    if sem_conferir:
+        # Honesto sobre o que NÃO foi feito: "✅ definido" com a mesma cara de
+        # um id conferido é o que fazia um id errado virar erro em toda
+        # mensagem, sem ligação com o comando que o causou.
+        aviso = (
+            "\n⚠️ Não consegui conferir esse id na API do provider agora "
+            "(fora do ar ou chave ausente), então aceitei sem validar. "
+            "Se o chat responder `erro no LLM`, o id é o suspeito — "
+            "veja `/provider modelos` e escolha da lista."
+        )
+    await message.answer(
+        f"✅ Provider definido como *{label}*.{aviso}", parse_mode="Markdown",
+    )
 
 
 _VOICE_STT_PROVIDERS = {"gemini", "openai"}

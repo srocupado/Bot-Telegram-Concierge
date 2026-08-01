@@ -75,7 +75,7 @@ from bot.handlers.traffic import (
 from bot.handlers.upload import cmd_arquivos
 from bot.handlers.viagem import cmd_viagem
 from bot.services.chat_memory import memory
-from bot.services.llm.factory import get_provider_for_user
+from bot.services.llm.factory import get_provider_for_user, modelo_do_user
 from bot.services.voice import VoiceTranscribeError, transcribe
 from bot.services.viagem import effective_tz
 
@@ -455,7 +455,8 @@ async def _dispatch_chat(
     except Exception as e:
         logger.exception("voice→chat failed")
         await message.answer(
-            f"❌ erro no LLM ({user.provider}): {e}", parse_mode=None,
+            f"❌ erro no LLM ({user.provider}/{modelo_do_user(user)}): {e}",
+            parse_mode=None,
         )
         return
 
