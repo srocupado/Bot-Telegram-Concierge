@@ -249,6 +249,15 @@ def _inlabs_call(do_request, *, tries: int = 3):
     raise last
 
 
+def chave_job_nota(user_id: int, target: date) -> str:
+    """Chave de dedup do job da nota, COMPARTILHADA por quem pode dispará-lo:
+    o comando/botão manual (`/mp_dou_agora`) e a re-tentativa da fila no
+    proativo. Mesmo usuário + mesma data = um pipeline só; sem isso o tick
+    poderia começar a mesma nota que o dono acabou de pedir no botão, e as
+    duas competiriam pelo mesmo recurso caro (Inlabs + LLM)."""
+    return f"nota:{user_id}:{target.isoformat()}"
+
+
 @contextmanager
 def _fase(nome: str, **extra):
     """Cronometra uma fase e loga quanto durou.

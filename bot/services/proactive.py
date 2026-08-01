@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db.models import ProactiveNotice, Reminder, User, WorkoutLog
+from bot.services import jobs
 from bot.services import shopping
 from bot.services import tasks as tasks_svc
 from bot.services.reminders import as_utc, format_reminder_line
@@ -163,11 +164,48 @@ _NOTA_MAX_POR_JANELA = 1
 _NOTA_PENDENTE_EXPIRA_DIAS = 14
 
 
-async def _processar_notas_pendentes(bot, session: AsyncSession, user: User) -> None:
-    """Re-tenta gerar/entregar notas pendentes. Sucesso → sai da fila (a
-    entrega do deliver_to_user É a notificação); falha do Inlabs → silêncio
-    (o usuário já foi avisado da fila no momento do pedido)."""
+async def _entregar_nota_pendente(
+    bot, user_id: int, d: date, numeros: list[str] | None, key: str,
+) -> None:
+    """Uma re-tentativa da fila, em background e com sessão PRÓPRIA.
+
+    Sucesso → sai da fila (a entrega do deliver_to_user É a notificação);
+    Inlabs fora → silêncio, a entrada fica pra próxima janela (o usuário já
+    foi avisado da fila quando pediu, e a linha de status `nota_fila` repete
+    em toda janela enquanto durar)."""
+    from bot.db.session import SessionLocal
     from bot.services.dou_monitor import DouError, deliver_to_user
+
+    async with SessionLocal() as session:
+        # Usuário recarregado NA SESSÃO DO JOB: o objeto do tick pertence a uma
+        # sessão que já fechou, e ORM de sessão morta estoura DetachedInstance.
+        user = await session.get(User, user_id)
+        if user is None or not user.is_authorized or not user.dou_mp_subscribed:
+            return
+        try:
+            await deliver_to_user(
+                bot, session, user, d, force=True, only_numeros=numeros,
+            )
+        except DouError as e:
+            logger.warning("nota pendente %s: Inlabs ainda fora (%s)", key, e)
+            return
+        except Exception:
+            logger.exception("nota pendente %s: falha inesperada", key)
+            return
+        await unmark_notified(session, user_id, "nota_pendente", key)
+        logger.info("nota pendente %s entregue", key)
+
+
+async def _processar_notas_pendentes(bot, session: AsyncSession, user: User) -> None:
+    """Agenda as re-tentativas da fila de notas — NÃO espera por elas.
+
+    A geração leva minutos (mesmo pipeline do botão: Inlabs + pesquisa + LLM +
+    DOCX). Rodando dentro do tick, segurava a sessão e o próprio tick por todo
+    esse tempo, atrasando o resto da janela — inclusive lembrete que vencesse
+    no meio. Aqui só a parte barata (ler a fila, expirar entrada velha) fica no
+    tick; a entrega vai pra task própria, sob a MESMA chave do comando manual,
+    então tick e /mp_dou_agora nunca geram a mesma nota em duplicata."""
+    from bot.services.dou_monitor import chave_job_nota
     rows = list(await session.scalars(
         select(ProactiveNotice).where(
             ProactiveNotice.user_id == user.id,
@@ -198,17 +236,22 @@ async def _processar_notas_pendentes(bot, session: AsyncSession, user: User) -> 
             continue
         numeros = [n for n in nums.split(",") if n and n != "all"] or None
         fila.append((d, numeros, r.key))
-    for d, numeros, key in sorted(fila, key=lambda t: t[0])[:_NOTA_MAX_POR_JANELA]:
-        try:
-            await deliver_to_user(bot, session, user, d, force=True, only_numeros=numeros)
-        except DouError as e:
-            logger.warning("nota pendente %s: Inlabs ainda fora (%s)", key, e)
-            continue
-        except Exception:
-            logger.exception("nota pendente %s: falha inesperada", key)
-            continue
-        await unmark_notified(session, user.id, "nota_pendente", key)
-        logger.info("nota pendente %s entregue", key)
+    # Pula quem já tem job vivo — a re-tentativa da janela anterior (ou o
+    # pedido manual do dono) ainda está rodando. Sem isso a fila inteira
+    # emperraria atrás dela: o teto por janela seria gasto num spawn recusado.
+    prontas = [
+        t for t in sorted(fila, key=lambda t: t[0])
+        if not jobs.job_em_andamento(chave_job_nota(user.id, t[0]))
+    ]
+    for d, numeros, key in prontas[:_NOTA_MAX_POR_JANELA]:
+        jobs.spawn(
+            chave_job_nota(user.id, d),
+            # Argumentos fixados por default: sem isso a lambda leria o d/key
+            # do fim do laço (late binding) e re-tentaria a data errada.
+            lambda d=d, numeros=numeros, key=key: _entregar_nota_pendente(
+                bot, user.id, d, numeros, key,
+            ),
+        )
 
 
 async def _mp_dias_pendentes(
@@ -739,8 +782,9 @@ async def run_for_user(
                     session, user.id, "mp_pendente", f.key.removeprefix("retro:"),
                 )
 
-    # Fila de notas técnicas pendentes (pedidas com Inlabs fora): re-tenta por
-    # último — a geração é lenta/cara e não pode atrasar a mensagem da janela.
+    # Fila de notas técnicas pendentes (pedidas com Inlabs fora): só AGENDA a
+    # re-tentativa (task própria) — a geração leva minutos e não pode atrasar
+    # a mensagem da janela nem o lembrete que vencer no meio.
     if user.dou_mp_subscribed:
         try:
             await _processar_notas_pendentes(bot, session, user)

@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db.models import User
-from bot.services.dou_monitor import DouError, deliver_to_user
+from bot.services.dou_monitor import DouError, chave_job_nota, deliver_to_user
 
 logger = logging.getLogger(__name__)
 router = Router(name="dou_mp")
@@ -133,8 +133,9 @@ async def _rodar_nota(
             )
 
 
-def _chave_nota(user_id: int, target: date) -> str:
-    return f"nota:{user_id}:{target.isoformat()}"
+# A chave vive no serviço porque o proativo também dispara esse job: os dois
+# caminhos PRECISAM concordar na chave pra dedup funcionar entre eles.
+_chave_nota = chave_job_nota
 
 
 @router.callback_query(F.data.startswith("doump:y:"))
