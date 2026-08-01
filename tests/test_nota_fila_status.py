@@ -1,0 +1,130 @@
+"""Linha de status da fila de notas: diz o observado, não a causa suposta.
+
+O texto era fixo — "Inlabs instável; tento gerar a cada janela" — para toda
+entrada. O motivo da falha que criou a entrada não fica registrado em lugar
+nenhum, então a frase era chute. Em 01/08/2026 ela apareceu com o Inlabs de
+pé, para uma nota que estava sendo gerada NAQUELA MESMA rodada (log:
+`job nota:…:2026-07-31 iniciado` 14:07:52 → `entregue` 14:09:00).
+
+Agora o texto sai do que o bot consegue observar: job vivo para aquela data,
+ou posição na fila contra o teto da janela.
+"""
+from __future__ import annotations
+
+import asyncio
+from datetime import date, timedelta
+from types import SimpleNamespace
+
+import pytest
+
+from bot.services import jobs, proactive
+from bot.services.dou_monitor import chave_job_nota
+
+USER_ID = 4321
+D1 = date(2026, 7, 30)
+D2 = date(2026, 7, 31)
+D3 = date(2026, 8, 1)
+
+
+class _FakeSession:
+    def __init__(self, *respostas):
+        self._respostas = list(respostas)
+
+    async def scalars(self, _stmt):
+        return list(self._respostas.pop(0)) if self._respostas else []
+
+    async def commit(self):
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _sem_jobs():
+    for k in list(jobs.jobs_ativos()):
+        jobs._jobs.pop(k, None)
+    yield
+    for k in list(jobs.jobs_ativos()):
+        jobs._jobs.pop(k, None)
+
+
+def _linhas(monkeypatch, datas, com_job=None):
+    """Roda collect_mp com a fila dada e devolve as linhas de nota_fila."""
+    async def _false(*a, **kw):
+        return False
+
+    async def _none(*a, **kw):
+        return None
+
+    async def _fetch(_d):
+        from bot.services.dou_monitor import MPList
+        return MPList()
+
+    from bot.services import dou_monitor
+    monkeypatch.setattr(dou_monitor, "fetch_mps", _fetch)
+    monkeypatch.setattr(proactive, "already_notified", _false)
+    monkeypatch.setattr(proactive, "mark_notified", _none)
+    monkeypatch.setattr(proactive, "unmark_notified", _none)
+    # Não dispara entrega de verdade: o alvo aqui é só o TEXTO.
+    monkeypatch.setattr(proactive.jobs, "spawn", lambda *a, **kw: True)
+
+    rows = [SimpleNamespace(key=f"{d.isoformat()}:all") for d in datas]
+    user = SimpleNamespace(id=USER_ID, dou_mp_subscribed=True,
+                           dou_ultimo_dia_ok=date.today() - timedelta(days=1))
+
+    async def _main():
+        # scalars é chamado 2x: pendências da retroativa e, depois, a fila
+        # de notas. Ordem errada aqui devolvia lista vazia e os testes
+        # falhavam sem relação com o que testam.
+        session = _FakeSession([], rows)
+        facts = await proactive.collect_mp(session, user, [])
+        return [f.text for f in facts if f.kind == "nota_fila"]
+
+    return asyncio.run(_main())
+
+
+def test_job_vivo_diz_gerando_agora(monkeypatch) -> None:
+    """O caso que expôs a mentira: a nota estava sendo gerada e a linha
+    culpava o Inlabs."""
+    # `spawn` exige loop rodando, então marca o job direto no registro — é o
+    # mesmo estado que `job_em_andamento` consulta.
+    jobs._jobs[chave_job_nota(USER_ID, D2)] = _TarefaViva()
+
+    linhas = _linhas(monkeypatch, [D2])
+    assert "gerando agora" in linhas[0]
+    assert "Inlabs" not in linhas[0]
+
+
+class _TarefaViva:
+    """Task que nunca termina, pro job_em_andamento enxergar."""
+
+    def done(self):
+        return False
+
+
+def test_fora_do_teto_diz_aguardando_a_vez(monkeypatch) -> None:
+    """Com teto 2, a terceira entrada está esperando a vez — e isso é
+    verdade verificável, não suposição sobre o Inlabs."""
+    linhas = _linhas(monkeypatch, [D1, D2, D3])
+    assert len(linhas) == 3
+    assert "aguardando a vez" in linhas[2]
+    assert "aguardando a vez" not in linhas[0]
+    assert "aguardando a vez" not in linhas[1]
+
+
+def test_dentro_do_teto_promete_a_proxima_janela(monkeypatch) -> None:
+    linhas = _linhas(monkeypatch, [D2])
+    assert "próxima janela" in linhas[0]
+    assert "Inlabs" not in linhas[0], "voltou a alegar causa não apurada"
+
+
+def test_nenhuma_linha_alega_causa(monkeypatch) -> None:
+    """Regra do projeto: não afirmar o que não foi apurado."""
+    for linha in _linhas(monkeypatch, [D1, D2, D3]):
+        assert "instável" not in linha.lower()
+        assert "envio assim que sair" in linha or "chega em alguns minutos" in linha
+
+
+def test_ordem_e_por_data(monkeypatch) -> None:
+    """A vez na fila segue a data (mais antiga primeiro) — a mesma ordem que
+    o disparo usa, senão a linha diria uma coisa e o bot faria outra."""
+    linhas = _linhas(monkeypatch, [D3, D1, D2])
+    assert "30/07" in linhas[0] and "31/07" in linhas[1] and "01/08" in linhas[2]

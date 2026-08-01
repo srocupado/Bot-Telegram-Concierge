@@ -159,8 +159,12 @@ _MP_RETRO_EXPIRA_DIAS = 14
 # Fila de NOTA TÉCNICA pendente: MP detectada, usuário pediu a nota (botão) e o
 # Inlabs caiu na hora de gerar — o pedido fica na fila (kind nota_pendente,
 # key "AAAA-MM-DD:num1,num2|all") e é re-tentado silenciosamente a cada janela
-# até sair. Teto 1/janela (nota é cara: web search + LLM + DOCX).
-_NOTA_MAX_POR_JANELA = 1
+# até sair. Teto por janela porque a nota é LENTA (68s medidos: web search +
+# LLM + DOCX), não porque seja arriscada: o provedor é pago (Anthropic pra
+# nota, Gemini fora do free tier), então gerar duas em paralelo não esbarra em
+# quota. Se um dia voltar a apontar pra provedor com RPM apertado, ver o
+# ALERTA em dou_monitor, no laço serial de _nota_e_docx.
+_NOTA_MAX_POR_JANELA = 2
 _NOTA_PENDENTE_EXPIRA_DIAS = 14
 
 
@@ -283,6 +287,14 @@ async def _mp_dias_pendentes(
             continue
         out.append(d)
     return sorted(out)
+
+
+def _data_da_chave(key: str) -> date | None:
+    """Data da chave "AAAA-MM-DD:nums". None quando a chave está corrompida."""
+    try:
+        return date.fromisoformat(key.partition(":")[0])
+    except ValueError:
+        return None
 
 
 async def _cobrir_lacuna(
@@ -592,17 +604,29 @@ async def collect_mp(
             ProactiveNotice.kind == "nota_pendente",
         )
     ))
-    for r in rows:
-        date_part, _, nums = r.key.partition(":")
-        try:
-            d = date.fromisoformat(date_part)
-        except ValueError:
-            continue
+    # O texto diz o que o bot OBSERVA agora, não por que a entrada foi criada.
+    # Antes afirmava "Inlabs instável" sempre — e a causa não fica registrada
+    # em lugar nenhum, então a frase era chute: seguia dizendo isso com o
+    # Inlabs de pé e a nota já sendo gerada na mesma rodada.
+    from bot.services.dou_monitor import chave_job_nota
+    fila_ordenada = sorted(
+        (r for r in rows if _data_da_chave(r.key)),
+        key=lambda r: _data_da_chave(r.key),
+    )
+    for pos, r in enumerate(fila_ordenada):
+        d = _data_da_chave(r.key)
+        _, _, nums = r.key.partition(":")
         alvo = "todas as MPs" if (not nums or nums == "all") else f"MP {nums.replace(',', ', ')}"
+        if jobs.job_em_andamento(chave_job_nota(user.id, d)):
+            estado = "<b>gerando agora</b>, chega em alguns minutos"
+        elif pos >= _NOTA_MAX_POR_JANELA:
+            estado = (f"aguardando a vez (gero até {_NOTA_MAX_POR_JANELA} por "
+                      "janela) — envio assim que sair")
+        else:
+            estado = "tento na próxima janela e envio assim que sair"
         facts.append(ProactiveFact(
             "mp", "nota_fila", r.key,
-            f"📄 Nota técnica na fila ({alvo} de {d.strftime('%d/%m')}) — "
-            "Inlabs instável; tento gerar a cada janela e envio assim que sair.",
+            f"📄 Nota técnica ({alvo} de {d.strftime('%d/%m')}) — {estado}.",
             date_iso=None,
         ))
     return facts

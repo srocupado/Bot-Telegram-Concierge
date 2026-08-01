@@ -1187,7 +1187,18 @@ async def deliver_to_user(
             except Exception:
                 pass
 
-    # Serial (não paralelo) pra não estourar o RPM do free tier do Gemini.
+    # Serial (não paralelo). PREMISSA ATUAL (01/08/2026): provedor pago —
+    # Anthropic no plano pago pra nota, Gemini fora do free tier —, então
+    # concorrência não é risco de quota hoje e o serial aqui é só ordem
+    # previsível de entrega.
+    #
+    # ALERTA pra quem mexer: se o monitor voltar a apontar pra um provedor com
+    # RPM apertado (free tier), este laço protege só DENTRO de uma chamada.
+    # Nada impede DUAS gerações simultâneas — job da fila + /mp_dou_agora, ou
+    # o teto de notas por janela (_NOTA_MAX_POR_JANELA) acima de 1. E 429 aqui
+    # não devolve a MP pra fila: `_nota_e_docx` captura, avisa e segue, então a
+    # nota seria PERDIDA. Nesse cenário, serialize globalmente (semáforo de 1
+    # em volta de _nota_e_docx) em vez de baixar o teto.
     for mp in avisadas:
         await _nota_e_docx(mp)
     return len(avisadas)
