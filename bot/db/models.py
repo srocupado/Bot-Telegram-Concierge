@@ -336,6 +336,13 @@ class TravelWatch(Base):
     last_alert_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     min_price_seen: Mapped[float | None] = mapped_column(Float, nullable=True)
     snooze_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Falhas CONSECUTIVAS de checagem + motivo da última. Sem isso não havia
+    # como distinguir "checou e o preço não caiu" de "não consigo checar desde
+    # março": os dois eram silêncio idêntico, e a vigia parecia viva.
+    consecutive_failures: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False,
+    )
+    last_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
 

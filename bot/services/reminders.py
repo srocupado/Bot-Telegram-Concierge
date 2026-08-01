@@ -330,22 +330,54 @@ def next_due_from(rrule: str, after: datetime, tz_name: str = "America/Sao_Paulo
     # pra sempre depois da volta. `tz_name` é o fuso EFETIVO de quem dispara.
     tz = ZoneInfo(tz_name)
     base_local = (as_utc(after) or after).astimezone(tz)
+    agora_local = datetime.now(timezone.utc).astimezone(tz)
 
-    def _utc(d: datetime) -> datetime:
-        return d.astimezone(timezone.utc)
+    prox = _passo_recorrencia(rrule, base_local)
+    # GUARDA DE CATCH-UP — a mesma que o ramo `cron:` já tinha, e que faltava
+    # aqui. O scheduler reagenda com `sent=False`, então devolver instante no
+    # PASSADO fazia o lembrete vencer de novo no tick seguinte (60s): bot fora
+    # 5 dias = 5 mensagens em 5 minutos. Avança até o primeiro disparo futuro;
+    # a ocorrência vencida já foi entregue nesta rodada (1 catch-up, como no
+    # cron), o resto é rajada de coisa que o dono não pode mais atender.
+    saltos = 0
+    while prox <= agora_local and saltos < _MAX_SALTOS_CATCHUP:
+        prox = _passo_recorrencia(rrule, prox)
+        saltos += 1
+    if saltos >= _MAX_SALTOS_CATCHUP:
+        # Não deveria acontecer (daily precisa de 500 dias parado). Se
+        # acontecer, entregar no futuro é melhor que travar o tick num laço.
+        logger.warning(
+            "reminders: catch-up de '%s' esgotou %d saltos a partir de %s",
+            rrule, _MAX_SALTOS_CATCHUP, base_local.isoformat(),
+        )
+        prox = max(prox, agora_local + timedelta(minutes=1))
+    return prox.astimezone(timezone.utc)
 
+
+# Teto de segurança do laço de catch-up: 500 saltos cobrem 500 dias de
+# 'daily' ou ~9 anos de 'weekly' parado.
+_MAX_SALTOS_CATCHUP = 500
+
+
+def _passo_recorrencia(rrule: str, base_local: datetime) -> datetime:
+    """UM avanço da recorrência a partir de `base_local` (no fuso do usuário).
+
+    Separado de `next_due_from` porque o catch-up precisa aplicar o mesmo
+    passo várias vezes; com a lógica inline, a guarda teria que duplicar as
+    regras de cada rrule — e um dia divergiria de mansinho.
+    """
     if rrule == "daily":
-        return _utc(base_local + timedelta(days=1))
+        return base_local + timedelta(days=1)
     if rrule == "weekday":
         nxt = base_local + timedelta(days=1)
         while nxt.weekday() > 4:  # 5=sat, 6=sun
             nxt += timedelta(days=1)
-        return _utc(nxt)
+        return nxt
     if rrule == "weekend":
         nxt = base_local + timedelta(days=1)
         while nxt.weekday() < 5:
             nxt += timedelta(days=1)
-        return _utc(nxt)
+        return nxt
     if rrule == "monthly":
         # Próximo mês, mesmo dia. Edge case: dia 31 em mês com 30 dias → cai pro último dia.
         from calendar import monthrange
@@ -353,16 +385,16 @@ def next_due_from(rrule: str, after: datetime, tz_name: str = "America/Sao_Paulo
         if month > 12:
             month, year = 1, year + 1
         day = min(base_local.day, monthrange(year, month)[1])
-        return _utc(base_local.replace(year=year, month=month, day=day))
+        return base_local.replace(year=year, month=month, day=day)
     if rrule.startswith("weekly:"):
         wanted = {_WEEKDAY_MAP[d.strip().lower()] for d in rrule.split(":", 1)[1].split(",") if d.strip()}
         nxt = base_local + timedelta(days=1)
         for _ in range(8):
             if nxt.weekday() in wanted:
-                return _utc(nxt)
+                return nxt
             nxt += timedelta(days=1)
     # Fallback: 1 dia. Evita loop infinito caso rrule estranho.
-    return _utc(base_local + timedelta(days=1))
+    return base_local + timedelta(days=1)
 
 
 async def delete_reminder(session: AsyncSession, user_id: int, reminder_id: int) -> Reminder | None:

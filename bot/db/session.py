@@ -149,6 +149,20 @@ async def _ensure_columns(conn) -> None:
             await conn.exec_driver_sql(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
             logger.info("migrated: added users.%s", col)
 
+    tw_cols = await conn.exec_driver_sql("PRAGMA table_info(travel_watches)")
+    cols = {row[1] for row in tw_cols.fetchall()}
+    if cols and "consecutive_failures" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE travel_watches ADD COLUMN consecutive_failures "
+            "INTEGER NOT NULL DEFAULT 0"
+        )
+        logger.info("migrated: added travel_watches.consecutive_failures")
+    if cols and "last_error" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE travel_watches ADD COLUMN last_error VARCHAR(300)"
+        )
+        logger.info("migrated: added travel_watches.last_error")
+
     rem_cols = await conn.exec_driver_sql("PRAGMA table_info(reminders)")
     cols = {row[1] for row in rem_cols.fetchall()}
     if "command_kind" not in cols:

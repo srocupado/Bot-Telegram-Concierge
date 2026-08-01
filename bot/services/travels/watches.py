@@ -7,6 +7,7 @@ adaptado pra reusar `SessionLocal`/`settings` do Concierge e rodar no
 from __future__ import annotations
 
 import logging
+from html import escape as _html_escape
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -94,6 +95,48 @@ async def _send_with_fallback(bot: Bot, chat_id: int, text: str) -> bool:
         except Exception:
             logger.exception("travels: plain send failed for chat %d", chat_id)
             return False
+
+
+# Falhas consecutivas até avisar o dono, e periodicidade dos lembretes
+# seguintes. 3 dias tolera pane passageira do SerpAPI sem incomodar; depois
+# disso a vigia não está vigiando nada e o dono precisa saber — silêncio aqui
+# é indistinguível de "o preço não caiu", que é o falso negativo que este
+# projeto não aceita (ver CLAUDE.md).
+_FALHAS_PRA_AVISAR = 3
+_REPETE_AVISO_A_CADA = 7
+
+
+async def _registrar_falha(
+    session: AsyncSession, bot: Bot, watch: TravelWatch, motivo: str,
+) -> None:
+    """Conta a falha, marca o dia como checado e avisa o dono quando a vigia
+    passa a ser fachada.
+
+    Marcar `last_checked_at` mesmo na falha é deliberado (evita re-executar a
+    cada tick e queimar cota); o que faltava era o dono ficar sabendo.
+    """
+    watch.last_checked_at = datetime.now(timezone.utc)
+    watch.consecutive_failures = (watch.consecutive_failures or 0) + 1
+    watch.last_error = motivo[:300]
+    n = watch.consecutive_failures
+    await session.commit()
+
+    if n != _FALHAS_PRA_AVISAR and not (
+        n > _FALHAS_PRA_AVISAR and (n - _FALHAS_PRA_AVISAR) % _REPETE_AVISO_A_CADA == 0
+    ):
+        return
+    user = await session.get(User, watch.user_id)
+    if user is None:
+        return
+    alvo = watch.summary or watch.kind
+    await _send_with_fallback(bot, user.id, (
+        f"⚠️ Não estou conseguindo checar a vigia <b>{_html_escape(alvo)}</b> "
+        f"há {n} dia(s) seguidos.\n"
+        f"Motivo da última tentativa: <code>{_html_escape(motivo[:200])}</code>\n\n"
+        "Ela continua tentando todo dia — mas <b>não conte com alerta de preço "
+        "dela até isso voltar</b>. Se o parâmetro mudou (aeroporto, data que já "
+        "passou), refaça a vigia."
+    ))
 
 
 async def check_watch(
@@ -196,21 +239,25 @@ async def check_watch(
             return
     except SerpAPIError as e:
         logger.warning("serpapi error for watch %d: %s", watch.id, e)
-        watch.last_checked_at = datetime.now(timezone.utc)
-        await session.commit()
+        await _registrar_falha(session, bot, watch, f"SerpAPI: {e}")
         return
-    except Exception:
+    except Exception as e:
         # QUALQUER outra falha (params malformados, payload inesperado) também
         # marca o dia como checado. Sem isto, _is_due seguia verdadeiro e o
         # watch quebrado era re-executado a cada tick (60s) até meia-noite,
         # queimando cota do SerpAPI todos os dias, em silêncio.
         logger.exception("watch %d: falha inesperada na checagem", watch.id)
-        watch.last_checked_at = datetime.now(timezone.utc)
-        await session.commit()
+        await _registrar_falha(session, bot, watch, f"{type(e).__name__}: {e}")
         return
 
     now = datetime.now(timezone.utc)
     watch.last_checked_at = now
+    # Voltou a funcionar: zera o contador pra que uma nova pane volte a avisar.
+    if watch.consecutive_failures:
+        logger.info("travels: watch %d voltou a checar após %d falha(s)",
+                    watch.id, watch.consecutive_failures)
+        watch.consecutive_failures = 0
+        watch.last_error = None
 
     if best is None:
         logger.info("travels: no price for watch %d", watch.id)
