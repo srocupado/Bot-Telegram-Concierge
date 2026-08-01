@@ -25,6 +25,12 @@ class User(Base):
     # Modelo Gemini escolhido pelo usuário (/provider gemini pro|flash). NULL =
     # usa GEMINI_MODEL do .env. Só vale quando provider == "gemini".
     gemini_model: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    # Teto de "thinking" do Gemini (/provider thinking). NULL = segue
+    # GEMINI_THINKING_BUDGET do .env; -1 automático; 0 desliga; N fixa.
+    # Vive aqui, e não só no .env, porque o valor útil depende do MODELO — o
+    # mesmo 0 que economiza no 2.5-flash é recusado com 400 pelo 3.6-flash — e
+    # trocar de modelo é um comando, não um deploy.
+    gemini_thinking_budget: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Modelo de chat escolhido pelo usuário pra Anthropic/OpenAI
     # (/provider anthropic|openai <id>). NULL = usa ANTHROPIC_MODEL/OPENAI_MODEL
     # do .env. Só vale quando o provider efetivo for o respectivo.

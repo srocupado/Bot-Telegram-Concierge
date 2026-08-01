@@ -87,6 +87,7 @@ HELP_TEXT = (
     "• <code>/ping</code> — testa o LLM atual (mostra provider e modelo)\n"
     "• <code>/provider anthropic|openai|gemini</code> — troca de LLM. Dá pra fixar o modelo por id: <code>/provider gemini gemini-3.5-flash</code> | <code>/provider anthropic claude-sonnet-5</code> | <code>/provider openai gpt-5.1</code> (sem id = volta ao .env; no Gemini ainda valem aliases <code>pro</code>|<code>flash</code>)\n"
     "• <code>/provider modelos [provider]</code> — lista dinâmica dos modelos (vem da API; modelo novo aparece sozinho)\n"
+    "• <code>/provider thinking [auto|0|N|padrao]</code> — quanto o Gemini pode \"pensar\" antes de responder. <code>auto</code> deixa o modelo decidir (sempre aceito); <code>0</code> desliga e economiza tokens, mas modelo novo costuma recusar; <code>N</code> fixa um teto; <code>padrao</code> volta ao .env. Sem argumento, mostra o valor atual. Antes só existia no .env, e o valor certo depende do modelo — trocar de modelo exigia deploy\n"
     "• <code>/provider_visao anthropic|openai|gemini|auto</code> — provider só pra fotos (auto = segue /provider). <code>/provider_visao modelos</code> lista só modelos com entrada de imagem\n"
     "• <code>/voice gemini|openai</code> — provider da transcrição de voz. Gemini converte voz→/comando; OpenAI (Whisper) é literal mas mais estável. <code>/voice modelos</code> lista só modelos com entrada de áudio\n"
     "• <code>/tradutor &lt;idioma&gt;</code> — modo tradutor de VIA DUPLA: manda áudio, recebe a tradução em texto e voz; áudio já no idioma-alvo (a resposta do atendente) volta em português (ex.: <code>/tradutor japonês</code>). <code>/tradutor off</code> desliga — ou fale no próprio áudio \"desliga o tradutor\", que ele sai do modo em vez de traduzir a frase\n"
@@ -299,6 +300,8 @@ _HELP_KEYWORDS: dict[str, str] = {
     "tradutor": "llm", "traduzir": "llm", "traducao": "llm", "traduz": "llm",
     "interprete": "llm", "idioma": "llm", "lingua": "llm",
     "provider": "llm", "modelo": "llm", "llm": "llm", "voz": "voz", "audio": "voz",
+    "thinking": "llm", "raciocinio": "llm", "pensar": "llm", "pensando": "llm",
+    "budget": "llm", "gemini": "llm", "token": "llm", "tokens": "llm",
     "memoria": "llm", "lembra": "llm",
     "foto": "imagens", "imagem": "imagens", "recibo": "imagens", "boleto": "imagens",
     "proativo": "proativo", "briefing": "proativo", "aviso": "proativo",

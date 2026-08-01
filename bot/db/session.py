@@ -120,6 +120,11 @@ async def _ensure_columns(conn) -> None:
     if "anthropic_model" not in cols:
         await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN anthropic_model VARCHAR(64)")
         logger.info("migrated: added users.anthropic_model")
+    if "gemini_thinking_budget" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE users ADD COLUMN gemini_thinking_budget INTEGER"
+        )
+        logger.info("migrated: added users.gemini_thinking_budget")
     if "dou_ultimo_dia_ok" not in cols:
         await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN dou_ultimo_dia_ok DATE")
         logger.info("migrated: added users.dou_ultimo_dia_ok")

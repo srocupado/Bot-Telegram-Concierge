@@ -60,15 +60,27 @@ _MIN_OUTPUT_TOKENS = 8192
 _SEM_THINKING_BUDGET: set[str] = set()
 
 
-def _thinking_config(model: str):
-    """ThinkingConfig conforme settings.gemini_thinking_budget. None = automático
-    (sem alteração); -1 idem; 0 desliga; N fixa. O pro não permite desligar
-    (mín ~128), então clampa pra 128 quando o budget global for 0 — evita 400."""
+def budget_efetivo(budget: int | None = None) -> int:
+    """Budget que vale: o do usuário (/provider thinking) ou o do .env.
+
+    O .env vira PADRÃO, não decisão final — o valor útil depende do modelo, e
+    trocar de modelo é um comando, não um deploy."""
+    if budget is not None:
+        return int(budget)
+    from bot.config import settings as _s
+    # `or -1` aqui seria bug: 0 é valor VÁLIDO (desliga) e viraria automático.
+    v = getattr(_s, "gemini_thinking_budget", -1)
+    return -1 if v is None else int(v)
+
+
+def _thinking_config(model: str, budget: int | None = None):
+    """ThinkingConfig conforme o budget efetivo. None = automático (sem
+    alteração); -1 idem; 0 desliga; N fixa. O pro não permite desligar
+    (mín ~128), então clampa pra 128 quando o budget for 0 — evita 400."""
     if model in _SEM_THINKING_BUDGET:
         return None
-    from bot.config import settings as _s
-    budget = getattr(_s, "gemini_thinking_budget", -1)
-    if budget is None or budget == -1:
+    budget = budget_efetivo(budget)
+    if budget == -1:
         return None
     budget = int(budget)
     if "pro" in (model or "") and 0 <= budget < 128:
@@ -83,7 +95,8 @@ def _e_argumento_invalido(exc: Exception) -> bool:
     return "INVALID_ARGUMENT" in str(exc)
 
 
-def _gerar(client, model: str, contents, onde: str, **config_kwargs):
+def _gerar(client, model: str, contents, onde: str, budget: int | None = None,
+           **config_kwargs):
     """`generate_content` com queda automática do thinking_config.
 
     O budget que um modelo aceita, outro recusa com 400 INVALID_ARGUMENT — e a
@@ -92,7 +105,7 @@ def _gerar(client, model: str, contents, onde: str, **config_kwargs):
     se levar 400 COM thinking_config, repete UMA vez sem ele e memoriza o
     modelo, pra não pagar a ida e volta dupla nas mensagens seguintes.
     """
-    tc = _thinking_config(model)
+    tc = _thinking_config(model, budget)
 
     def _chamar(thinking):
         return client.models.generate_content(
@@ -141,23 +154,14 @@ def _log_payload(onde, model, contents, config_kwargs, thinking) -> None:
 
 
 def _to_genai_parts(content: Any) -> list[types.Part]:
-    """Converte content (str ou list[block]) pra lista de Part do google-genai.
-
-    Texto VAZIO não vira part: `{"text": ""}` no corpo é recusado com
-    400 INVALID_ARGUMENT ("Request contains an invalid argument"), sem dizer
-    qual argumento. Basta uma mensagem vazia no histórico — resposta que veio
-    em branco, turno só de tool call — pra derrubar toda conversa seguinte.
-    """
+    """Converte content (str ou list[block]) pra lista de Part do google-genai."""
     if isinstance(content, str):
-        return [types.Part.from_text(text=content)] if content.strip() else []
+        return [types.Part.from_text(text=content)]
     parts: list[types.Part] = []
     for b in content:
         bt = b.get("type")
         if bt == "text":
-            texto = b.get("text", "")
-            if not texto.strip():
-                continue
-            parts.append(types.Part.from_text(text=texto))
+            parts.append(types.Part.from_text(text=b.get("text", "")))
         elif bt in ("image", "document"):
             import base64 as _b64
             data_bytes = _b64.b64decode(b.get("data", ""))
@@ -167,18 +171,11 @@ def _to_genai_parts(content: Any) -> list[types.Part]:
 
 
 def _messages_to_contents(messages: list[ChatMessage]) -> list[types.Content]:
-    """Converte messages do nosso formato pra list[Content] do google-genai.
-
-    Mensagem que ficou SEM parts é descartada: `Content` com lista vazia é o
-    mesmo 400 INVALID_ARGUMENT do part vazio.
-    """
+    """Converte messages do nosso formato pra list[Content] do google-genai."""
     contents: list[types.Content] = []
     for m in messages:
         role = "user" if m["role"] == "user" else "model"
         parts = _to_genai_parts(m["content"])
-        if not parts:
-            logger.debug("gemini: mensagem %s sem conteúdo utilizável — fora do payload", role)
-            continue
         contents.append(types.Content(role=role, parts=parts))
     return contents
 
@@ -186,12 +183,14 @@ def _messages_to_contents(messages: list[ChatMessage]) -> list[types.Content]:
 class GeminiProvider(LLMProvider):
     name = "gemini"
 
-    def __init__(self, api_key: str, model: str) -> None:
+    def __init__(self, api_key: str, model: str, thinking_budget: int | None = None) -> None:
         if not api_key:
             raise ValueError("GEMINI_API_KEY ausente")
         self.client = genai.Client(api_key=api_key)
         self.model_name = model
         self.model = model  # alias p/ interface comum (ex.: /ping)
+        # None = segue o .env; o /provider thinking sobrescreve por usuário.
+        self.thinking_budget = thinking_budget
 
     async def chat(
         self,
@@ -205,6 +204,7 @@ class GeminiProvider(LLMProvider):
         def _call() -> str:
             resp = _gerar(
                 self.client, self.model_name, contents, "chat",
+                budget=self.thinking_budget,
                 system_instruction=system,
                 max_output_tokens=max(max_tokens, _MIN_OUTPUT_TOKENS),
             )
@@ -247,6 +247,7 @@ class GeminiProvider(LLMProvider):
             def _call() -> Any:
                 return _gerar(
                     self.client, self.model_name, contents, "chat_with_tools",
+                    budget=self.thinking_budget,
                     system_instruction=system,
                     tools=genai_tools,
                     max_output_tokens=max(max_tokens, _MIN_OUTPUT_TOKENS),
@@ -321,6 +322,7 @@ class GeminiProvider(LLMProvider):
             # com function calling em modo NONE: só texto sai daqui.
             return _gerar(
                 self.client, self.model_name, contents, "chat_with_tools[limite]",
+                budget=self.thinking_budget,
                 system_instruction=system,
                 tools=genai_tools,
                 tool_config=types.ToolConfig(

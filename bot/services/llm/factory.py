@@ -15,13 +15,17 @@ def _build(
     gemini_model: str | None = None,
     anthropic_model: str | None = None,
     openai_model: str | None = None,
+    gemini_thinking_budget: int | None = None,
 ) -> LLMProvider:
     if name == "anthropic":
         return AnthropicProvider(settings.anthropic_api_key or "", anthropic_model or settings.anthropic_model)
     if name == "openai":
         return OpenAIProvider(settings.openai_api_key or "", openai_model or settings.openai_model)
     if name == "gemini":
-        return GeminiProvider(settings.gemini_api_key or "", gemini_model or settings.gemini_model)
+        return GeminiProvider(
+            settings.gemini_api_key or "", gemini_model or settings.gemini_model,
+            thinking_budget=gemini_thinking_budget,
+        )
     raise ValueError(f"provider desconhecido: {name}")
 
 
@@ -31,10 +35,12 @@ def get_provider(
     gemini_model: str | None = None,
     anthropic_model: str | None = None,
     openai_model: str | None = None,
+    gemini_thinking_budget: int | None = None,
 ) -> LLMProvider:
     """Overrides de modelo por usuário (/provider <prov> <id>). Cada um só vale
     quando o provider efetivo for o respectivo; os outros são ignorados."""
-    return _build(name or settings.ai_provider, gemini_model, anthropic_model, openai_model)
+    return _build(name or settings.ai_provider, gemini_model, anthropic_model,
+                  openai_model, gemini_thinking_budget)
 
 
 def get_provider_for_user(user, name: str | None = None) -> LLMProvider:
@@ -46,6 +52,7 @@ def get_provider_for_user(user, name: str | None = None) -> LLMProvider:
         gemini_model=user.gemini_model,
         anthropic_model=user.anthropic_model,
         openai_model=user.openai_model,
+        gemini_thinking_budget=getattr(user, "gemini_thinking_budget", None),
     )
 
 

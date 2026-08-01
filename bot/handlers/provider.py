@@ -107,11 +107,79 @@ async def cmd_provider(
             f"Provider atual: *{atual}*\n\nUse: /provider {opts}\n"
             "Modelos disponíveis (lista dinâmica da API):\n"
             "• `/provider modelos` (gemini) | `/provider modelos anthropic` | `/provider modelos openai`\n\n"
+            "Teto de raciocínio do Gemini:\n"
+            "• `/provider thinking` (mostra) | `auto` | `0` | `512` | `padrao`\n\n"
             "Pra escolher o modelo (id completo da lista; NULL = volta ao .env):\n"
             "• `/provider gemini <id>` — ou alias: `3.5` | `3.1-pro` | `pro` | `flash`\n"
             "• `/provider anthropic <id>` — ex.: `/provider anthropic claude-sonnet-5`\n"
             "• `/provider openai <id>` — ex.: `/provider openai gpt-5.1`",
             parse_mode="Markdown",
+        )
+        return
+
+    # /provider thinking [auto|0|N|padrao] — teto de raciocínio do Gemini.
+    # Mora aqui e não só no .env porque o valor útil depende do MODELO: o mesmo
+    # 0 que economiza no 2.5-flash é recusado com 400 pelo 3.6-flash, e trocar
+    # de modelo é um comando — não pode exigir deploy pra acompanhar.
+    if tokens[0] in ("thinking", "raciocinio", "budget"):
+        from bot.services.llm.gemini_impl import budget_efetivo
+        if len(tokens) < 2:
+            atual = user.gemini_thinking_budget
+            efetivo = budget_efetivo(atual)
+            origem = "seu (/provider thinking)" if atual is not None else "do .env"
+            como = {-1: "automático (o modelo decide)", 0: "desligado"}.get(
+                efetivo, f"fixo em {efetivo} tokens")
+            await message.answer(
+                f"<b>Thinking do Gemini:</b> {como} — valor {origem}.\n\n"
+                "• <code>/provider thinking auto</code> — o modelo decide "
+                "(recomendado: sempre aceito)\n"
+                "• <code>/provider thinking 0</code> — desliga; economiza, mas "
+                "modelo novo costuma recusar (o bot cai pro automático sozinho "
+                "e avisa no log)\n"
+                "• <code>/provider thinking 512</code> — teto fixo\n"
+                "• <code>/provider thinking padrao</code> — volta a seguir o .env",
+                parse_mode="HTML",
+            )
+            return
+        arg = tokens[1]
+        if arg in ("padrao", "padrão", "default", "null"):
+            user.gemini_thinking_budget = None
+        elif arg in ("auto", "automatico", "automático"):
+            user.gemini_thinking_budget = -1
+        else:
+            try:
+                valor = int(arg)
+            except ValueError:
+                await message.answer(
+                    "Valor inválido. Use: auto | 0 | um número de tokens | padrao",
+                    parse_mode=None,
+                )
+                return
+            if valor < -1:
+                await message.answer(
+                    "Valor inválido: use -1 (automático), 0 (desliga) ou um "
+                    "número positivo de tokens.",
+                    parse_mode=None,
+                )
+                return
+            user.gemini_thinking_budget = valor
+        await session.commit()
+        # O provider é cacheado por (nome, modelos, budget) — trocar o budget
+        # já gera outra instância, mas o set de "modelo que recusou" é global e
+        # precisa esquecer o que aprendeu, senão um budget novo nunca seria
+        # tentado de novo naquele modelo.
+        from bot.services.llm.gemini_impl import _SEM_THINKING_BUDGET
+        _SEM_THINKING_BUDGET.clear()
+        efetivo = budget_efetivo(user.gemini_thinking_budget)
+        como = {-1: "automático (o modelo decide)", 0: "desligado"}.get(
+            efetivo, f"fixo em {efetivo} tokens")
+        extra = ""
+        if efetivo == 0:
+            extra = ("\n⚠️ Nem todo modelo aceita desligar. Se este recusar, o "
+                     "bot repete sem o ajuste e segue funcionando — sem quebrar "
+                     "o chat.")
+        await message.answer(
+            f"✅ Thinking do Gemini: <b>{como}</b>.{extra}", parse_mode="HTML",
         )
         return
 
