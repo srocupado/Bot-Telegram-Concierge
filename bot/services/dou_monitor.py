@@ -247,7 +247,20 @@ _MAINT_RE = re.compile(r"manuten[çc][ãa]o", re.IGNORECASE)
 # publicado" perde MP em silêncio; listagem lida como falha vira alarme falso
 # todo fim de semana. Medido em 01/08/2026 contra o Inlabs real.
 _E_LOGIN_RE = re.compile(r'type="password"|logar\.php', re.IGNORECASE)
-_E_LISTAGEM_RE = re.compile(r"Imprensa Nacional\s*-\s*INLABS", re.IGNORECASE)
+
+# Marcadores do navegador de arquivos, MEDIDOS nos dois corpos reais
+# (01/08/2026): presentes na listagem (37.549 chars) e ausentes na tela de
+# login (6.032). O título "Imprensa Nacional - INLABS" NÃO serve — as duas
+# páginas o têm, e depender só dele deixava a classificação de pé apenas pela
+# ordem das checagens: bastava o Inlabs mudar o formulário de login pra sessão
+# recusada virar "não publicado" e a MP sumir calada.
+_MARCAS_LISTAGEM = ("sair", "tamanho", "modificado")
+
+
+def _e_listagem(corpo: str) -> bool:
+    """True quando o corpo é o navegador de arquivos com sessão ATIVA."""
+    baixo = corpo.lower()
+    return all(m in baixo for m in _MARCAS_LISTAGEM)
 
 
 class InlabsMaintenanceError(DouError):
@@ -387,7 +400,10 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
                     # (com follow_redirects, cookie recusado → tela de login
                     # em 200). Resultado: "nenhuma MP hoje" com baixa da
                     # pendência, e o dia nunca mais re-checado.
-                    corpo = content.decode("utf-8", errors="replace")[:4000]
+                    # Corpo INTEIRO pra classificar: os marcadores da
+                    # listagem podem estar além de qualquer janela fixa, e
+                    # truncar só criaria falso "desconhecido". São ~37KB.
+                    corpo = content.decode("utf-8", errors="replace")
                     if _MAINT_RE.search(corpo):
                         raise InlabsMaintenanceError(
                             "Inlabs em manutenção (página servida com status 200)"
@@ -400,7 +416,7 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
                                        "recusada pelo Inlabs", section)
                         failed_sections.append(section)
                         continue
-                    if _E_LISTAGEM_RE.search(corpo):
+                    if _e_listagem(corpo):
                         # Logado, e o Inlabs serviu a LISTAGEM no lugar do ZIP:
                         # o arquivo daquela data não existe. Medido em
                         # 01/08/2026 (sábado sem edição): HTTP 200 com 37.583

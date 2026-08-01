@@ -31,7 +31,7 @@ LOGIN = (
 LISTAGEM = (
     '<!DOCTYPE html> <html> <head> <title>Imprensa Nacional - INLABS</title> '
     '<link rel="stylesheet" href="css/bootstrap.min.css"> </head><body>'
-    '<p>Olá vinicius.const@gmail.com</p>'
+    '<p>Olá vinicius.const@gmail.com</p><a href="sair.php">Sair</a>'
     '<table><tr><th>Nome</th><th>Tamanho</th><th>Modificado</th></tr>'
     '<tr><td>2026-07-31</td><td>143.01 MB</td></tr></table></body></html>'
 )
@@ -47,13 +47,33 @@ def test_login_e_reconhecido_como_sessao_recusada() -> None:
 def test_listagem_nao_e_confundida_com_login() -> None:
     """O ponto do conserto: listagem não pode cair na regra de login."""
     assert not dm._E_LOGIN_RE.search(LISTAGEM)
-    assert dm._E_LISTAGEM_RE.search(LISTAGEM)
+    assert dm._e_listagem(LISTAGEM)
+
+
+def test_login_nao_passa_por_listagem_nem_fora_de_ordem() -> None:
+    """As duas páginas têm o MESMO título "Imprensa Nacional - INLABS"
+    (medido). Se a listagem fosse reconhecida pelo título, a classificação
+    ficaria de pé só pela ORDEM das checagens — e bastaria o Inlabs mudar o
+    formulário de login pra sessão recusada virar "não publicado", dando baixa
+    no dia e perdendo a MP em silêncio. Os marcadores do navegador de arquivos
+    (Sair/Tamanho/Modificado, ausentes no login) tornam isso impossível.
+    """
+    assert "Imprensa Nacional - INLABS" in LOGIN
+    assert not dm._e_listagem(LOGIN)
+
+
+def test_marcadores_da_listagem_sao_os_medidos() -> None:
+    """Medido em 01/08/2026: listagem (37.549 chars) tem os três; login
+    (6.032) não tem nenhum."""
+    for marca in dm._MARCAS_LISTAGEM:
+        assert marca in LISTAGEM.lower(), marca
+        assert marca not in LOGIN.lower(), marca
 
 
 def test_manutencao_continua_tendo_precedencia() -> None:
     """Manutenção é checada ANTES das outras duas — é pane, não ausência."""
     assert dm._MAINT_RE.search(MANUTENCAO)
-    assert not dm._E_LISTAGEM_RE.search(MANUTENCAO)
+    assert not dm._e_listagem(MANUTENCAO)
 
 
 def test_corpo_desconhecido_nao_casa_com_nada() -> None:
@@ -61,7 +81,7 @@ def test_corpo_desconhecido_nao_casa_com_nada() -> None:
     nunca 'não publicado'."""
     estranho = "<html><body>502 Bad Gateway</body></html>"
     assert not dm._E_LOGIN_RE.search(estranho)
-    assert not dm._E_LISTAGEM_RE.search(estranho)
+    assert not dm._e_listagem(estranho)
     assert not dm._MAINT_RE.search(estranho)
 
 
