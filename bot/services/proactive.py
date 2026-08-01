@@ -380,9 +380,16 @@ async def collect_mp(
     restantes = [d for d in pendentes if d not in dates][:_MP_RETRO_MAX_POR_JANELA]
     for d in restantes:
         try:
-            facts += await _colher(d)
+            colhidos, completo = await _colher(d)
         except Exception as exc:
             logger.warning("proactive: retroativa DOU %s ainda falhando: %s", d, exc)
+            continue
+        facts += colhidos
+        if not completo:
+            # Voltou incompleto (uma seção falhou): entrega o que veio, mas o
+            # dia NÃO recebe baixa — continua pendente, igual à varredura
+            # normal. Dar baixa aqui perderia a edição Extra em silêncio.
+            logger.warning("proactive: retroativa %s veio INCOMPLETA; mantendo pendência", d)
             continue
         resolvidos.append(d)
     for d in sorted(resolvidos):
