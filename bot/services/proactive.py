@@ -1019,8 +1019,25 @@ async def run_for_user(
 
     sent = await _send(bot, user.id, text, reply_markup=reply_markup)
     logger.info("proactive: user %d window=%s %d fatos enviado=%s", user.id, window, len(facts), sent)
-    if sent and not force:
+    if sent:
         for f in facts:
+            # Retroativa do DOU ENTREGUE → o dia sai da pendência. Isso NÃO é
+            # dedup de aviso: é baixa de estado — o dia foi mesmo re-checado e
+            # o resultado já foi entregue. Por isso vale inclusive no
+            # /proativo_agora (force), que antes caía fora do bloco inteiro:
+            # a pendência nunca era baixada, cada execução manual re-baixava
+            # os ZIPs daquele dia (~100-200MB no Orange Pi) e a linha
+            # "✅ retroativa concluída" se repetia pra sempre.
+            # Se o envio falhar, a pendência fica e a retro repete na janela
+            # seguinte — que é o comportamento desejado.
+            if f.kind == "mp_retro":
+                await unmark_notified(
+                    session, user.id, "mp_pendente", f.key.removeprefix("retro:"),
+                )
+            # Daqui pra baixo é DEDUP de aviso, e o force pula de propósito:
+            # execução de teste não pode silenciar a janela real.
+            if force:
+                continue
             # clima, trânsito e vencimentos não têm dedup: repetem a cada
             # janela (clima/trânsito = leitura fresca; vencimento = lembrar
             # até pagar).
@@ -1031,12 +1048,6 @@ async def run_for_user(
             if f.kind == "nota_fila":
                 continue
             await mark_notified(session, user.id, f.kind, f.key)
-            # Retroativa do DOU ENTREGUE → o dia sai da pendência. Se o envio
-            # falhar, a pendência fica e a retro repete na próxima janela.
-            if f.kind == "mp_retro":
-                await unmark_notified(
-                    session, user.id, "mp_pendente", f.key.removeprefix("retro:"),
-                )
 
     return sent
 
