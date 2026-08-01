@@ -12,6 +12,7 @@ import io
 import logging
 
 from bot.config import settings
+from bot.services.llm.gemini_impl import gerar
 
 logger = logging.getLogger(__name__)
 
@@ -134,25 +135,17 @@ async def _translate_gemini(
             "local), a tradução deve ser para português brasileiro"
         )
         # Desliga o thinking: gemini-3.x é 'thinking' e o texto de pensamento
-        # contaminava resp.text (a outra metade do bug). flash aceita 0; pro
-        # exige mínimo ~128. Espelha bot/services/voice._thinking_config.
-        thinking = None
-        try:
-            budget = 128 if "pro" in (model_id or "") else 0
-            thinking = types.ThinkingConfig(thinking_budget=budget)
-        except Exception:
-            thinking = None
-        resp = client.models.generate_content(
-            model=model_id,
-            contents=[
+        # contaminava resp.text (a outra metade do bug). O clamp do pro e a
+        # queda automática (modelo que recusa budget 0) vivem no `gerar`.
+        resp = gerar(
+            client, model_id,
+            [
                 types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
                 types.Part.from_text(text=prompt),
             ],
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-                max_output_tokens=2048,
-                thinking_config=thinking,
-            ),
+            "tradutor", budget=0,
+            temperature=0.2,
+            max_output_tokens=2048,
         )
         return _parse_delimited(resp.text or "")
 

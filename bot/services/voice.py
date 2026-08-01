@@ -7,6 +7,7 @@ from google import genai
 from google.genai import types
 
 from bot.config import settings
+from bot.services.llm.gemini_impl import gerar
 
 logger = logging.getLogger(__name__)
 
@@ -115,18 +116,6 @@ def _is_transient(exc: Exception) -> bool:
     return any(t in s for t in ("503", "unavailable", "overloaded", "429", "high demand"))
 
 
-def _thinking_config(model: str):
-    """Desliga o thinking pra STT (transcrição não precisa raciocinar; ganha
-    velocidade e custo). O pro não permite 0 (mín ~128), então clampa."""
-    budget = 0
-    if "pro" in (model or ""):
-        budget = 128
-    try:
-        return types.ThinkingConfig(thinking_budget=budget)
-    except Exception:
-        return None
-
-
 async def _transcribe_openai(audio_bytes: bytes, mime_type: str) -> str:
     """Transcrição via OpenAI (Whisper / gpt-4o-transcribe). Literal — não faz
     a conversão pra comando que o Gemini multimodal faz."""
@@ -188,17 +177,18 @@ async def transcribe(
 
     def _call(model: str) -> str:
         client = genai.Client(api_key=settings.gemini_api_key)
-        resp = client.models.generate_content(
-            model=model,
-            contents=[
+        # budget=0 via `gerar`: segue desligando o thinking (STT não precisa
+        # raciocinar), mas com queda automática — modelo que recuse o 0
+        # transcreve sem o ajuste em vez de derrubar a voz com 400.
+        resp = gerar(
+            client, model,
+            [
                 types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
                 types.Part.from_text(text=_TRANSCRIBE_PROMPT),
             ],
-            config=types.GenerateContentConfig(
-                max_output_tokens=8192,
-                temperature=0.0,
-                thinking_config=_thinking_config(model),
-            ),
+            "voice:stt", budget=0,
+            max_output_tokens=8192,
+            temperature=0.0,
         )
         return (resp.text or "").strip()
 

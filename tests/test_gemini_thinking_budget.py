@@ -64,7 +64,7 @@ def budget_zero(monkeypatch):
 def test_400_no_thinking_vira_nova_tentativa_sem_ele(budget_zero, caplog) -> None:
     cli = _ClienteFake()
     with caplog.at_level(logging.WARNING):
-        resp = gi._gerar(cli, "gemini-3.6-flash", [], "chat", max_output_tokens=8192)
+        resp = gi.gerar(cli, "gemini-3.6-flash", [], "chat", max_output_tokens=8192)
     assert resp.text == "ok", "o chat tem que responder, não estourar"
     assert len(cli.chamadas) == 2, "deveria tentar com e sem thinking_config"
     assert cli.chamadas[0] is not None and cli.chamadas[1] is None
@@ -76,18 +76,18 @@ def test_400_no_thinking_vira_nova_tentativa_sem_ele(budget_zero, caplog) -> Non
 def test_modelo_recusado_e_memorizado(budget_zero) -> None:
     """Sem memorizar, TODA mensagem pagaria a ida e volta dupla."""
     cli = _ClienteFake()
-    gi._gerar(cli, "gemini-3.6-flash", [], "chat", max_output_tokens=8192)
+    gi.gerar(cli, "gemini-3.6-flash", [], "chat", max_output_tokens=8192)
     assert "gemini-3.6-flash" in gi._SEM_THINKING_BUDGET
 
     cli2 = _ClienteFake()
-    gi._gerar(cli2, "gemini-3.6-flash", [], "chat", max_output_tokens=8192)
+    gi.gerar(cli2, "gemini-3.6-flash", [], "chat", max_output_tokens=8192)
     assert cli2.chamadas == [None], "segunda mensagem já deve ir sem thinking"
 
 
 def test_modelo_que_aceita_continua_com_thinking(budget_zero) -> None:
     """A queda é por modelo: quem aceita budget 0 não perde o ajuste."""
     cli = _ClienteFake(recusa_thinking=False)
-    gi._gerar(cli, "gemini-2.5-flash", [], "chat", max_output_tokens=8192)
+    gi.gerar(cli, "gemini-2.5-flash", [], "chat", max_output_tokens=8192)
     assert len(cli.chamadas) == 1 and cli.chamadas[0] is not None
     assert "gemini-2.5-flash" not in gi._SEM_THINKING_BUDGET
 
@@ -102,7 +102,7 @@ def test_erro_que_nao_e_invalid_argument_sobe(budget_zero) -> None:
 
     cli = _Quota()
     with pytest.raises(RuntimeError, match="RESOURCE_EXHAUSTED"):
-        gi._gerar(cli, "gemini-3.6-flash", [], "chat", max_output_tokens=8192)
+        gi.gerar(cli, "gemini-3.6-flash", [], "chat", max_output_tokens=8192)
     assert len(cli.chamadas) == 1, "não pode repetir erro que não é de argumento"
 
 
@@ -111,5 +111,5 @@ def test_sem_budget_configurado_nao_ha_o_que_cair(monkeypatch) -> None:
     from bot.config import settings
     monkeypatch.setattr(settings, "gemini_thinking_budget", -1)
     cli = _ClienteFake()
-    gi._gerar(cli, "gemini-3.6-flash", [], "chat", max_output_tokens=8192)
+    gi.gerar(cli, "gemini-3.6-flash", [], "chat", max_output_tokens=8192)
     assert cli.chamadas == [None]

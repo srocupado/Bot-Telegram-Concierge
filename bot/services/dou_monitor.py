@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db.models import DouSeenMP
+from bot.services.llm.gemini_impl import gerar
 
 logger = logging.getLogger(__name__)
 
@@ -729,17 +730,6 @@ def _is_transient_or_recoverable(exc: Exception) -> bool:
     return False
 
 
-def _gemini_no_thinking_config():
-    """ThinkingConfig com budget=0 — STT/nota técnica não precisam de
-    raciocínio interno, e o thinking come max_output_tokens, causando
-    JSON truncado. (Igual ao tratamento em voice.py.)"""
-    try:
-        from google.genai import types
-        return types.ThinkingConfig(thinking_budget=0)
-    except Exception:
-        return None
-
-
 async def _pesquisar_contexto_gemini(client, mp: dict, *, model_override: str | None = None) -> str:
     if not settings.dou_mp_web_research:
         return ""
@@ -753,11 +743,15 @@ async def _pesquisar_contexto_gemini(client, mp: dict, *, model_override: str | 
     )
 
     def _call(model: str) -> str:
-        config = types.GenerateContentConfig(
+        # budget=-1: nenhum thinking_config no corpo (é o comportamento atual
+        # — a pesquisa se beneficia de raciocínio). Passa pelo `gerar` mesmo
+        # assim pra manter a invariante "ninguém chama a API direto": é o que
+        # garante o log do payload quando o Gemini recusar algo aqui.
+        resp = gerar(
+            client, model, prompt, "dou:pesquisa", budget=-1,
             tools=[types.Tool(google_search=types.GoogleSearch())],
             max_output_tokens=1500,
         )
-        resp = client.models.generate_content(model=model, contents=prompt, config=config)
         return (resp.text or "").strip()
 
     models_p = _gemini_models(model_override)
@@ -803,14 +797,16 @@ async def _gen_nota_gemini(mp: dict, *, model_override: str | None = None) -> di
         # do 3.5-flash/3.1 consome o orçamento de saída e o JSON estruturado
         # vem TRUNCADO (JSONDecodeError "Unterminated string"). Desligar o
         # thinking devolve todos os tokens pra resposta.
-        config = types.GenerateContentConfig(
+        # budget=0 pelo `gerar`: mantém o thinking desligado (motivo acima) MAS
+        # com queda automática — modelo que recuse o 0 responde sem o ajuste em
+        # vez de derrubar a nota inteira com 400 INVALID_ARGUMENT.
+        resp = gerar(
+            client, model, user_content, "dou:nota", budget=0,
             system_instruction=_NOTA_SYSTEM,
             response_mime_type="application/json",
             response_schema=schema,
             max_output_tokens=16384,
-            thinking_config=_gemini_no_thinking_config(),
         )
-        resp = client.models.generate_content(model=model, contents=user_content, config=config)
         return (resp.text or "").strip()
 
     models = _gemini_models(model_override)

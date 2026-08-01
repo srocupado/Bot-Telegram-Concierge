@@ -95,9 +95,12 @@ def _e_argumento_invalido(exc: Exception) -> bool:
     return "INVALID_ARGUMENT" in str(exc)
 
 
-def _gerar(client, model: str, contents, onde: str, budget: int | None = None,
-           **config_kwargs):
+def gerar(client, model: str, contents, onde: str, budget: int | None = None,
+          **config_kwargs):
     """`generate_content` com queda automática do thinking_config.
+
+    PÚBLICO porque não é só o chat: nota técnica do DOU, STT de voz e tradutor
+    também fixam budget e quebrariam igual num modelo que recuse.
 
     O budget que um modelo aceita, outro recusa com 400 INVALID_ARGUMENT — e a
     resposta não diz qual argumento é o inválido, então o sintoma é "todo chat
@@ -202,7 +205,7 @@ class GeminiProvider(LLMProvider):
         contents = _messages_to_contents(messages)
 
         def _call() -> str:
-            resp = _gerar(
+            resp = gerar(
                 self.client, self.model_name, contents, "chat",
                 budget=self.thinking_budget,
                 system_instruction=system,
@@ -245,7 +248,7 @@ class GeminiProvider(LLMProvider):
 
         for _ in range(max_iterations):
             def _call() -> Any:
-                return _gerar(
+                return gerar(
                     self.client, self.model_name, contents, "chat_with_tools",
                     budget=self.thinking_budget,
                     system_instruction=system,
@@ -320,7 +323,7 @@ class GeminiProvider(LLMProvider):
         def _final() -> Any:
             # Declarações continuam (o histórico tem function_call/response),
             # com function calling em modo NONE: só texto sai daqui.
-            return _gerar(
+            return gerar(
                 self.client, self.model_name, contents, "chat_with_tools[limite]",
                 budget=self.thinking_budget,
                 system_instruction=system,
