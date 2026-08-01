@@ -241,6 +241,14 @@ _INLABS_RETRY_STATUS = frozenset({500, 502, 503, 504})
 # uma mensagem clara em vez de "HTTP 502".
 _MAINT_RE = re.compile(r"manuten[çc][ãa]o", re.IGNORECASE)
 
+# Tela de LOGIN (sessão recusada) × LISTAGEM de arquivos (logado, arquivo
+# inexistente). O Inlabs nunca devolve 404: serve HTML com status 200 nos dois
+# casos, e confundi-los custa caro nas duas direções — login lido como "não
+# publicado" perde MP em silêncio; listagem lida como falha vira alarme falso
+# todo fim de semana. Medido em 01/08/2026 contra o Inlabs real.
+_E_LOGIN_RE = re.compile(r'type="password"|logar\.php', re.IGNORECASE)
+_E_LISTAGEM_RE = re.compile(r"Imprensa Nacional\s*-\s*INLABS", re.IGNORECASE)
+
 
 class InlabsMaintenanceError(DouError):
     pass
@@ -342,7 +350,15 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
             raise DouError(f"falha ao autenticar no Inlabs: {exc}") from exc
         cookie = client.cookies.get("inlabs_session_cookie")
         if not cookie:
-            raise DouError("autenticação Inlabs falhou (cookie ausente) — verifique e-mail/senha.")
+            # Medido em 01/08/2026: o mesmo par e-mail/senha logou e, minutos
+            # depois, voltou sem cookie — o Inlabs recusa sessão de forma
+            # transitória. Culpar a credencial mandava o dono conferir o .env
+            # atrás de um problema que não é dele.
+            raise DouError(
+                "o Inlabs não abriu sessão agora (não devolveu cookie). "
+                "Costuma ser instabilidade dele e passa sozinho; se persistir "
+                "por horas, aí sim confira INLABS_EMAIL/INLABS_PASSWORD."
+            )
 
         date_str = target_date.strftime("%Y-%m-%d")
         failed_sections: list[str] = []
@@ -371,14 +387,33 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
                     # (com follow_redirects, cookie recusado → tela de login
                     # em 200). Resultado: "nenhuma MP hoje" com baixa da
                     # pendência, e o dia nunca mais re-checado.
-                    corpo = content.decode("utf-8", errors="replace")[:2000]
+                    corpo = content.decode("utf-8", errors="replace")[:4000]
                     if _MAINT_RE.search(corpo):
                         raise InlabsMaintenanceError(
                             "Inlabs em manutenção (página servida com status 200)"
                         )
-                    # Só é "não publicada" quando a resposta é VAZIA/mínima.
-                    # Qualquer corpo com cara de HTML é falha — vai pra
-                    # failed_sections e o dia entra na retroativa.
+                    if _E_LOGIN_RE.search(corpo):
+                        # Sessão recusada no meio do caminho. NÃO é "não
+                        # publicado": tratar como tal daria baixa no dia e a MP
+                        # sumiria. Falha explícita, e o dia volta na retroativa.
+                        logger.warning("dou: %s devolveu tela de LOGIN — sessão "
+                                       "recusada pelo Inlabs", section)
+                        failed_sections.append(section)
+                        continue
+                    if _E_LISTAGEM_RE.search(corpo):
+                        # Logado, e o Inlabs serviu a LISTAGEM no lugar do ZIP:
+                        # o arquivo daquela data não existe. Medido em
+                        # 01/08/2026 (sábado sem edição): HTTP 200 com 37.583
+                        # bytes de listagem, contra 6.032 da tela de login.
+                        # Sem esta distinção, todo fim de semana sem edição
+                        # extra virava "Inlabs indisponível" — alarme falso
+                        # semanal, mais nota na fila por 14 dias.
+                        logger.info("dou: %s não publicada em %s (Inlabs serviu "
+                                    "a listagem no lugar do ZIP)", section, date_str)
+                        sections_404.append(section)
+                        continue
+                    # Corpo desconhecido: FALHA. É o padrão seguro — na dúvida,
+                    # o dia fica pendente e é re-checado, nunca dado por vazio.
                     if len(content) >= 100:
                         logger.warning(
                             "dou: %s devolveu conteúdo não-ZIP (%d bytes) — tratando "
