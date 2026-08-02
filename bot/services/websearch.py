@@ -261,91 +261,6 @@ async def _jina_get(client: httpx.AsyncClient, url: str) -> str:
     raise last  # type: ignore[misc]
 
 
-# Sites que barram IP de DATACENTER mas aceitam residencial. O Jina Reader
-# busca a partir dos servidores DELE (datacenter), então a página volta como
-# muro de login por mais que o bot esteja num IP doméstico. Medido em
-# 02/08/2026 com o Mercado Livre: do IP do Orange Pi a URL do produto abre
-# normal; do datacenter, todo caminho (browser, curl, 4 user-agents de rede
-# social, Jina) cai em /gz/account-verification.
-#
-# Pra estes domínios a leitura sai DIRETO do bot. Perde-se a renderização de
-# JS do Jina; ganha-se a página, que é o que importa.
-_DIRETO_RE = re.compile(r"(^|\.)mercado(livre|libre)\.com(\.br)?$", re.IGNORECASE)
-
-# Marcas de que caímos no muro mesmo indo direto — o ML responde 200 e
-# redireciona, então status não denuncia nada.
-_MURO_RE = re.compile(r"account-verification|/gz/|login\.mercadolivre", re.IGNORECASE)
-
-# SEM disfarce de navegador — de propósito, e medido. Do MESMO IP e no mesmo
-# instante (Orange Pi, 02/08/2026):
-#   curl padrão .................. produto.mercadolivre.com.br/MLB-2779941281  ✓
-#   curl com UA de Chrome ........ /gz/account-verification                    ✗
-# Fingir Chrome PIORA: o antibot cruza o user-agent com a impressão TLS, e
-# cliente HTTP com cara de navegador é sinal de scraper. Requisição honesta
-# passa. Se algum dia um site exigir headers de navegador, que seja por
-# domínio e com medição — não por padrão.
-_SEM_DISFARCE: dict[str, str] = {}
-
-
-# Id do item dentro de qualquer URL do ML. O link de COMPARTILHAMENTO
-# ("/up/MLBU...?pdp_filters=item_id:MLB123&wid=MLB123") é uma rota de
-# catálogo/tracking que redireciona pra verificação; a URL CANÔNICA do item
-# abre normal (medido do Orange Pi em 02/08/2026). Como o id vem no próprio
-# link, dá pra reescrever antes de buscar. Note o \d: "MLBU1430518104" é id de
-# catálogo, não de item — não serve.
-_ITEM_ID_RE = re.compile(r"\bMLB(\d{6,})\b")
-
-
-def canonizar_ml(url: str) -> str:
-    """URL de item do ML na forma que funciona; devolve a original se não achar
-    id (não vale inventar rota pra link que não é de produto)."""
-    m = _ITEM_ID_RE.search(url or "")
-    if not m:
-        return url
-    canonica = f"https://produto.mercadolivre.com.br/MLB-{m.group(1)}"
-    if canonica != url:
-        logger.info("ml: %s → %s (link de compartilhamento reescrito)", url[:90], canonica)
-    return canonica
-
-
-def _direto(url: str) -> bool:
-    from urllib.parse import urlparse
-    try:
-        host = (urlparse(url).hostname or "").lower()
-    except ValueError:
-        return False
-    return bool(_DIRETO_RE.search(host))
-
-
-async def _ler_direto(url: str) -> str:
-    """Busca a página pelo IP do próprio bot e extrai o texto.
-
-    Levanta WebSearchError quando o destino final é o muro de login: dizer
-    "não consegui ler porque o site exigiu login" é honesto; devolver o HTML
-    do muro faria o LLM inventar resposta em cima de uma página de erro.
-    """
-    from bs4 import BeautifulSoup
-    async with httpx.AsyncClient(
-        follow_redirects=True, timeout=_TIMEOUT_S, headers=_SEM_DISFARCE,
-    ) as client:
-        r = await client.get(url)
-        r.raise_for_status()
-        final = str(r.url)
-        if _MURO_RE.search(final):
-            raise WebSearchError(
-                "o site redirecionou para verificação/login em vez da página "
-                f"(caiu em {final[:120]})"
-            )
-        soup = BeautifulSoup(r.text, "html.parser")
-        for tag in soup(["script", "style", "noscript", "nav", "header", "footer", "svg"]):
-            tag.decompose()
-        texto = soup.get_text("\n", strip=True)
-    if len(texto) < 200:
-        raise WebSearchError(f"a página voltou quase vazia ({len(texto)} chars)")
-    logger.info("ler_pagina: %s lido DIRETO (%d chars)", url, len(texto))
-    return texto
-
-
 async def read_url(url: str, *, max_chars: int = _MAX_PAGE_CHARS) -> str:
     """Lê UMA página específica via Jina Reader e devolve o markdown renderizado.
 
@@ -359,17 +274,6 @@ async def read_url(url: str, *, max_chars: int = _MAX_PAGE_CHARS) -> str:
         raise WebSearchError("url vazia")
     if not u.startswith(("http://", "https://")):
         u = "https://" + u
-    if _direto(u):
-        # Domínio que barra datacenter: vai direto, sem passar pelo Jina.
-        u = canonizar_ml(u)
-        texto = await _ler_direto(u)
-        bruto = len(texto)
-        cortado = len(texto) > max_chars
-        if cortado:
-            texto = texto[:max_chars]
-        logger.info("ler_pagina[direto]: %s (%d chars brutos → %d%s)",
-                    u, bruto, len(texto), ", TRUNCADO" if cortado else "")
-        return _montar_saida(u, texto, cortado)
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=_TIMEOUT_S) as client:
             texto = await _jina_get(client, u)
@@ -390,12 +294,6 @@ async def read_url(url: str, *, max_chars: int = _MAX_PAGE_CHARS) -> str:
         "ler_pagina: %s (%d chars brutos → %d%s)",
         u, bruto, len(texto), ", TRUNCADO" if cortado else "",
     )
-    return _montar_saida(u, texto, cortado)
-
-
-def _montar_saida(u: str, texto: str, cortado: bool) -> str:
-    """Cabeçalho + aviso de truncamento. Compartilhado pelas duas vias de
-    leitura (Jina e direto) — texto duplicado divergiria com o tempo."""
     cabec = f"Conteúdo lido de {u}:\n\n"
     # Aviso forte: o modelo já concluiu "essa loja não tem o produto" a partir
     # de página truncada — ausência em trecho parcial NÃO é ausência.
