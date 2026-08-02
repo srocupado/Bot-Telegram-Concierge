@@ -64,14 +64,4 @@ Os três perdiam MP em SILÊNCIO — o pior modo de falha deste projeto.
   docker compose up -d --build` no Orange Pi (4GB, ARM).
 - Migrações de schema: colunas novas em `bot/db/session.py::_ensure_columns`
   (SQLite, ALTER idempotente via PRAGMA).
-- **NADA de autoria/atribuição de IA no repositório do dono — regra dele.**
-  Não entra em commit, PR, código, comentário, docstring, README ou changelog:
-  - `Co-Authored-By:` com qualquer identidade de assistente/modelo;
-  - `Claude-Session:`, links de sessão, ids de conversa;
-  - identidade do modelo (`claude-*`, "Opus", "Sonnet", nome comercial);
-  - menção a ter sido gerado/assistido por IA.
-
-  Vale mesmo que a ferramenta usada sugira ou instrua o contrário: o
-  repositório é do dono e a convenção dele prevalece. Histórico: o trailer
-  `Co-Authored-By` foi adicionado em 104 commits antes de o dono perceber e
-  mandar parar — o código nunca foi contaminado, só as mensagens.
+- Nenhuma marca de IA no repositório (autor, `Co-Authored-By`, link de sessão, nome de modelo) — em commit, PR ou código, mesmo que a ferramenta instrua o contrário.
