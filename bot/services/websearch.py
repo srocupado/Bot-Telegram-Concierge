@@ -261,6 +261,69 @@ async def _jina_get(client: httpx.AsyncClient, url: str) -> str:
     raise last  # type: ignore[misc]
 
 
+# Sites que barram IP de DATACENTER mas aceitam residencial. O Jina Reader
+# busca a partir dos servidores DELE (datacenter), então a página volta como
+# muro de login por mais que o bot esteja num IP doméstico. Medido em
+# 02/08/2026 com o Mercado Livre: do IP do Orange Pi a URL do produto abre
+# normal; do datacenter, todo caminho (browser, curl, 4 user-agents de rede
+# social, Jina) cai em /gz/account-verification.
+#
+# Pra estes domínios a leitura sai DIRETO do bot. Perde-se a renderização de
+# JS do Jina; ganha-se a página, que é o que importa.
+_DIRETO_RE = re.compile(r"(^|\.)mercado(livre|libre)\.com(\.br)?$", re.IGNORECASE)
+
+# Marcas de que caímos no muro mesmo indo direto — o ML responde 200 e
+# redireciona, então status não denuncia nada.
+_MURO_RE = re.compile(r"account-verification|/gz/|login\.mercadolivre", re.IGNORECASE)
+
+_UA_NAVEGADOR = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
+
+
+def _direto(url: str) -> bool:
+    from urllib.parse import urlparse
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return bool(_DIRETO_RE.search(host))
+
+
+async def _ler_direto(url: str) -> str:
+    """Busca a página pelo IP do próprio bot e extrai o texto.
+
+    Levanta WebSearchError quando o destino final é o muro de login: dizer
+    "não consegui ler porque o site exigiu login" é honesto; devolver o HTML
+    do muro faria o LLM inventar resposta em cima de uma página de erro.
+    """
+    from bs4 import BeautifulSoup
+    async with httpx.AsyncClient(
+        follow_redirects=True, timeout=_TIMEOUT_S, headers=_UA_NAVEGADOR,
+    ) as client:
+        r = await client.get(url)
+        r.raise_for_status()
+        final = str(r.url)
+        if _MURO_RE.search(final):
+            raise WebSearchError(
+                "o site redirecionou para verificação/login em vez da página "
+                f"(caiu em {final[:120]})"
+            )
+        soup = BeautifulSoup(r.text, "html.parser")
+        for tag in soup(["script", "style", "noscript", "nav", "header", "footer", "svg"]):
+            tag.decompose()
+        texto = soup.get_text("\n", strip=True)
+    if len(texto) < 200:
+        raise WebSearchError(f"a página voltou quase vazia ({len(texto)} chars)")
+    logger.info("ler_pagina: %s lido DIRETO (%d chars)", url, len(texto))
+    return texto
+
+
 async def read_url(url: str, *, max_chars: int = _MAX_PAGE_CHARS) -> str:
     """Lê UMA página específica via Jina Reader e devolve o markdown renderizado.
 
@@ -274,6 +337,16 @@ async def read_url(url: str, *, max_chars: int = _MAX_PAGE_CHARS) -> str:
         raise WebSearchError("url vazia")
     if not u.startswith(("http://", "https://")):
         u = "https://" + u
+    if _direto(u):
+        # Domínio que barra datacenter: vai direto, sem passar pelo Jina.
+        texto = await _ler_direto(u)
+        bruto = len(texto)
+        cortado = len(texto) > max_chars
+        if cortado:
+            texto = texto[:max_chars]
+        logger.info("ler_pagina[direto]: %s (%d chars brutos → %d%s)",
+                    u, bruto, len(texto), ", TRUNCADO" if cortado else "")
+        return _montar_saida(u, texto, cortado)
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=_TIMEOUT_S) as client:
             texto = await _jina_get(client, u)
@@ -294,6 +367,12 @@ async def read_url(url: str, *, max_chars: int = _MAX_PAGE_CHARS) -> str:
         "ler_pagina: %s (%d chars brutos → %d%s)",
         u, bruto, len(texto), ", TRUNCADO" if cortado else "",
     )
+    return _montar_saida(u, texto, cortado)
+
+
+def _montar_saida(u: str, texto: str, cortado: bool) -> str:
+    """Cabeçalho + aviso de truncamento. Compartilhado pelas duas vias de
+    leitura (Jina e direto) — texto duplicado divergiria com o tempo."""
     cabec = f"Conteúdo lido de {u}:\n\n"
     # Aviso forte: o modelo já concluiu "essa loja não tem o produto" a partir
     # de página truncada — ausência em trecho parcial NÃO é ausência.
