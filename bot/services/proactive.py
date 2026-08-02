@@ -178,7 +178,21 @@ async def _entregar_nota_pendente(
     foi avisado da fila quando pediu, e a linha de status `nota_fila` repete
     em toda janela enquanto durar)."""
     from bot.db.session import SessionLocal
-    from bot.services.dou_monitor import DouError, deliver_to_user
+    from bot.services.dou_monitor import (
+        DouError, InlabsMaintenanceError, deliver_to_user,
+    )
+
+    async def _marca_manut(session, ativo: bool) -> None:
+        # Reflete se a ÚLTIMA re-tentativa bateu em manutenção VERIFICADA (o
+        # Inlabs literalmente diz "em manutenção"). É a única causa apurada que
+        # a linha de status pode afirmar sem chutar. Setada só aqui, limpa em
+        # qualquer outro desfecho — então nunca fica desatualizada.
+        chave = d.isoformat()
+        existe = await already_notified(session, user_id, "dou_manut", chave)
+        if ativo and not existe:
+            await mark_notified(session, user_id, "dou_manut", chave)
+        elif existe and not ativo:
+            await unmark_notified(session, user_id, "dou_manut", chave)
 
     async with SessionLocal() as session:
         # Usuário recarregado NA SESSÃO DO JOB: o objeto do tick pertence a uma
@@ -190,8 +204,19 @@ async def _entregar_nota_pendente(
             _entregues, falhas = await deliver_to_user(
                 bot, session, user, d, force=True, only_numeros=numeros,
             )
+        except InlabsMaintenanceError as e:
+            # Causa APURADA (o Inlabs declara manutenção): a linha de status
+            # passa a dizer "aguardando o Inlabs voltar (em manutenção)" em vez
+            # de "gerando agora"/"próxima janela", que soam otimistas demais.
+            logger.warning("nota pendente %s: Inlabs em MANUTENÇÃO (%s)", key, e)
+            await _marca_manut(session, True)
+            return
         except DouError as e:
+            # Inlabs fora sem declarar manutenção (instabilidade genérica): não
+            # afirma causa, só mantém na fila. Limpa a marca de manutenção — a
+            # última tentativa não foi manutenção.
             logger.warning("nota pendente %s: Inlabs ainda fora (%s)", key, e)
+            await _marca_manut(session, False)
             return
         except Exception:
             logger.exception("nota pendente %s: falha inesperada", key)
@@ -200,10 +225,13 @@ async def _entregar_nota_pendente(
             # Alguma nota falhou na GERAÇÃO (Gemini 500, DOCX, send_document).
             # NÃO dar baixa: a entrada fica na fila e é re-tentada na próxima
             # janela. Baixar aqui era o buraco — a nota sumia sem re-tentativa
-            # e sem aviso de desistência.
+            # e sem aviso de desistência. Inlabs estava OK (chegou a gerar), então
+            # não é manutenção.
             logger.warning("nota pendente %s: %d nota(s) falharam — mantida na fila",
                            key, len(falhas))
+            await _marca_manut(session, False)
             return
+        await _marca_manut(session, False)
         await unmark_notified(session, user_id, "nota_pendente", key)
         logger.info("nota pendente %s entregue", key)
 
@@ -659,6 +687,15 @@ async def collect_mp(
     # em lugar nenhum, então a frase era chute: seguia dizendo isso com o
     # Inlabs de pé e a nota já sendo gerada na mesma rodada.
     from bot.services.dou_monitor import chave_job_nota
+    # Datas cuja ÚLTIMA re-tentativa bateu em manutenção verificada (kind
+    # dou_manut) — permite a linha dizer a causa APURADA em vez de otimismo.
+    manut_rows = list(await session.scalars(
+        select(ProactiveNotice).where(
+            ProactiveNotice.user_id == user.id,
+            ProactiveNotice.kind == "dou_manut",
+        )
+    ))
+    em_manutencao = {r.key for r in manut_rows}
     fila_ordenada = sorted(
         (r for r in rows if _data_da_chave(r.key)),
         key=lambda r: _data_da_chave(r.key),
@@ -669,6 +706,9 @@ async def collect_mp(
         alvo = "todas as MPs" if (not nums or nums == "all") else f"MP {nums.replace(',', ', ')}"
         if jobs.job_em_andamento(chave_job_nota(user.id, d)):
             estado = _ESTADO_GERANDO
+        elif d.isoformat() in em_manutencao:
+            estado = ("aguardando o <b>Inlabs</b> voltar (em manutenção) — "
+                      "envio a nota assim que sair")
         elif pos >= _NOTA_MAX_POR_JANELA:
             estado = (f"aguardando a vez (gero até {_NOTA_MAX_POR_JANELA} por "
                       "janela) — envio assim que sair")

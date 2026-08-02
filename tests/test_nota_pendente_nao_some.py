@@ -43,14 +43,25 @@ class _Sessao:
 
 @pytest.fixture
 def espiao(monkeypatch):
+    # Só rastreia a baixa da NOTA (nota_pendente). A marca de manutenção
+    # (dou_manut) é ruído aqui: filtrada no assert.
     reg = {"unmark": []}
 
+    async def _false(*a, **kw):
+        return False
+
+    async def _none(*a, **kw):
+        return None
+
     async def _unmark(_s, _uid, kind, key):
-        reg["unmark"].append((kind, key))
+        if kind == "nota_pendente":
+            reg["unmark"].append((kind, key))
 
     # SessionLocal() é usado como `async with` dentro da função.
     from bot.db import session as db_session
     monkeypatch.setattr(db_session, "SessionLocal", lambda: _Sessao())
+    monkeypatch.setattr(proactive, "already_notified", _false)
+    monkeypatch.setattr(proactive, "mark_notified", _none)
     monkeypatch.setattr(proactive, "unmark_notified", _unmark)
     return reg
 
