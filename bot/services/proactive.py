@@ -575,6 +575,7 @@ async def collect_mp(
         facts += await _conferir_camara(session, user, hoje_)
 
     ok_dates: set[date] = set()
+    inlabs_fora = False   # fetch RAISOU este run → Inlabs inacessível agora
     for d in dates:
         try:
             c = await _colher(d)
@@ -594,6 +595,13 @@ async def collect_mp(
         except Exception as exc:
             logger.warning("proactive: fetch_mps(%s) falhou: %s", d, exc)
             failed.append(d)
+            inlabs_fora = True
+
+    # Sinaliza pro run_for_user: se o fetch DESTE run não alcançou o Inlabs, não
+    # adianta disparar job de nota (ele buscaria o mesmo Inlabs e falharia) — e
+    # dizer "gerando agora" seria mentira, já que a própria checagem acima
+    # provou que o Inlabs está fora. Atributo transiente (não é coluna).
+    user.dou_fora_agora = inlabs_fora
 
     # Dia que falhou vira PENDÊNCIA persistente — gravada JÁ (não no pós-envio):
     # precisa sobreviver mesmo que o envio desta janela falhe. Provisório entra
@@ -704,11 +712,17 @@ async def collect_mp(
         d = _data_da_chave(r.key)
         _, _, nums = r.key.partition(":")
         alvo = "todas as MPs" if (not nums or nums == "all") else f"MP {nums.replace(',', ', ')}"
-        if jobs.job_em_andamento(chave_job_nota(user.id, d)):
-            estado = _ESTADO_GERANDO
-        elif d.isoformat() in em_manutencao:
+        if d.isoformat() in em_manutencao:
             estado = ("aguardando o <b>Inlabs</b> voltar (em manutenção) — "
                       "envio a nota assim que sair")
+        elif inlabs_fora:
+            # A checagem DESTE run não alcançou o Inlabs: a nota não vai gerar
+            # agora, então nada de "gerando agora". Causa não afirmada como
+            # manutenção (não foi declarada) — só o fato observado.
+            estado = ("aguardando o <b>Inlabs</b> voltar — gero a nota assim "
+                      "que ele responder")
+        elif jobs.job_em_andamento(chave_job_nota(user.id, d)):
+            estado = _ESTADO_GERANDO
         elif pos >= _NOTA_MAX_POR_JANELA:
             estado = (f"aguardando a vez (gero até {_NOTA_MAX_POR_JANELA} por "
                       "janela) — envio assim que sair")
@@ -1079,7 +1093,10 @@ async def run_for_user(
     # status `nota_fila`, que mantinha `facts` não-vazio — acoplamento, não
     # desenho: silenciar aquela linha um dia mataria a re-tentativa EM
     # SILÊNCIO, com o bot tendo prometido "te envio automaticamente".
-    if user.dou_mp_subscribed:
+    # Não dispara nota quando a checagem DESTE run não alcançou o Inlabs: o job
+    # buscaria o mesmo Inlabs fora e falharia, e "gerando agora" seria mentira.
+    # A linha de status já diz "aguardando o Inlabs voltar" (ver collect_mp).
+    if user.dou_mp_subscribed and not getattr(user, "dou_fora_agora", False):
         try:
             disparadas = await _processar_notas_pendentes(bot, session, user)
         except Exception:

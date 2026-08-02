@@ -147,3 +147,48 @@ def test_linha_diz_manutencao_quando_marcada(monkeypatch) -> None:
     assert len(linhas) == 1
     assert "em manutenção" in linhas[0]
     assert "gerando agora" not in linhas[0] and "próxima janela" not in linhas[0]
+
+
+def test_inlabs_fora_no_run_nao_diz_gerando_agora(monkeypatch) -> None:
+    """O caso que o dono viu: a checagem DESTE run falhou (Inlabs fora), mas a
+    linha da nota dizia 'gerando agora'. Agora reflete o fato observado e
+    sinaliza pra NÃO disparar job (que só falharia)."""
+    from bot.services import dou_monitor
+    from datetime import timedelta
+
+    async def _raise(_d):
+        raise dou_monitor.DouError("Inlabs fora")
+
+    async def _false(*a, **kw):
+        return False
+
+    async def _none(*a, **kw):
+        return None
+
+    monkeypatch.setattr(dou_monitor, "fetch_mps", _raise)
+    monkeypatch.setattr(proactive, "already_notified", _false)
+    monkeypatch.setattr(proactive, "mark_notified", _none)
+    monkeypatch.setattr(proactive, "unmark_notified", _none)
+
+    from types import SimpleNamespace as NS
+
+    class _Sess:
+        def __init__(self):
+            self._r = [[], [NS(key=KEY)], []]   # retro, nota_fila, dou_manut
+
+        async def scalars(self, _s):
+            return list(self._r.pop(0)) if self._r else []
+
+        async def commit(self):
+            return None
+
+    user = NS(id=42, dou_mp_subscribed=True,
+              dou_ultimo_dia_ok=date.today() - timedelta(days=1))
+    facts = asyncio.run(proactive.collect_mp(_Sess(), user, [D]))
+    linhas = [f.text for f in facts if f.kind == "nota_fila"]
+
+    assert user.dou_fora_agora is True, "flag tem que barrar o disparo em run_for_user"
+    assert len(linhas) == 1
+    assert "aguardando" in linhas[0] and "Inlabs" in linhas[0]
+    assert "gerando agora" not in linhas[0]
+    assert "manutenção" not in linhas[0], "instável genérico não afirma manutenção"
