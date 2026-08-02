@@ -402,7 +402,7 @@ async def _h_criar_lembrete_recorrente(args: dict, ctx: ToolContext) -> str:
         return f"erro: primeiro disparo ({primeiro_iso}) já passou"
     rem = await create_reminder(
         ctx.session, ctx.user.id, texto, due_utc,
-        recurrence=recurrencia,
+        recurrence=recurrencia, tz_name=ctx.tz,
     )
     await record_action(
         ctx.session, ctx.user.id, "lembrete",
@@ -494,7 +494,7 @@ async def _h_agendar_comando(args: dict, ctx: ToolContext) -> str:
     rem = await create_reminder(
         ctx.session, ctx.user.id, texto, due_utc,
         command_kind=tipo, command_args=parametros or None,
-        recurrence=recorrencia or None,
+        recurrence=recorrencia or None, tz_name=ctx.tz,
     )
     await record_action(
         ctx.session, ctx.user.id, "lembrete",
@@ -685,9 +685,16 @@ async def _h_consultar_cotacao(args: dict, ctx: ToolContext) -> str:
     if not ativo:
         return "erro: precisa de 'ativo' (ex: 'dólar', 'PETR4', 'bitcoin')"
     try:
-        return "ok (repasse o valor exato, não altere): " + await consultar_cotacao(ativo, tipo)
+        texto = await consultar_cotacao(ativo, tipo)
     except CotacaoError as e:
         return f"erro: {e}"
+    # Cotação é dado monetário determinístico: vai VERBATIM (convenção do
+    # projeto). "Repasse o valor exato" já não segurou noutros casos — modelo
+    # leve trocava dígitos ao reescrever (mesmo modo de falha do consultar_mp_dou).
+    ctx.fallback_text = texto
+    ctx.direct_html = _html_escape(texto)
+    ctx.short_circuit = True
+    return "ok: cotação enviada ao usuário (não escreva nada, a mensagem já foi enviada)"
 
 
 def _resolve_data_iso(args: dict, tz_name: str) -> str:

@@ -139,6 +139,7 @@ async def cmd_agendar_comando(
     rem = await create_reminder(
         session, user.id, texto, due_utc,
         command_kind=tipo, command_args=parametros or None,
+        tz_name=effective_tz(user),
     )
     local = due_utc.astimezone(ZoneInfo(effective_tz(user)))
     await message.answer(

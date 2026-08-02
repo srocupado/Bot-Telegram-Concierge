@@ -82,7 +82,14 @@ async def create_reminder(
     command_kind: str | None = None,
     command_args: str | None = None,
     recurrence: str | None = None,
+    tz_name: str = "America/Sao_Paulo",
 ) -> Reminder:
+    if recurrence == "monthly":
+        # Grava a ÂNCORA do dia ("monthly:31"): o passo mensal parte do dia já
+        # clampado, então sem âncora um lembrete do dia 31 virava 28 depois de
+        # fevereiro e nunca mais voltava (drift permanente). O dia local do
+        # primeiro disparo é o intento do usuário.
+        recurrence = f"monthly:{due_utc.astimezone(ZoneInfo(tz_name)).day}"
     rem = Reminder(
         user_id=user_id,
         text=text,
@@ -278,9 +285,18 @@ def cron_expr(rrule: str | None) -> str | None:
 def is_valid_recurrence(rrule: str) -> bool:
     if rrule in VALID_RECURRENCES:
         return True
+    if rrule.startswith("monthly:"):
+        # Forma normalizada com âncora de dia (ver create_reminder).
+        try:
+            return 1 <= int(rrule.split(":", 1)[1]) <= 31
+        except ValueError:
+            return False
     if rrule.startswith("weekly:"):
-        days = rrule.split(":", 1)[1].split(",")
-        return all(d.strip().lower() in _WEEKDAY_MAP for d in days if d.strip())
+        days = [d.strip() for d in rrule.split(":", 1)[1].split(",") if d.strip()]
+        # `all()` sobre lista VAZIA é True: "weekly:" sem dias passava na
+        # validação e caía no fallback diário do _passo_recorrencia — usuário
+        # pedia semanal e recebia todo dia, em silêncio.
+        return bool(days) and all(d.lower() in _WEEKDAY_MAP for d in days)
     expr = cron_expr(rrule)
     if expr is not None:
         from croniter import croniter
@@ -378,13 +394,22 @@ def _passo_recorrencia(rrule: str, base_local: datetime) -> datetime:
         while nxt.weekday() < 5:
             nxt += timedelta(days=1)
         return nxt
-    if rrule == "monthly":
-        # Próximo mês, mesmo dia. Edge case: dia 31 em mês com 30 dias → cai pro último dia.
+    if rrule == "monthly" or rrule.startswith("monthly:"):
+        # Próximo mês, no dia da ÂNCORA ("monthly:31" — ver create_reminder);
+        # mês curto clampa pro último dia SEM perder a âncora (31/jan → 28/fev →
+        # 31/mar). "monthly" legado (sem âncora) usa o dia da base — o
+        # comportamento antigo, que drifta após um clamp.
         from calendar import monthrange
+        anchor = base_local.day
+        if ":" in rrule:
+            try:
+                anchor = min(max(int(rrule.split(":", 1)[1]), 1), 31)
+            except ValueError:
+                pass
         year, month = base_local.year, base_local.month + 1
         if month > 12:
             month, year = 1, year + 1
-        day = min(base_local.day, monthrange(year, month)[1])
+        day = min(anchor, monthrange(year, month)[1])
         return base_local.replace(year=year, month=month, day=day)
     if rrule.startswith("weekly:"):
         wanted = {_WEEKDAY_MAP[d.strip().lower()] for d in rrule.split(":", 1)[1].split(",") if d.strip()}

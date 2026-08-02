@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import httpx
 from aiogram import Bot
@@ -106,16 +107,20 @@ async def _run_congresso(bot: Bot, chat_id: int) -> None:
     if not settings.congress_digest_enabled:
         await bot.send_message(chat_id, "⚠️ Congresso digest desativado (CONGRESS_DIGEST_ENABLED=false).")
         return
+    # "Hoje" em BRT, não no relógio do container (UTC — Dockerfile/compose não
+    # setam TZ): entre 21h e 24h BRT o date() UTC já é amanhã, e num domingo à
+    # noite a semana da pauta pulava pra SEGUINTE.
+    hoje_brt = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
     try:
         async with httpx.AsyncClient(
             timeout=30.0, follow_redirects=True, headers={"User-Agent": CONGRESS_USER_AGENT},
         ) as client:
-            items = await fetch_week_mps(client, datetime.now().date())
+            items = await fetch_week_mps(client, hoje_brt)
     except CongressScrapeError:
         logger.exception("scheduled congresso fetch failed")
         await bot.send_message(chat_id, "⚠️ Não consegui buscar a pauta agora.")
         return
-    message = format_week_message(items, datetime.now().date())
+    message = format_week_message(items, hoje_brt)
     await _send_html_with_fallback(bot, chat_id, f"⏰ <i>(agendado)</i>\n{message}")
 
 
@@ -141,14 +146,21 @@ async def _run_chat(
         await bot.send_message(chat_id, "⚠️ Prompt agendado vazio.")
         return
     from bot.handlers.chat import _build_system_prompt, inject_context
+    from bot.services.finance_guard import guard_financial_reply
     from bot.services.memoria import get_summary
+    from bot.services.viagem import effective_tz
 
     history = memory.get(chat_id)
     history.append({"role": "user", "content": prompt})
     summary = await get_summary(session, user.id)
     try:
         provider = get_provider_for_user(user)
-        ctx = ToolContext(user=user, session=session, tz=user.timezone)
+        # Mesmo contrato do chat ao vivo: tz efetivo (viagem) e user_text — sem
+        # o user_text, as travas determinísticas (banco→cartão, parcelas)
+        # operavam sobre string vazia em prompts agendados.
+        ctx = ToolContext(
+            user=user, session=session, tz=effective_tz(user), user_text=prompt,
+        )
         reply = await provider.chat_with_tools(
             inject_context(history, user.timezone, summary), tools=TOOLS, ctx=ctx,
             system=_build_system_prompt(),
@@ -158,20 +170,40 @@ async def _run_chat(
         logger.exception("scheduled chat failed")
         await bot.send_message(chat_id, f"⚠️ Erro ao executar prompt agendado: {prompt[:80]}")
         return
+    reply = guard_financial_reply(prompt, ctx.financial_logged_ok, reply)
+
+    # Honra o contrato do ToolContext, como o deliver_llm_reply do chat ao vivo:
+    # tool verbatim (saldo, lembretes, congresso, consultar_mp_dou…) seta
+    # direct_html + short_circuit e o provider devolve "" — sem isto o usuário
+    # recebia "⏰ (agendado)" VAZIO e o conteúdo (inclusive o aviso "não
+    # consegui checar o DOU") era descartado em silêncio.
+    if ctx.direct_html:
+        memory.append(chat_id, "user", prompt)
+        memory.append(chat_id, "assistant", ctx.direct_html)
+        try:
+            await _send_html_with_fallback(
+                bot, chat_id, f"⏰ <i>(agendado)</i>\n{ctx.direct_html}"
+            )
+        except Exception:
+            # Falha DEFINITIVA de envio não pode subir: o lembrete ficaria
+            # pendente e a chamada do LLM inteira seria refeita a cada 60s.
+            logger.exception("scheduled chat: falha definitiva no envio")
+        return
+    if not (reply or "").strip() and ctx.fallback_text:
+        reply = ctx.fallback_text
+    if not (reply or "").strip():
+        # Turno assistant vazio na memória envenena as chamadas seguintes (a API
+        # da Anthropic rejeita content vazio) — grava o placeholder.
+        reply = "(sem resposta)"
     memory.append(chat_id, "user", prompt)
     memory.append(chat_id, "assistant", reply)
-    # Envio COM fallback e dentro do caminho protegido: o HTML aqui carrega a
-    # resposta do LLM (que pode trazer '<' solto). Antes, falha no envio subia
-    # pro except do scheduler → o lembrete continuava pendente → a CHAMADA DO
-    # LLM INTEIRA era refeita a cada 60s, indefinidamente, queimando API.
+    # Envio com fallback E chunking (o helper existe pra isso): resposta acima
+    # de ~4096 chars falhava nas DUAS tentativas do send simples e a saída
+    # agendada se perdia em silêncio, com o lembrete já consumido.
     try:
-        await bot.send_message(chat_id, f"⏰ <i>(agendado)</i>\n{reply}", parse_mode="HTML")
+        await _send_html_with_fallback(bot, chat_id, f"⏰ <i>(agendado)</i>\n{reply}")
     except Exception:
-        logger.warning("scheduled chat: HTML inválido; enviando texto puro", exc_info=True)
-        try:
-            await bot.send_message(chat_id, f"⏰ (agendado)\n{reply}", parse_mode=None)
-        except Exception:
-            logger.exception("scheduled chat: falha definitiva no envio")
+        logger.exception("scheduled chat: falha definitiva no envio")
 
 
 async def _run_agente(bot: Bot, chat_id: int, prompt: str) -> bool:
