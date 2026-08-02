@@ -1,9 +1,11 @@
 """Monitor de Medidas Provisórias no Diário Oficial da União (Inlabs/DOU).
 
 Autônomo — não compartilha código nem estado com o Monitor-de-MP externo.
-Fluxo: autentica no Inlabs → baixa ZIPs do DOU (DO1E + DO1) → extrai MPs
-publicadas → gera nota técnica via Claude → entrega no Telegram (mensagem
-+ DOCX). Dedup por (usuário, número, ano) na tabela dou_seen_mps.
+Fluxo: autentica no Inlabs → LISTA a pasta do dia → baixa o que existir de
+Seção 1 (zip XML DO1/DO1E; ou o PDF da extra quando o dia sai só em PDF —
+sábado/feriado) → extrai MPs publicadas → gera nota técnica via Claude →
+entrega no Telegram (mensagem + DOCX). Dedup por (usuário, número, ano) na
+tabela dou_seen_mps.
 
 Credenciais: INLABS_EMAIL / INLABS_PASSWORD (cadastro gratuito em
 inlabs.in.gov.br). Reusa ANTHROPIC_API_KEY do bot pra nota técnica.
@@ -328,6 +330,54 @@ def _parse_dou_xml(client: httpx.Client, xml_content: str, target_date: date) ->
     return results
 
 
+# Título da MP em CAIXA ALTA no INÍCIO da linha — é como o DOU imprime o
+# CABEÇALHO da MP publicada ("MEDIDA PROVISÓRIA Nº 1.382, DE 1º DE AGOSTO…").
+# Uma CITAÇÃO a outra MP vem em caixa de título ("altera a Medida Provisória nº
+# 1.373") e no MEIO da frase; as duas âncoras (CAIXA ALTA + início de linha,
+# logo SEM re.IGNORECASE) impedem que citação vire MP fantasma. Medido no PDF
+# real de 01/08/2026: extra_C traz a 1.382 no cabeçalho e cita 1.373/1.355/…;
+# extra_D só cita → corretamente 0 MP.
+_TITULO_PDF_RE = re.compile(r"^\s*MEDIDA PROVIS[ÓO]RIA\s+N[º°\.\s]*([\d\.]+)")
+
+
+def _extrair_texto_pdf(content: bytes) -> str:
+    """Texto de um PDF do DOU. Import TARDIO do pypdf: se a lib faltar (deploy
+    velho), degrada com aviso em vez de derrubar o import do módulo — e a seção
+    vira FALHA (pendência), nunca 'sem MP'."""
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        logger.warning("dou: pypdf ausente — não dá pra ler edição extra em PDF")
+        return ""
+    try:
+        reader = PdfReader(io.BytesIO(content))
+        return "\n".join((p.extract_text() or "") for p in reader.pages)
+    except Exception as exc:
+        logger.warning("dou: falha ao extrair texto do PDF: %s", exc)
+        return ""
+
+
+def _parse_dou_text(client: httpx.Client, texto: str, target_date: date) -> list[dict]:
+    """Extrai MPs de TEXTO plano — o PDF da edição extra quando o Inlabs não
+    gera o XML/zip (dia só com edição extra). Mesmo produto do _parse_dou_xml
+    (número/ano/ementa + texto do Planalto), fonte diferente."""
+    year = target_date.year
+    results: list[dict] = []
+    seen: set[str] = set()
+    for raw in (texto or "").splitlines():
+        m = _TITULO_PDF_RE.match(raw)
+        if not m:
+            continue
+        numero = m.group(1).replace(".", "")
+        if numero in seen:
+            continue
+        seen.add(numero)
+        # Ano da PRÓPRIA MP (título casando o número), como no XML — ver ano_da_mp.
+        ano = ano_da_mp(texto, year, numero)
+        results.append(_build_mp_dict(client, numero, ano, texto, target_date))
+    return results
+
+
 # O Inlabs (login + download dos ZIPs) solta 502/503/504 e timeouts com
 # frequência — transitórios. Retry com backoff evita perder a busca inteira por
 # um Bad Gateway passageiro. Roda em thread (fetch_mps), então time.sleep é ok.
@@ -432,6 +482,37 @@ def _rss_mb() -> float | None:
     return None
 
 
+# A listagem do dia linka cada download como `...&dl=<arquivo>`; pegamos o alvo
+# do dl= e, por garantia, também tokens soltos com cara de arquivo do DOU (caso
+# o Inlabs mude o markup). Medido em 01/08/2026.
+_DL_RE = re.compile(r"dl=([^\"'&<>\s]+)", re.IGNORECASE)
+_ARQ_RE = re.compile(r"(\d{4}[-_]\d\d[-_]\d\d[0-9A-Za-z_\-]*\.(?:zip|pdf))", re.IGNORECASE)
+
+
+def _arquivos_da_listagem(corpo: str) -> set[str]:
+    """Nomes de arquivo que a listagem do dia oferece pra download."""
+    return set(_DL_RE.findall(corpo)) | set(_ARQ_RE.findall(corpo))
+
+
+def _fontes_secao1(nomes: set[str]) -> dict[str, dict[str, list[str]]]:
+    """Separa os arquivos por slot da Seção 1 (DO1E extra / DO1 normal) e por
+    tipo (zip preferido; pdf quando não há zip). Só a Seção 1 traz MP, então
+    DO2/DO3 são ignorados de propósito. As classes são disjuntas: `-DO1.zip`
+    não casa `-DO1E.zip`, e `_do1.pdf` não casa `_do1_extra_*.pdf`."""
+    zips = [n for n in nomes if n.lower().endswith(".zip")]
+    pdfs = [n for n in nomes if n.lower().endswith(".pdf")]
+    return {
+        "DO1E": {
+            "zip": [n for n in zips if re.search(r"-DO1E\.zip$", n, re.I)],
+            "pdf": [n for n in pdfs if re.search(r"_do1_extra", n, re.I)],
+        },
+        "DO1": {
+            "zip": [n for n in zips if re.search(r"-DO1\.zip$", n, re.I)],
+            "pdf": [n for n in pdfs if re.search(r"_do1\.pdf$", n, re.I)],
+        },
+    }
+
+
 def _fetch_mps_sync(target_date: date) -> list[dict]:
     email = settings.inlabs_email
     password = settings.inlabs_password.get_secret_value() if settings.inlabs_password else None
@@ -470,86 +551,118 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
             )
 
         date_str = target_date.strftime("%Y-%m-%d")
+        hdr = {"Cookie": f"inlabs_session_cookie={cookie}"}
+
+        def _baixar(nome: str) -> bytes:
+            """Bytes de um arquivo QUE A LISTAGEM disse existir."""
+            url = f"{INLABS_BASE}/index.php?p={date_str}&dl={nome}"
+            r = _inlabs_call(lambda: client.get(url, headers=hdr, timeout=90.0))
+            r.raise_for_status()
+            return r.content
+
+        # A LISTAGEM do dia é a FONTE DA VERDADE do que o Inlabs publicou —
+        # substitui o chute `DO1E`/`DO1`. Isso fecha o buraco medido em
+        # 01/08/2026: dia só com edição extra sai SÓ em PDF (do1_extra_C/D.pdf),
+        # sem NENHUM zip — o chute 404ava e a MP sumia em silêncio. Reagir à
+        # listagem também dispensa a "dança do 404" de seção que nunca existiria.
+        with _fase("listagem"):
+            rl = _inlabs_call(lambda: client.get(
+                f"{INLABS_BASE}/index.php?p={date_str}", headers=hdr, timeout=60.0,
+            ))
+        rl.raise_for_status()
+        corpo = rl.text
+        # Mesma classificação de sempre (manutenção → login → listagem), agora
+        # aplicada UMA vez à listagem em vez de a cada seção. Precedência importa.
+        if _MAINT_RE.search(corpo):
+            raise InlabsMaintenanceError(
+                "o Inlabs (sistema oficial do DOU) está em manutenção agora "
+                "— não dá pra checar as MPs. Tente mais tarde."
+            )
+        if _E_LOGIN_RE.search(corpo) and not _e_listagem(corpo):
+            # Sessão recusada ao listar. NÃO é "não publicado": tratar como tal
+            # daria baixa no dia e a MP sumiria. Falha → o dia volta na retroativa.
+            raise DouError(
+                "não consegui baixar o DOU (o Inlabs recusou a sessão ao listar "
+                "o dia — tela de login) — não dá pra confirmar se houve MP; "
+                "tente de novo em instantes."
+            )
+        if not _e_listagem(corpo):
+            # Corpo desconhecido (ex.: 502 em HTML): FALHA. Padrão seguro — na
+            # dúvida o dia fica pendente, nunca dado por vazio.
+            raise DouError(
+                "não consegui baixar o DOU (resposta inesperada do Inlabs ao "
+                "listar o dia) — não dá pra confirmar se houve MP; tente de "
+                "novo em instantes."
+            )
+
+        nomes = _arquivos_da_listagem(corpo)
+        fontes = _fontes_secao1(nomes)
+        logger.info("dou: listagem %s — fontes Seção 1: %s", date_str,
+                    {k: (v["zip"] or v["pdf"] or "—") for k, v in fontes.items()})
+
         failed_sections: list[str] = []
         sections_404: list[str] = []
-        for section in DOU_SECTIONS:
-            url = f"{INLABS_BASE}/index.php?p={date_str}&dl={date_str}-{section}.zip"
+        for section in DOU_SECTIONS:          # ["DO1E", "DO1"] — extra primeiro
+            src = fontes[section]
+            edicao = "Extra" if section == "DO1E" else "Normal"
             try:
-                with _fase(f"download {section}"):
-                    r = _inlabs_call(lambda: client.get(
-                        url, headers={"Cookie": f"inlabs_session_cookie={cookie}"}, timeout=60.0,
-                    ))
-                if r.status_code == 404:
-                    # "Não publicada" é a leitura ÓBVIA — e errada enquanto o
-                    # dia pode receber edição. Vale pra TODA seção: o Inlabs
-                    # instável devolve 404 de arquivo que existe, e a DO1E
-                    # (crédito extraordinário) costuma sair tarde. Registra e
-                    # deixa o dia pendente; quem decide é `_dia_encerrado`.
+                if src["zip"]:
+                    # Caminho normal: XML no zip (texto mais limpo). Se houver
+                    # zip, os PDFs gêmeos daquele slot são redundantes — não baixa.
+                    for nome in src["zip"]:
+                        content = _baixar(nome)
+                        if len(content) < 100 or content[:2] != b"PK":
+                            corpo_z = content.decode("utf-8", errors="replace")
+                            if _MAINT_RE.search(corpo_z):
+                                raise InlabsMaintenanceError(
+                                    "Inlabs em manutenção (página servida com status 200)")
+                            raise DouError(f"{nome}: conteúdo não-ZIP")
+                        with _fase(f"unzip+parse {section}", zip_mb=round(len(content) / 1e6, 1)):
+                            with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                                for name in (n for n in zf.namelist() if n.lower().endswith(".xml")):
+                                    xml_data = zf.read(name).decode("utf-8", errors="replace")
+                                    if "MEDIDA PROVIS" not in xml_data.upper():
+                                        continue
+                                    for mp in _parse_dou_xml(client, xml_data, target_date):
+                                        if mp["numero"] not in seen_numeros:
+                                            seen_numeros.add(mp["numero"])
+                                            mp["edicao"] = edicao
+                                            results.append(mp)
+                elif src["pdf"]:
+                    # Sem zip, com PDF: a edição saiu SÓ em PDF (extra de sábado/
+                    # feriado). Lê o texto do PDF e joga no MESMO produto do XML
+                    # (número/ano/ementa; texto integral vem do Planalto).
+                    for nome in src["pdf"]:
+                        with _fase(f"download+pdf {section}"):
+                            content = _baixar(nome)
+                        if content[:4] != b"%PDF":
+                            corpo_p = content.decode("utf-8", errors="replace")
+                            if _MAINT_RE.search(corpo_p):
+                                raise InlabsMaintenanceError(
+                                    "Inlabs em manutenção (página servida com status 200)")
+                            raise DouError(f"{nome}: conteúdo não-PDF")
+                        texto = _extrair_texto_pdf(content)
+                        if not texto:
+                            # PDF ilegível é FALHA (pode esconder MP), não "vazio".
+                            raise DouError(f"{nome}: PDF sem texto extraível")
+                        if "MEDIDA PROVIS" not in texto.upper():
+                            continue   # PDF legítimo sem MP (ex.: só Resolução/Ato)
+                        for mp in _parse_dou_text(client, texto, target_date):
+                            if mp["numero"] not in seen_numeros:
+                                seen_numeros.add(mp["numero"])
+                                mp["edicao"] = edicao
+                                results.append(mp)
+                else:
+                    # Slot AUSENTE na listagem. É o "404" do modelo antigo: o dia
+                    # pode ainda receber a edição (extra sai tarde). Quem decide se
+                    # é ausência definitiva é `_dia_encerrado`, abaixo.
                     sections_404.append(section)
-                    continue
-                r.raise_for_status()
-                content = r.content
-                if len(content) < 100 or content[:2] != b"PK":
-                    # NÃO é ZIP. Antes isso era tratado como "seção não
-                    # publicada (legítimo)" e virava silêncio — mas o Inlabs
-                    # serve com status 200 páginas de manutenção/login/erro
-                    # (com follow_redirects, cookie recusado → tela de login
-                    # em 200). Resultado: "nenhuma MP hoje" com baixa da
-                    # pendência, e o dia nunca mais re-checado.
-                    # Corpo INTEIRO pra classificar: os marcadores da
-                    # listagem podem estar além de qualquer janela fixa, e
-                    # truncar só criaria falso "desconhecido". São ~37KB.
-                    corpo = content.decode("utf-8", errors="replace")
-                    if _MAINT_RE.search(corpo):
-                        raise InlabsMaintenanceError(
-                            "Inlabs em manutenção (página servida com status 200)"
-                        )
-                    if _E_LOGIN_RE.search(corpo):
-                        # Sessão recusada no meio do caminho. NÃO é "não
-                        # publicado": tratar como tal daria baixa no dia e a MP
-                        # sumiria. Falha explícita, e o dia volta na retroativa.
-                        logger.warning("dou: %s devolveu tela de LOGIN — sessão "
-                                       "recusada pelo Inlabs", section)
-                        failed_sections.append(section)
-                        continue
-                    if _e_listagem(corpo):
-                        # Logado, e o Inlabs serviu a LISTAGEM no lugar do ZIP:
-                        # o arquivo daquela data não existe. Medido em
-                        # 01/08/2026 (sábado sem edição): HTTP 200 com 37.583
-                        # bytes de listagem, contra 6.032 da tela de login.
-                        # Sem esta distinção, todo fim de semana sem edição
-                        # extra virava "Inlabs indisponível" — alarme falso
-                        # semanal, mais nota na fila por 14 dias.
-                        logger.info("dou: %s não publicada em %s (Inlabs serviu "
-                                    "a listagem no lugar do ZIP)", section, date_str)
-                        sections_404.append(section)
-                        continue
-                    # Corpo desconhecido: FALHA. É o padrão seguro — na dúvida,
-                    # o dia fica pendente e é re-checado, nunca dado por vazio.
-                    if len(content) >= 100:
-                        logger.warning(
-                            "dou: %s devolveu conteúdo não-ZIP (%d bytes) — tratando "
-                            "como FALHA, não como 'não publicada'", section, len(content),
-                        )
-                        failed_sections.append(section)
-                    continue
-                with _fase(f"unzip+parse {section}", zip_mb=round(len(content) / 1e6, 1)):
-                    with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                        for name in (n for n in zf.namelist() if n.lower().endswith(".xml")):
-                            xml_data = zf.read(name).decode("utf-8", errors="replace")
-                            if "MEDIDA PROVIS" not in xml_data.upper():
-                                continue
-                            for mp in _parse_dou_xml(client, xml_data, target_date):
-                                if mp["numero"] not in seen_numeros:
-                                    seen_numeros.add(mp["numero"])
-                                    mp["edicao"] = "Extra" if section == "DO1E" else "Normal"
-                                    results.append(mp)
             except InlabsMaintenanceError:
                 raise  # manutenção → mensagem clara, não é "seção incompleta"
             except zipfile.BadZipFile:
                 logger.warning("dou: ZIP inválido em %s", section)
                 failed_sections.append(section)
-            except Exception as exc:  # 502/timeout após retries, conexão…
+            except Exception as exc:  # 502/timeout após retries, conexão, PDF…
                 logger.warning("dou: erro baixando/processando %s: %s", section, exc)
                 failed_sections.append(section)
 
@@ -570,8 +683,8 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
         # dar baixa ainda. A retroativa re-checa e o dia fecha sozinho.
         out.provisorio = True
         out.secoes_404 = tuple(sections_404)
-        logger.info("dou: %s — seção(ões) %s em 404 com o dia ainda aberto; "
-                    "sem baixa (re-checa nas próximas janelas)",
+        logger.info("dou: %s — seção(ões) %s ausente(s) da listagem com o dia "
+                    "ainda aberto; sem baixa (re-checa nas próximas janelas)",
                     target_date, sections_404)
     if failed_sections:
         out.incompleto = True

@@ -130,11 +130,23 @@ class _Resp:
             raise AssertionError(f"raise_for_status inesperado ({self.status_code})")
 
 
-class _FakeClient:
-    """Inlabs falso: login OK e 404 nas seções pedidas."""
+def _listing_html(nomes) -> bytes:
+    """HTML de listagem com os marcadores medidos (Sair/Tamanho/Modificado) e
+    um link de download `&dl=<arquivo>` por arquivo."""
+    linhas = "".join(
+        f'<a href="index.php?p=x&dl={n}">{n}</a> ' for n in nomes
+    )
+    return (f"<html><body>Ola<a href='sair.php'>Sair</a>"
+            f"<table><th>Nome</th><th>Tamanho</th><th>Modificado</th>"
+            f"{linhas}</table></body></html>").encode()
 
-    def __init__(self, secoes_404):
-        self._404 = secoes_404
+
+class _FakeClient:
+    """Inlabs falso: login OK; a listagem oferece exatamente `nomes`; o
+    download por `&dl=` devolve ZIP pra quem está na lista, 404 pro resto."""
+
+    def __init__(self, nomes):
+        self.nomes = list(nomes)
         self.cookies = {"inlabs_session_cookie": "c"}
         self.baixadas: list[str] = []
 
@@ -148,23 +160,25 @@ class _FakeClient:
         return _Resp(200, b"ok")
 
     def get(self, url, **kw):
-        secao = url.rsplit("-", 1)[-1].removesuffix(".zip")
-        self.baixadas.append(secao)
-        if secao in self._404:
-            return _Resp(404)
-        return _Resp(200, b"PK" + b"\0" * 200)   # ZIP "válido" o bastante
+        if "&dl=" not in url:                       # LISTAGEM do dia
+            return _Resp(200, _listing_html(self.nomes))
+        nome = url.split("&dl=", 1)[1]
+        self.baixadas.append(nome)
+        if nome in self.nomes:
+            return _Resp(200, b"PK" + b"\0" * 200)  # ZIP "válido" o bastante
+        return _Resp(404, b"")
 
 
-def _fetch_com_404(monkeypatch, secoes_404, alvo: date):
-    cliente = _FakeClient(secoes_404)
+def _fetch_com_listagem(monkeypatch, nomes, alvo: date):
+    cliente = _FakeClient(nomes)
     monkeypatch.setattr(dou_monitor.httpx, "Client", lambda **kw: cliente)
     monkeypatch.setattr(dou_monitor.settings, "inlabs_email", "e@x")
     monkeypatch.setattr(
         dou_monitor.settings, "inlabs_password",
         SimpleNamespace(get_secret_value=lambda: "s"),
     )
-    # ZIP falso não abre; o que importa aqui é a classificação do 404, então
-    # o parse vira no-op e a seção "200" não polui o resultado.
+    # ZIP falso não abre; o que importa aqui é a classificação da listagem,
+    # então o parse vira no-op e a seção "200" não polui o resultado.
     monkeypatch.setattr(dou_monitor.zipfile, "ZipFile", _zip_vazio)
     return dou_monitor._fetch_mps_sync(alvo), cliente
 
@@ -183,24 +197,38 @@ class _zip_vazio:
         return []
 
 
-def test_404_de_qualquer_secao_marca_provisorio(monkeypatch) -> None:
-    """A regra é por seção varrida, não uma exceção hardcoded pra DO1E.
+def test_secao_ausente_da_listagem_marca_provisorio(monkeypatch) -> None:
+    """Seção da Seção 1 que NÃO aparece na listagem, com o dia ainda aberto, é
+    provisória (re-checa) — não falha. A régua é por slot varrido (DO1E/DO1),
+    não uma exceção hardcoded; se alguém mexer no par, este teste acusa."""
+    hoje = datetime.now(BRT).date()          # dia aberto
+    zip_de = {"DO1E": f"{hoje.isoformat()}-DO1E.zip",
+              "DO1": f"{hoje.isoformat()}-DO1.zip"}
+    for ausente in dou_monitor.DOU_SECTIONS:
+        nomes = [v for k, v in zip_de.items() if k != ausente]
+        out, _ = _fetch_com_listagem(monkeypatch, nomes, hoje)
+        assert out.provisorio is True, f"{ausente} ausente não virou provisório"
+        assert out.secoes_404 == (ausente,)
+        assert out.incompleto is False, f"{ausente} ausente virou 'falha' (alarme falso)"
 
-    Roda uma vez por seção de DOU_SECTIONS: se alguém adicionar DO2/DO3 e
-    esquecer de cobrir, este teste acusa.
-    """
-    hoje = datetime.now(BRT).date()          # dia aberto: 404 é provisório
-    for secao in dou_monitor.DOU_SECTIONS:
-        out, cliente = _fetch_com_404(monkeypatch, {secao}, hoje)
-        assert set(cliente.baixadas) == set(dou_monitor.DOU_SECTIONS)
-        assert out.provisorio is True, f"404 em {secao} não virou provisório"
-        assert out.secoes_404 == (secao,)
-        assert out.incompleto is False, f"404 em {secao} virou 'falha' (alarme falso)"
 
-
-def test_404_em_dia_encerrado_e_definitivo(monkeypatch) -> None:
-    """Dia fechado: 404 é ausência de verdade — sem pendência eterna."""
+def test_dia_encerrado_sem_secao1_e_definitivo(monkeypatch) -> None:
+    """Dia fechado e a listagem sem Seção 1: ausência de verdade — sem
+    pendência eterna, sem alarme."""
     antigo = datetime.now(BRT).date() - timedelta(days=3)
-    out, _ = _fetch_com_404(monkeypatch, set(dou_monitor.DOU_SECTIONS), antigo)
+    out, _ = _fetch_com_listagem(monkeypatch, [], antigo)   # listagem vazia
     assert out.provisorio is False
     assert out.incompleto is False
+
+
+def test_zip_da_listagem_e_baixado_e_pdf_ignorado_quando_ha_zip(monkeypatch) -> None:
+    """Havendo zip do slot, o PDF gêmeo é redundante e NÃO é baixado."""
+    hoje = datetime.now(BRT).date()
+    nomes = [f"{hoje.isoformat()}-DO1E.zip", f"{hoje.isoformat()}-DO1.zip",
+             f"{hoje.strftime('%Y_%m_%d')}_ASSINADO_do1_extra_A.pdf"]
+    out, cliente = _fetch_com_listagem(monkeypatch, nomes, hoje)
+    assert any(n.endswith("-DO1E.zip") for n in cliente.baixadas)
+    assert not any(n.endswith(".pdf") for n in cliente.baixadas), (
+        "PDF baixado à toa mesmo com o zip do slot presente"
+    )
+    assert out.incompleto is False and out.provisorio is False

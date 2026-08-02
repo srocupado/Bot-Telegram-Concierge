@@ -16,4 +16,5 @@ dateparser==1.2.0
 croniter==6.2.2
 firebase-admin==6.5.0
 python-docx==1.1.2
+pypdf==5.1.0
 claude-agent-sdk==0.2.99
