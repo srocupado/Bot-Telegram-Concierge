@@ -340,14 +340,42 @@ def _parse_dou_xml(client: httpx.Client, xml_content: str, target_date: date) ->
 _TITULO_PDF_RE = re.compile(r"^\s*MEDIDA PROVIS[ÓO]RIA\s+N[º°\.\s]*([\d\.]+)")
 
 
+def _extrair_texto_mupdf(content: bytes) -> str | None:
+    """Extração via PyMuPDF (motor em C). ~20x mais rápido que o pypdf no ARM
+    do Orange Pi — MEDIDO no PDF real de 01/08/2026: 0,5s vs 9,9s (extra_C),
+    0,2s vs 8,2s (extra_D), com o MESMO texto e o MESMO cabeçalho em caixa
+    alta. Devolve None (não "") quando a lib falta, pra o caller distinguir
+    "não tem PyMuPDF" de "PyMuPDF leu e veio vazio"."""
+    try:
+        import pymupdf            # PyMuPDF >= 1.24.3
+    except ImportError:
+        try:
+            import fitz as pymupdf   # nome antigo do mesmo pacote
+        except ImportError:
+            return None
+    doc = pymupdf.open(stream=content, filetype="pdf")
+    try:
+        return "\n".join(p.get_text() for p in doc)
+    finally:
+        doc.close()
+
+
 def _extrair_texto_pdf(content: bytes) -> str:
-    """Texto de um PDF do DOU. Import TARDIO do pypdf: se a lib faltar (deploy
-    velho), degrada com aviso em vez de derrubar o import do módulo — e a seção
-    vira FALHA (pendência), nunca 'sem MP'."""
+    """Texto de um PDF do DOU. Prefere o PyMuPDF (rápido) e cai no pypdf se ele
+    faltar ou falhar — os dois entregam o mesmo cabeçalho, então o parser não
+    muda. Imports TARDIOS: se AMBOS faltarem, degrada com aviso em vez de
+    derrubar o import do módulo, e a seção vira FALHA (pendência), nunca 'sem
+    MP'."""
+    try:
+        texto = _extrair_texto_mupdf(content)
+        if texto is not None:
+            return texto
+    except Exception as exc:
+        logger.warning("dou: PyMuPDF falhou (%s); tentando pypdf", exc)
     try:
         from pypdf import PdfReader
     except ImportError:
-        logger.warning("dou: pypdf ausente — não dá pra ler edição extra em PDF")
+        logger.warning("dou: nem PyMuPDF nem pypdf disponíveis — não dá pra ler PDF")
         return ""
     try:
         reader = PdfReader(io.BytesIO(content))

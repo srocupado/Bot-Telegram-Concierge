@@ -155,3 +155,10 @@ def test_pdf_ilegivel_e_falha_nao_vazio(monkeypatch) -> None:
 
     with pytest.raises(dou_monitor.DouError, match="não consegui baixar o DOU"):
         dou_monitor._fetch_mps_sync(alvo)
+
+
+def test_extrair_pdf_lixo_degrada_sem_estourar() -> None:
+    """Bytes que não são PDF: os dois motores (PyMuPDF→pypdf) falham em
+    sequência e a função devolve "" — nunca levanta. É o que garante que um
+    corpo estranho vira FALHA controlada lá em cima, não um crash do fetch."""
+    assert dou_monitor._extrair_texto_pdf(b"isto nao e um pdf") == ""
