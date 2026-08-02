@@ -187,7 +187,7 @@ async def _entregar_nota_pendente(
         if user is None or not user.is_authorized or not user.dou_mp_subscribed:
             return
         try:
-            await deliver_to_user(
+            _entregues, falhas = await deliver_to_user(
                 bot, session, user, d, force=True, only_numeros=numeros,
             )
         except DouError as e:
@@ -195,6 +195,14 @@ async def _entregar_nota_pendente(
             return
         except Exception:
             logger.exception("nota pendente %s: falha inesperada", key)
+            return
+        if falhas:
+            # Alguma nota falhou na GERAÇÃO (Gemini 500, DOCX, send_document).
+            # NÃO dar baixa: a entrada fica na fila e é re-tentada na próxima
+            # janela. Baixar aqui era o buraco — a nota sumia sem re-tentativa
+            # e sem aviso de desistência.
+            logger.warning("nota pendente %s: %d nota(s) falharam — mantida na fila",
+                           key, len(falhas))
             return
         await unmark_notified(session, user_id, "nota_pendente", key)
         logger.info("nota pendente %s entregue", key)

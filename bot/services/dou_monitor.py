@@ -149,8 +149,8 @@ def _parse_pubdate(s: str | None) -> date | None:
 # DE 2026". Serve pra duas coisas: achar onde a ementa REALMENTE começa e ler
 # o ANO da própria MP.
 _TITULO_NO_CORPO_RE = re.compile(
-    r"MEDIDA\s+PROVIS[ÓO]RIA\s+N[ºo°\.\s]*[\d\.]+\s*,?\s*DE\s+\d{1,2}\s+DE\s+"
-    r"[A-ZÇÃÕÁÉÍÓÚÂÊÔa-zçãõáéíóúâêô]+\s+DE\s+(\d{4})",
+    r"MEDIDA\s+PROVIS[ÓO]RIA\s+N[ºo°\.\s]*(?P<num>[\d\.]+)\s*,?\s*DE\s+\d{1,2}\s+DE\s+"
+    r"[A-ZÇÃÕÁÉÍÓÚÂÊÔa-zçãõáéíóúâêô]+\s+DE\s+(?P<ano>\d{4})",
     re.IGNORECASE,
 )
 _FIM_EMENTA_RE = re.compile(r"\s+(O\s+PRESIDENTE|A\s+PRESIDENTA|O\s+VICE)", re.IGNORECASE)
@@ -195,7 +195,7 @@ def _ementa_do_excerpt(text_excerpt: str) -> str:
     return _corta_em_palavra(corpo or limpo)
 
 
-def ano_da_mp(text_excerpt: str, padrao: int) -> int:
+def ano_da_mp(text_excerpt: str, padrao: int, numero: str | None = None) -> int:
     """Ano da PRÓPRIA MP, lido do título; `padrao` (ano da data consultada) só
     quando o título não trouxer.
 
@@ -203,13 +203,25 @@ def ano_da_mp(text_excerpt: str, padrao: int) -> int:
     o ano da consulta gravaria 1400/2027 pra uma MP que é 1400/2026 — quebrando
     o dedup, a URL do Planalto e o cruzamento com a Câmara (que devolve o ano
     correto), justamente onde a checagem serve pra não perder MP.
+
+    `numero`: ANCORA a extração à MP certa. Sem ele, um "Revoga a MP nº 1.200,
+    de 2025" ANTES do título próprio faria pegar o ano da MP CITADA (bug #5 da
+    auditoria). Com ele, escolhe o título cujo número casa o da MP processada.
     """
-    m = _TITULO_NO_CORPO_RE.search(
-        re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text_excerpt or ""))
-    )
-    if not m:
+    limpo = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text_excerpt or ""))
+    alvo = numero.replace(".", "") if numero else None
+    escolhido = None
+    for m in _TITULO_NO_CORPO_RE.finditer(limpo):
+        if alvo is None or m.group("num").replace(".", "") == alvo:
+            escolhido = m
+            break
+    if escolhido is None:
+        # Nenhum título casa o número (ou não há número): cai no primeiro título
+        # como antes — melhor um palpite ancorado no padrão do que nada.
+        escolhido = _TITULO_NO_CORPO_RE.search(limpo)
+    if not escolhido:
         return padrao
-    ano = int(m.group(1))
+    ano = int(escolhido.group("ano"))
     # Guarda contra lixo de OCR/parse: só aceita ano vizinho do consultado.
     return ano if padrao - 1 <= ano <= padrao + 1 else padrao
 
@@ -270,8 +282,9 @@ def _parse_dou_xml(client: httpx.Client, xml_content: str, target_date: date) ->
             return
         seen.add(numero)
         pub = _pubdate_for(elem) if elem is not None else None
-        # Ano da PRÓPRIA MP (título), não da data consultada — ver ano_da_mp.
-        ano = ano_da_mp(body_text or title_text, year)
+        # Ano da PRÓPRIA MP (título casando o número), não da data consultada
+        # nem de MP citada antes do título — ver ano_da_mp.
+        ano = ano_da_mp(body_text or title_text, year, numero)
         if ano != year:
             logger.info("dou: MP %s — ano do título=%s difere do ano consultado=%s; "
                         "usando o do título", numero, ano, year)
@@ -1248,15 +1261,18 @@ async def _fechar_outbox(
     session: AsyncSession, user_id: int, d: date, chave: str | None,
     falhas: list[str],
 ) -> None:
-    """Baixa da pendência aberta aqui + registro do que FALHOU.
+    """Fecha a pendência que ESTE deliver criou; converte falhas em fila.
 
-    A entrada de falha vale mesmo quando o outbox era de outro (job da fila):
-    aquele job dá baixa por ter concluído a chamada, e sem esta linha as notas
-    que falharam sumiriam da fila.
+    POSSE: só age quando `chave` não é None, ou seja, quando foi este deliver
+    que ABRIU o outbox (caminho do handler /mp_dou_agora). Numa re-tentativa da
+    fila a entrada é pré-existente (`chave` None) e quem manda é o chamador
+    (`_entregar_nota_pendente`): ele mantém na falha e baixa no sucesso. Mexer
+    aqui nesse caso brigaria com ele e causaria baixa indevida ou key drift.
     """
+    if chave is None:
+        return
     from bot.services.proactive import mark_notified, unmark_notified
-    if chave:
-        await unmark_notified(session, user_id, "nota_pendente", chave)
+    await unmark_notified(session, user_id, "nota_pendente", chave)
     if not falhas:
         return
     chave_falha = f"{d.isoformat()}:{','.join(falhas)}"
@@ -1381,4 +1397,8 @@ async def deliver_to_user(
             falhas.append(mp["numero"])
 
     await _fechar_outbox(session, user.id, target_date, chave_outbox, falhas)
-    return len(avisadas)
+    # Devolve (entregues, falhas). O caller da FILA (_entregar_nota_pendente)
+    # precisa do `falhas` pra NÃO dar baixa na pendência quando a nota falhou —
+    # sem isso a entrada some da fila e a nota nunca mais é re-tentada, sem nem
+    # o aviso de desistência (o pior modo de falha do projeto).
+    return len(avisadas), falhas

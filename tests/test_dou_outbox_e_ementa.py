@@ -79,6 +79,24 @@ def test_ano_absurdo_e_ignorado() -> None:
     assert dm.ano_da_mp(lixo, 2026) == 2026
 
 
+def test_ano_ancora_no_numero_da_mp_processada() -> None:
+    """BUG #5: um "Revoga a MP nº 1.200, de 2025" ANTES do título próprio fazia
+    pegar o ano da MP CITADA. Com o número da MP processada, escolhe o título
+    certo."""
+    body = ("Revoga a Medida Provisória nº 1.200, de 30 de dezembro de 2025. "
+            "MEDIDA PROVISÓRIA Nº 1.381, DE 30 DE JULHO DE 2026 Abre crédito...")
+    assert dm.ano_da_mp(body, 2026) == 2025, "sem número, ainda pega o 1º título (comportamento base)"
+    assert dm.ano_da_mp(body, 2026, "1381") == 2026, "com número, ancora na MP certa"
+    assert dm.ano_da_mp(body, 2026, "1.381") == 2026, "número com ponto de milhar também casa"
+
+
+def test_ano_numero_ausente_no_corpo_cai_no_padrao() -> None:
+    """Número que não aparece em nenhum título → cai no primeiro título como
+    palpite, ainda sob a guarda do ±1."""
+    body = "MEDIDA PROVISÓRIA Nº 1.381, DE 30 DE JULHO DE 2026 ..."
+    assert dm.ano_da_mp(body, 2026, "9999") == 2026
+
+
 # ───────────────────────────── outbox ─────────────────────────────
 
 class _Sessao:
@@ -140,10 +158,13 @@ def test_falha_volta_pra_fila(espiao) -> None:
     assert ("nota_pendente", "2026-07-31:1382") in espiao["mark"]
 
 
-def test_falha_volta_pra_fila_mesmo_sem_outbox_proprio(espiao) -> None:
-    """Quando o outbox é do job da fila, aquele job dá baixa por ter concluído
-    a chamada — sem esta linha, a nota que falhou sumiria junto."""
+def test_fechar_outbox_nao_mexe_em_entrada_de_outro(espiao) -> None:
+    """POSSE: com chave=None (re-tentativa da fila, entrada pré-existente),
+    _fechar_outbox NÃO age — quem manda é o chamador (_entregar_nota_pendente).
+
+    Antes, aqui re-enfileirava a falha sob outra chave e o chamador dava baixa
+    incondicional na original, o que na prática APAGAVA a nota que falhou (bug
+    #1 da auditoria). A posse agora é do chamador."""
     asyncio.run(dm._fechar_outbox(_Sessao(["2026-07-31:all"]), 1, D, None,
                                   falhas=["1381"]))
-    assert espiao["mark"] == [("nota_pendente", "2026-07-31:1381")]
-    assert espiao["unmark"] == []
+    assert espiao["mark"] == [] and espiao["unmark"] == []

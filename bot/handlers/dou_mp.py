@@ -106,7 +106,7 @@ async def _rodar_nota(
         if user is None or not user.is_authorized:
             return
         try:
-            n = await deliver_to_user(
+            n, _falhas = await deliver_to_user(
                 bot, session, user, target, force=True, only_numeros=only_numeros,
             )
         except DouError as e:

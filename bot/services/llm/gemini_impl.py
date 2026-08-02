@@ -52,12 +52,14 @@ def _log_usage(where: str, resp: Any) -> None:
 _MIN_OUTPUT_TOKENS = 8192
 
 
-# Modelos que RECUSARAM o thinking_budget configurado (400 INVALID_ARGUMENT),
-# aprendidos em runtime. Adivinhar por nome já falhou: o clamp abaixo cobria só
-# "pro" e o gemini-3.6-flash passou batido, derrubando TODO chat com
-# GEMINI_THINKING_BUDGET=0. A lista de modelos do Gemini muda toda semana, então
-# quem decide é a API, não um heurístico de substring.
-_SEM_THINKING_BUDGET: set[str] = set()
+# Pares (modelo, budget) que a API RECUSOU — aprendidos em runtime, provados
+# pelo fato de o retry SEM thinking ter funcionado. Chaveado por PAR, não só
+# pelo nome: um modelo que recusa budget 0 pode aceitar 512, e o tradutor pede
+# 0 justamente pra DESLIGAR o thinking — memorizar só o nome desligava o ajuste
+# pra qualquer budget e ressuscitava o bug de contaminação do resp.text no
+# tradutor. Adivinhar por nome já falhou antes (o clamp cobria só "pro"); quem
+# decide é a API.
+_SEM_THINKING_BUDGET: set[tuple[str, int | None]] = set()
 
 
 def budget_efetivo(budget: int | None = None) -> int:
@@ -77,14 +79,16 @@ def _thinking_config(model: str, budget: int | None = None):
     """ThinkingConfig conforme o budget efetivo. None = automático (sem
     alteração); -1 idem; 0 desliga; N fixa. O pro não permite desligar
     (mín ~128), então clampa pra 128 quando o budget for 0 — evita 400."""
-    if model in _SEM_THINKING_BUDGET:
-        return None
     budget = budget_efetivo(budget)
     if budget == -1:
         return None
     budget = int(budget)
     if "pro" in (model or "") and 0 <= budget < 128:
         budget = 128
+    # Só pula quando ESTE modelo já recusou ESTE budget (par). Outro budget do
+    # mesmo modelo continua sendo tentado.
+    if (model, budget) in _SEM_THINKING_BUDGET:
+        return None
     try:
         return types.ThinkingConfig(thinking_budget=budget)
     except Exception:
@@ -122,17 +126,26 @@ def gerar(client, model: str, contents, onde: str, budget: int | None = None,
         if tc is None or not _e_argumento_invalido(exc):
             _log_payload(onde, model, contents, config_kwargs, tc)
             raise
-        _SEM_THINKING_BUDGET.add(model)
+        # 400 INVALID_ARGUMENT COM thinking setado: pode ser o thinking, mas
+        # também pode ser imagem/schema. Retry SEM thinking é barato e prova a
+        # causa: se funcionar, o thinking ERA o problema → memoriza o par. Se
+        # falhar de novo, o erro era outro → propaga o real e NÃO envenena o
+        # modelo (senão um 400 de imagem desligava o thinking pra sempre).
+        budget_rejeitado = getattr(tc, "thinking_budget", None)
         logger.warning(
-            "gemini[%s]: %s recusou thinking_budget=%s (400) — repetindo sem "
-            "thinking_config e desligando esse ajuste para este modelo",
-            onde, model, getattr(tc, "thinking_budget", "?"),
+            "gemini[%s]: %s deu 400 com thinking_budget=%s — tentando sem thinking",
+            onde, model, budget_rejeitado,
         )
         try:
-            return _chamar(None)
+            resultado = _chamar(None)
         except Exception:
             _log_payload(onde, model, contents, config_kwargs, None)
             raise
+        _SEM_THINKING_BUDGET.add((model, budget_rejeitado))
+        logger.warning("gemini[%s]: %s rejeita thinking_budget=%s — desligado "
+                       "para este par (sem thinking funcionou)",
+                       onde, model, budget_rejeitado)
+        return resultado
 
 
 def _log_payload(onde, model, contents, config_kwargs, thinking) -> None:

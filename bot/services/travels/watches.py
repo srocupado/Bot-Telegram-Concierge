@@ -121,15 +121,21 @@ async def _registrar_falha(
     n = watch.consecutive_failures
     await session.commit()
 
-    if n != _FALHAS_PRA_AVISAR and not (
-        n > _FALHAS_PRA_AVISAR and (n - _FALHAS_PRA_AVISAR) % _REPETE_AVISO_A_CADA == 0
-    ):
+    # Avisa por ESTADO, não por contagem exata: no marco (>=3 e nunca avisado
+    # neste streak) ou 7 falhas após o último aviso BEM-SUCEDIDO. Se o envio
+    # falhar, `alerted_at_failures` não avança e o próximo tick re-tenta — o
+    # marco perdido não vira silêncio de uma semana.
+    ja_avisado = watch.alerted_at_failures or 0
+    deve_avisar = n >= _FALHAS_PRA_AVISAR and (
+        ja_avisado == 0 or n - ja_avisado >= _REPETE_AVISO_A_CADA
+    )
+    if not deve_avisar:
         return
     user = await session.get(User, watch.user_id)
     if user is None:
         return
     alvo = watch.summary or watch.kind
-    await _send_with_fallback(bot, user.id, (
+    enviado = await _send_with_fallback(bot, user.id, (
         f"⚠️ Não estou conseguindo checar a vigia <b>{_html_escape(alvo)}</b> "
         f"há {n} dia(s) seguidos.\n"
         f"Motivo da última tentativa: <code>{_html_escape(motivo[:200])}</code>\n\n"
@@ -137,6 +143,11 @@ async def _registrar_falha(
         "dela até isso voltar</b>. Se o parâmetro mudou (aeroporto, data que já "
         "passou), refaça a vigia."
     ))
+    if enviado:
+        # Só avança o marco quando o aviso REALMENTE saiu. Falha de envio →
+        # re-tenta no próximo tick (contador já continua subindo).
+        watch.alerted_at_failures = n
+        await session.commit()
 
 
 async def check_watch(
@@ -250,19 +261,27 @@ async def check_watch(
         await _registrar_falha(session, bot, watch, f"{type(e).__name__}: {e}")
         return
 
+    if best is None:
+        # "Sem preço" NÃO é sucesso: uma vigia cujos params expiraram
+        # (aeroporto, data que passou) devolve vazio TODO dia sem exceção. Se
+        # isto zerasse o contador, "não consigo checar" viraria indistinguível
+        # de "o preço não caiu" — o silêncio que a feature existe pra eliminar.
+        # Conta como falha; 3 dias vazios seguidos avisam, e o 1º preço reseta.
+        logger.info("travels: no price for watch %d", watch.id)
+        await _registrar_falha(session, bot, watch,
+                               "sem preço/resultado (parâmetros podem ter expirado)")
+        return
+
     now = datetime.now(timezone.utc)
     watch.last_checked_at = now
-    # Voltou a funcionar: zera o contador pra que uma nova pane volte a avisar.
+    # Preço de fato = sucesso: zera contador E o marco de aviso, pra que uma
+    # nova pane volte a avisar do zero.
     if watch.consecutive_failures:
         logger.info("travels: watch %d voltou a checar após %d falha(s)",
                     watch.id, watch.consecutive_failures)
         watch.consecutive_failures = 0
+        watch.alerted_at_failures = 0
         watch.last_error = None
-
-    if best is None:
-        logger.info("travels: no price for watch %d", watch.id)
-        await session.commit()
-        return
 
     price, payload = best
     snapshot = TravelPriceSnapshot(

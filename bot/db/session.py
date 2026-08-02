@@ -162,6 +162,12 @@ async def _ensure_columns(conn) -> None:
             "ALTER TABLE travel_watches ADD COLUMN last_error VARCHAR(300)"
         )
         logger.info("migrated: added travel_watches.last_error")
+    if cols and "alerted_at_failures" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE travel_watches ADD COLUMN alerted_at_failures "
+            "INTEGER NOT NULL DEFAULT 0"
+        )
+        logger.info("migrated: added travel_watches.alerted_at_failures")
 
     rem_cols = await conn.exec_driver_sql("PRAGMA table_info(reminders)")
     cols = {row[1] for row in rem_cols.fetchall()}

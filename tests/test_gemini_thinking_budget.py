@@ -68,16 +68,17 @@ def test_400_no_thinking_vira_nova_tentativa_sem_ele(budget_zero, caplog) -> Non
     assert resp.text == "ok", "o chat tem que responder, não estourar"
     assert len(cli.chamadas) == 2, "deveria tentar com e sem thinking_config"
     assert cli.chamadas[0] is not None and cli.chamadas[1] is None
-    assert any("recusou thinking_budget" in r.getMessage() for r in caplog.records), (
+    assert any("tentando sem thinking" in r.getMessage() for r in caplog.records), (
         "a queda tem que aparecer no log — silêncio esconde config inútil"
     )
 
 
 def test_modelo_recusado_e_memorizado(budget_zero) -> None:
-    """Sem memorizar, TODA mensagem pagaria a ida e volta dupla."""
+    """Sem memorizar, TODA mensagem pagaria a ida e volta dupla. Chave é o PAR
+    (modelo, budget)."""
     cli = _ClienteFake()
     gi.gerar(cli, "gemini-3.6-flash", [], "chat", max_output_tokens=8192)
-    assert "gemini-3.6-flash" in gi._SEM_THINKING_BUDGET
+    assert ("gemini-3.6-flash", 0) in gi._SEM_THINKING_BUDGET
 
     cli2 = _ClienteFake()
     gi.gerar(cli2, "gemini-3.6-flash", [], "chat", max_output_tokens=8192)
@@ -89,7 +90,36 @@ def test_modelo_que_aceita_continua_com_thinking(budget_zero) -> None:
     cli = _ClienteFake(recusa_thinking=False)
     gi.gerar(cli, "gemini-2.5-flash", [], "chat", max_output_tokens=8192)
     assert len(cli.chamadas) == 1 and cli.chamadas[0] is not None
-    assert "gemini-2.5-flash" not in gi._SEM_THINKING_BUDGET
+    assert not any(m == "gemini-2.5-flash" for m, _ in gi._SEM_THINKING_BUDGET)
+
+
+def test_budget_novo_ainda_e_tentado_apos_outro_recusado(budget_zero, monkeypatch) -> None:
+    """BUG #3: memorizar só o nome desligava o thinking pra QUALQUER budget.
+    O tradutor pede 0 (desligar) e o usuário pode pedir 512 — o 512 tem que
+    ser tentado mesmo depois de o 0 ter sido recusado."""
+    gi._SEM_THINKING_BUDGET.add(("gemini-3.6-flash", 0))
+    # budget 0 rejeitado -> _thinking_config(0) devolve None (não manda)
+    assert gi._thinking_config("gemini-3.6-flash", 0) is None
+    # budget 512 NUNCA foi recusado -> ainda é enviado
+    tc = gi._thinking_config("gemini-3.6-flash", 512)
+    assert tc is not None and tc.thinking_budget == 512
+
+
+def test_400_nao_ligado_ao_thinking_nao_envenena(budget_zero) -> None:
+    """BUG #4: um 400 de imagem/schema (retry sem thinking TAMBÉM falha) não
+    pode desligar o thinking pra sempre. Só memoriza quando o retry funciona."""
+    class _ImagemRuim(_ClienteFake):
+        def generate_content(self, *, model, contents, config):
+            # 400 INVALID_ARGUMENT em TODA chamada (com ou sem thinking):
+            # o problema não é o thinking.
+            raise RuntimeError("400 INVALID_ARGUMENT: Unable to process input image")
+
+    cli = _ImagemRuim()
+    with pytest.raises(RuntimeError, match="input image"):
+        gi.gerar(cli, "gemini-3.6-flash", [], "chat", max_output_tokens=8192)
+    assert gi._SEM_THINKING_BUDGET == set(), (
+        "erro alheio ao thinking envenenou o modelo — thinking desligado à toa"
+    )
 
 
 def test_erro_que_nao_e_invalid_argument_sobe(budget_zero) -> None:

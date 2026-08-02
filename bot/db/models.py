@@ -342,6 +342,14 @@ class TravelWatch(Base):
     consecutive_failures: Mapped[int] = mapped_column(
         Integer, default=0, server_default="0", nullable=False,
     )
+    # Contagem de falhas em que o aviso foi EFETIVAMENTE enviado (0 = nunca
+    # neste streak). Separado de consecutive_failures porque, se o Telegram
+    # estiver fora no tick do marco, o contador avança mas o aviso não sai —
+    # sem este campo o próximo aviso só viria 7 dias depois (silêncio numa
+    # vigia morta). Com ele, o marco perdido é re-tentado no tick seguinte.
+    alerted_at_failures: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False,
+    )
     last_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
