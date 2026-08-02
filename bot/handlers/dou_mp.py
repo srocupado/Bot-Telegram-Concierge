@@ -358,6 +358,64 @@ async def cmd_off(message: Message, user: User, session: AsyncSession) -> None:
     await message.answer("🔕 Monitor de MPs no DOU desativado.", parse_mode=None)
 
 
+def _fmt_alvo(nums: str) -> str:
+    """'all'→'todas as MPs'; '1382'→'MP 1382'; '1382,1383'→'MPs 1382, 1383'."""
+    if not nums or nums == "all":
+        return "todas as MPs"
+    partes = [n for n in nums.split(",") if n]
+    if not partes:
+        return "todas as MPs"
+    return ("MP " if len(partes) == 1 else "MPs ") + ", ".join(partes)
+
+
+def _fmt_fila_mp(fila: dict) -> str:
+    """Monta o texto verbatim do /mp_em_fila a partir do snapshot da fila.
+    Função pura (sem I/O) pra dar pra testar o texto sem banco."""
+    notas = fila.get("notas") or []
+    dias = fila.get("dias") or []
+    manut = bool(fila.get("manutencao"))
+
+    if not notas and not dias:
+        base = ("✅ <b>Fila do DOU vazia</b> — nenhuma nota pendente de geração "
+                "e nenhum dia pendente de re-checagem.")
+        if manut:
+            base += ("\n\n⚠️ <i>O Inlabs está em manutenção/instável agora, mas "
+                     "não há nada represado.</i>")
+        return base
+
+    linhas = ["📥 <b>Fila do monitor de MP</b>"]
+    if manut:
+        linhas.append("⚠️ <i>Inlabs em manutenção/instável agora — a fila drena "
+                      "assim que ele voltar.</i>")
+    if notas:
+        linhas.append("\n📄 <b>Notas esperando geração</b> (quando o Inlabs voltar):")
+        for d, nums in notas:
+            quando = d.strftime("%d/%m/%Y") if d else "data ?"
+            linhas.append(f"• {_fmt_alvo(nums)} de {quando}")
+    if dias:
+        linhas.append("\n🔁 <b>Dias ainda não verificados</b> (re-checo sozinho):")
+        for d, restantes in dias:
+            linhas.append(f"• {d.strftime('%d/%m/%Y')} — re-checo por mais "
+                          f"{restantes} dia(s)")
+    linhas.append("\nAssim que o Inlabs voltar, gero e envio automaticamente — "
+                  "sem precisar pedir de novo. Pra forçar uma data: "
+                  "<code>/mp_dou_agora DD/MM/AAAA</code>.")
+    return "\n".join(linhas)
+
+
+@router.message(Command("mp_em_fila", "mp_fila"))
+async def cmd_em_fila(message: Message, user: User, session: AsyncSession) -> None:
+    """Mostra o que está na fila do monitor de MP: notas técnicas aguardando
+    geração (Inlabs fora) e dias ainda não verificados que serão re-checados.
+    Read-only — não altera a fila."""
+    if not user.is_authorized:
+        return
+    from bot.services.proactive import listar_fila_mp
+    hoje = datetime.now(ZoneInfo(user.timezone)).date()
+    fila = await listar_fila_mp(session, user.id, hoje)
+    await message.answer(_fmt_fila_mp(fila), parse_mode="HTML")
+
+
 def _parse_data_arg(arg: str, hoje: date) -> date | None:
     """Data do /mp_dou_agora: AAAA-MM-DD, DD/MM/AAAA, DD/MM/AA, DD-MM-AAAA,
     DD-MM-AA ou DD/MM (ano atual). SEM rolagem pro futuro — DOU é hoje/passado."""

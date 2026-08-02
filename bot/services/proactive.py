@@ -333,6 +333,50 @@ async def _mp_dias_pendentes(
     return sorted(out)
 
 
+async def listar_fila_mp(
+    session: AsyncSession, user_id: int, hoje: date,
+) -> dict:
+    """Snapshot READ-ONLY da fila do monitor de MP, pro /mp_em_fila.
+
+    Devolve:
+    - 'notas': notas técnicas de MPs JÁ detectadas, esperando (re)geração
+      quando o Inlabs voltar (kind nota_pendente) — lista de (data, alvo), com
+      alvo = "all" (todas as MPs do dia) ou "1382" / "1382,1383";
+    - 'dias': dias que o bot ainda não conseguiu verificar e vai re-checar
+      (kind mp_pendente) — lista de (data, dias_restantes até expirar);
+    - 'manutencao': True se há aviso ativo de Inlabs em manutenção (dou_manut).
+
+    NÃO expira nem altera nada — é só leitura. A expiração continua no proativo
+    (_mp_dias_pendentes); o comando de status não pode ter efeito colateral, ou
+    consultar a fila mudaria a fila."""
+    rows = list(await session.scalars(
+        select(ProactiveNotice).where(
+            ProactiveNotice.user_id == user_id,
+            ProactiveNotice.kind.in_(("nota_pendente", "mp_pendente", "dou_manut")),
+        )
+    ))
+    notas: list[tuple[date | None, str]] = []
+    dias: list[tuple[date, int]] = []
+    manutencao = False
+    for r in rows:
+        if r.kind == "nota_pendente":
+            _, _, nums = (r.key or "").partition(":")
+            notas.append((_data_da_chave(r.key), nums or "all"))
+        elif r.kind == "dou_manut":
+            manutencao = True
+        else:  # mp_pendente
+            try:
+                d = date.fromisoformat(r.key)
+            except ValueError:
+                continue
+            restantes = _MP_RETRO_EXPIRA_DIAS - (hoje - d).days
+            if restantes >= 0:      # já expirados são varridos pelo proativo
+                dias.append((d, restantes))
+    notas.sort(key=lambda t: (t[0] or date.min, t[1]))
+    dias.sort()
+    return {"notas": notas, "dias": dias, "manutencao": manutencao}
+
+
 _ESTADO_GERANDO = "<b>gerando agora</b>, chega em alguns minutos"
 
 

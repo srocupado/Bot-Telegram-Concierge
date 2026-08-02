@@ -48,6 +48,7 @@ from bot.handlers.provider import cmd_provider, cmd_provider_visao, cmd_voice_pr
 from bot.handlers.dou_mp import (
     cmd_agora as cmd_mp_dou_agora,
     cmd_dou_provider,
+    cmd_em_fila as cmd_mp_em_fila,
     cmd_off as cmd_mp_dou_off,
     cmd_on as cmd_mp_dou_on,
 )
@@ -152,6 +153,7 @@ _DISPATCH: dict[str, Callable[..., Any]] = {
     "mp_dou_agora": cmd_mp_dou_agora,
     "mp_dou_on": cmd_mp_dou_on,
     "mp_dou_off": cmd_mp_dou_off,
+    "mp_em_fila": cmd_mp_em_fila,
     "proativo": cmd_proativo_status,
     "proativo_on": cmd_proativo_on,
     "proativo_off": cmd_proativo_off,
