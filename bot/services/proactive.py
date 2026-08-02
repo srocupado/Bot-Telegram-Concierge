@@ -713,14 +713,15 @@ async def collect_mp(
         _, _, nums = r.key.partition(":")
         alvo = "todas as MPs" if (not nums or nums == "all") else f"MP {nums.replace(',', ', ')}"
         if d.isoformat() in em_manutencao:
-            estado = ("aguardando o <b>Inlabs</b> voltar (em manutenção) — "
-                      "envio a nota assim que sair")
+            estado = ("<b>na fila de checagem</b> — o Inlabs está em manutenção; "
+                      "checo e envio quando ele voltar (pode não ser hoje)")
         elif inlabs_fora:
-            # A checagem DESTE run não alcançou o Inlabs: a nota não vai gerar
-            # agora, então nada de "gerando agora". Causa não afirmada como
-            # manutenção (não foi declarada) — só o fato observado.
-            estado = ("aguardando o <b>Inlabs</b> voltar — gero a nota assim "
-                      "que ele responder")
+            # A checagem DESTE run não alcançou o Inlabs: a nota não gera agora.
+            # NÃO dizer "gerando"/"assim que responder" — soa iminente e o dono
+            # esquece. Enquadra como FILA: fica esperando o Inlabs, sem promessa
+            # de prazo. Causa não afirmada como manutenção (não foi declarada).
+            estado = ("<b>na fila de checagem</b> — o Inlabs está fora agora; "
+                      "checo e envio quando ele voltar (pode não ser hoje)")
         elif jobs.job_em_andamento(chave_job_nota(user.id, d)):
             estado = _ESTADO_GERANDO
         elif pos >= _NOTA_MAX_POR_JANELA:

@@ -145,7 +145,7 @@ def test_linha_diz_manutencao_quando_marcada(monkeypatch) -> None:
     facts = asyncio.run(proactive.collect_mp(_Sess(fila, manut), user, []))
     linhas = [f.text for f in facts if f.kind == "nota_fila"]
     assert len(linhas) == 1
-    assert "em manutenção" in linhas[0]
+    assert "em manutenção" in linhas[0] and "na fila de checagem" in linhas[0]
     assert "gerando agora" not in linhas[0] and "próxima janela" not in linhas[0]
 
 
@@ -189,6 +189,6 @@ def test_inlabs_fora_no_run_nao_diz_gerando_agora(monkeypatch) -> None:
 
     assert user.dou_fora_agora is True, "flag tem que barrar o disparo em run_for_user"
     assert len(linhas) == 1
-    assert "aguardando" in linhas[0] and "Inlabs" in linhas[0]
-    assert "gerando agora" not in linhas[0]
+    assert "na fila de checagem" in linhas[0] and "Inlabs" in linhas[0]
+    assert "gerando" not in linhas[0], "não pode soar iminente"
     assert "manutenção" not in linhas[0], "instável genérico não afirma manutenção"
