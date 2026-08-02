@@ -271,6 +271,29 @@ def test_compactacao_e_serializada_por_usuario(monkeypatch) -> None:
     assert pico["max"] == 1, "compactações do mesmo usuário rodaram concorrentes"
 
 
+# ═══ #1b deliver_to_user: dia sem MP devolve TUPLA (não int) ═════════════════
+# Regressão do fix da tupla: `if not novas: return 0` cru fazia o caller
+# `n, _falhas = await deliver_to_user(...)` estourar TypeError em todo dia sem
+# MP → "Erro ao gerar a nota técnica" no /mp_dou_agora.
+
+def test_deliver_dia_sem_mp_devolve_tupla(monkeypatch) -> None:
+    from bot.services import dou_monitor
+
+    async def _fetch(_d):
+        return dou_monitor.MPList()   # nenhuma MP
+
+    async def _filter(_s, _u, mps):
+        return []
+
+    monkeypatch.setattr(dou_monitor, "fetch_mps", _fetch)
+    monkeypatch.setattr(dou_monitor, "filter_unseen", _filter)
+    resultado = asyncio.run(dou_monitor.deliver_to_user(
+        None, SimpleNamespace(), SimpleNamespace(id=1), date(2026, 8, 2),
+    ))
+    n, falhas = resultado   # NÃO pode estourar (era int)
+    assert (n, falhas) == (0, [])
+
+
 # ═══ #3 congresso: usa data BRT, não o relógio UTC do container ══════════════
 
 def test_congresso_usa_data_brt() -> None:

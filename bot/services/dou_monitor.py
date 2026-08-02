@@ -1304,7 +1304,11 @@ async def deliver_to_user(
     else:
         novas = await filter_unseen(session, user.id, mps)
     if not novas:
-        return 0
+        # MESMO formato do caminho cheio (entregues, falhas). Um `return 0` cru
+        # aqui fazia o caller `n, _falhas = await deliver_to_user(...)` estourar
+        # TypeError (unpack de int) em TODO dia sem MP nova → "Erro ao gerar a
+        # nota técnica". Regressão do fix da tupla; agora consistente.
+        return 0, []
 
     # set de já-vistas pra não duplicar linhas no banco quando force=True.
     rows = await session.scalars(select(DouSeenMP).where(DouSeenMP.user_id == user.id))
