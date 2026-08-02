@@ -154,3 +154,51 @@ def test_truncamento_avisa_nas_duas_vias() -> None:
     longo = ws._montar_saida("https://x", "abc", cortado=True)
     assert "TRUNCADA" not in curto
     assert "TRUNCADA" in longo
+
+
+# ───────────── link de compartilhamento → URL canônica ─────────────
+
+def test_link_de_compartilhamento_vira_canonico() -> None:
+    """O caso real: o dono colou o link do botão "compartilhar" e o bot bateu
+    no muro, mesmo lendo direto. A URL canônica do MESMO item abre normal do
+    IP do Orange Pi — e o id vem dentro do próprio link compartilhado."""
+    compartilhado = (
+        "https://www.mercadolivre.com.br/up/MLBU1430518104?matt_tool=38524122"
+        "&pdp_filters=item_id:MLB2779941281&ua=BQf#origin=share&wid=MLB2779941281"
+    )
+    assert ws.canonizar_ml(compartilhado) == "https://produto.mercadolivre.com.br/MLB-2779941281"
+
+
+def test_id_de_catalogo_nao_e_confundido_com_item() -> None:
+    """MLBU1430518104 é id de CATÁLOGO, não de item. Tratá-lo como item geraria
+    uma URL inexistente, e o erro viraria 'produto não encontrado' — pior que o
+    atual, porque parece resposta. Sem id de item, a URL fica como está."""
+    so_catalogo = "https://www.mercadolivre.com.br/up/MLBU1430518104?x=1"
+    assert ws.canonizar_ml(so_catalogo) == so_catalogo
+
+
+def test_url_canonica_fica_intacta() -> None:
+    u = "https://produto.mercadolivre.com.br/MLB-2779941281"
+    assert ws.canonizar_ml(u) == u
+
+
+def test_url_do_ml_sem_item_nao_e_reescrita() -> None:
+    """Home, busca e ofertas não viram URL de produto inventada."""
+    for u in ("https://www.mercadolivre.com.br/ofertas",
+              "https://lista.mercadolivre.com.br/chave-magnetica"):
+        assert ws.canonizar_ml(u) == u
+
+
+def test_read_url_canoniza_antes_de_buscar(monkeypatch) -> None:
+    """Ponta a ponta: o que vai pra rede é a URL canônica, não a compartilhada."""
+    buscadas: list[str] = []
+
+    async def _fake(url):
+        buscadas.append(url)
+        return "Chave Magnética 2CV 220V — corrente nominal 9A" * 10
+
+    monkeypatch.setattr(ws, "_ler_direto", _fake)
+    asyncio.run(ws.read_url(
+        "https://www.mercadolivre.com.br/up/MLBU1430518104?pdp_filters=item_id:MLB2779941281"
+    ))
+    assert buscadas == ["https://produto.mercadolivre.com.br/MLB-2779941281"]

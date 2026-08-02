@@ -286,6 +286,27 @@ _UA_NAVEGADOR = {
 }
 
 
+# Id do item dentro de qualquer URL do ML. O link de COMPARTILHAMENTO
+# ("/up/MLBU...?pdp_filters=item_id:MLB123&wid=MLB123") é uma rota de
+# catálogo/tracking que redireciona pra verificação; a URL CANÔNICA do item
+# abre normal (medido do Orange Pi em 02/08/2026). Como o id vem no próprio
+# link, dá pra reescrever antes de buscar. Note o \d: "MLBU1430518104" é id de
+# catálogo, não de item — não serve.
+_ITEM_ID_RE = re.compile(r"\bMLB(\d{6,})\b")
+
+
+def canonizar_ml(url: str) -> str:
+    """URL de item do ML na forma que funciona; devolve a original se não achar
+    id (não vale inventar rota pra link que não é de produto)."""
+    m = _ITEM_ID_RE.search(url or "")
+    if not m:
+        return url
+    canonica = f"https://produto.mercadolivre.com.br/MLB-{m.group(1)}"
+    if canonica != url:
+        logger.info("ml: %s → %s (link de compartilhamento reescrito)", url[:90], canonica)
+    return canonica
+
+
 def _direto(url: str) -> bool:
     from urllib.parse import urlparse
     try:
@@ -339,6 +360,7 @@ async def read_url(url: str, *, max_chars: int = _MAX_PAGE_CHARS) -> str:
         u = "https://" + u
     if _direto(u):
         # Domínio que barra datacenter: vai direto, sem passar pelo Jina.
+        u = canonizar_ml(u)
         texto = await _ler_direto(u)
         bruto = len(texto)
         cortado = len(texto) > max_chars
