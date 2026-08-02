@@ -5,7 +5,14 @@ TODOS os caminhos caem em /gz/account-verification: navegador, curl, e os
 user-agents de facebookexternalhit, WhatsApp, TelegramBot e Twitterbot. A API
 com token de app devolve 403 em /items e /sites/MLB/search.
 
-Do IP residencial do Orange Pi, a mesma URL abre normal.
+Do IP residencial do Orange Pi, a mesma URL abre normal — DESDE QUE a
+requisição não finja ser navegador. Medido no mesmo IP e instante:
+
+    curl padrão ............ produto.mercadolivre.com.br/MLB-2779941281  OK
+    curl com UA de Chrome .. /gz/account-verification                    MURO
+
+O antibot cruza user-agent com impressão TLS; cliente HTTP com cara de
+navegador é sinal de scraper. Por isso a leitura direta vai SEM headers.
 
 A causa era essa: o `read_url` busca via Jina Reader, e quem faz a requisição
 é o servidor do Jina — datacenter. O IP do bot nunca chegava a ser usado.
@@ -202,3 +209,12 @@ def test_read_url_canoniza_antes_de_buscar(monkeypatch) -> None:
         "https://www.mercadolivre.com.br/up/MLBU1430518104?pdp_filters=item_id:MLB2779941281"
     ))
     assert buscadas == ["https://produto.mercadolivre.com.br/MLB-2779941281"]
+
+
+def test_leitura_direta_nao_finge_ser_navegador() -> None:
+    """Medido: mandar UA de Chrome do MESMO IP derruba a requisição no muro,
+    enquanto a requisição honesta passa. Reintroduzir "disfarce" aqui quebra
+    a leitura do ML — e o sintoma seria o de sempre, 'a página exige login'."""
+    assert ws._SEM_DISFARCE == {}, (
+        "headers de navegador voltaram: o ML barra justamente essa combinação"
+    )

@@ -276,14 +276,15 @@ _DIRETO_RE = re.compile(r"(^|\.)mercado(livre|libre)\.com(\.br)?$", re.IGNORECAS
 # redireciona, então status não denuncia nada.
 _MURO_RE = re.compile(r"account-verification|/gz/|login\.mercadolivre", re.IGNORECASE)
 
-_UA_NAVEGADOR = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-}
+# SEM disfarce de navegador — de propósito, e medido. Do MESMO IP e no mesmo
+# instante (Orange Pi, 02/08/2026):
+#   curl padrão .................. produto.mercadolivre.com.br/MLB-2779941281  ✓
+#   curl com UA de Chrome ........ /gz/account-verification                    ✗
+# Fingir Chrome PIORA: o antibot cruza o user-agent com a impressão TLS, e
+# cliente HTTP com cara de navegador é sinal de scraper. Requisição honesta
+# passa. Se algum dia um site exigir headers de navegador, que seja por
+# domínio e com medição — não por padrão.
+_SEM_DISFARCE: dict[str, str] = {}
 
 
 # Id do item dentro de qualquer URL do ML. O link de COMPARTILHAMENTO
@@ -325,7 +326,7 @@ async def _ler_direto(url: str) -> str:
     """
     from bs4 import BeautifulSoup
     async with httpx.AsyncClient(
-        follow_redirects=True, timeout=_TIMEOUT_S, headers=_UA_NAVEGADOR,
+        follow_redirects=True, timeout=_TIMEOUT_S, headers=_SEM_DISFARCE,
     ) as client:
         r = await client.get(url)
         r.raise_for_status()
