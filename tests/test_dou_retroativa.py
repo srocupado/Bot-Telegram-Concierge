@@ -59,9 +59,7 @@ def _cenario(monkeypatch, resultado):
 
     monkeypatch.setattr(dou_monitor, "fetch_mps", _fetch)
     _sem_dedup(monkeypatch)
-    # 3 chamadas de scalars: mp_lacuna_pend (avisos de lacuna pendentes),
-    # mp_pendente (retroativa) e a fila de notas.
-    session = _FakeSession([], [SimpleNamespace(key=ontem.isoformat())], [])
+    session = _FakeSession([SimpleNamespace(key=ontem.isoformat())], [])
     user = SimpleNamespace(id=4242, dou_mp_subscribed=True, is_authorized=True,
                             dou_ultimo_dia_ok=None)
     return session, user, hoje, ontem

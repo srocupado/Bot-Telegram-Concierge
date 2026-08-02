@@ -30,7 +30,6 @@ from bot.services.travels.serpapi_client import (
     find_best_hotel_in_window,
     format_flight,
     format_hotel,
-    hotel_name_matches,
 )
 
 logger = logging.getLogger(__name__)
@@ -261,22 +260,6 @@ async def check_watch(
         logger.exception("watch %d: falha inesperada na checagem", watch.id)
         await _registrar_falha(session, bot, watch, f"{type(e).__name__}: {e}")
         return
-
-    if watch.kind == "hotel" and best is not None:
-        hotel_alvo = (watch.params.get("hotel") or "").strip()
-        if hotel_alvo and not hotel_name_matches(hotel_alvo, best[1].get("name")):
-            # Vigia de hotel NOMEADO cujo "melhor" é OUTRO hotel (o pedido está
-            # esgotado/sem preço nessa data): pra esta vigia isso é "sem
-            # preço", não um preço. Alertar "atingiu seu teto" e gravar
-            # min_price_seen com a diária de outro hotel era o bug — a busca
-            # interativa já trata isso (rótulo "Referência, o mais barato na
-            # cidade"); a vigia não tinha o guard.
-            logger.info(
-                "travels: watch %d (hotel %r): melhor resultado é %r — "
-                "sem preço do hotel pedido nesta checagem",
-                watch.id, hotel_alvo, best[1].get("name") or "?",
-            )
-            best = None
 
     if best is None:
         # "Sem preço" NÃO é sucesso: uma vigia cujos params expiraram

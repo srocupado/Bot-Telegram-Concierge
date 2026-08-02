@@ -228,17 +228,6 @@ async def _run_and_report(
     reporter = ProgressReporter(bot, chat_id, scheduled=scheduled)
     try:
         await reporter.start(prompt)
-    except Exception:
-        # Falha no envio do status inicial (rede/Telegram instável) NÃO pode
-        # abortar a tarefa: cair no except geral chamava reporter.finish(),
-        # que sem message_id é no-op — o dono não recebia NADA (nem erro) e a
-        # tarefa nunca rodava. Segue sem live-update; o resultado final vai
-        # por mensagens novas no _deliver.
-        logger.warning(
-            "agent: status inicial falhou; seguindo sem live-update",
-            exc_info=True,
-        )
-    try:
         result = await runner.run(
             prompt, chat_id=chat_id,
             resume_session_id=resume_session_id,
@@ -249,16 +238,7 @@ async def _run_and_report(
         return
     except Exception as e:
         logger.exception("agent: tarefa falhou")
-        erro_html = f"❌ <b>Erro no agente</b>: {html.escape(str(e))}"
-        if reporter.message_id is not None:
-            await reporter.finish(erro_html)
-        else:
-            # Sem mensagem de status pra editar: o erro sai como mensagem nova
-            # — desistir exige aviso.
-            try:
-                await bot.send_message(chat_id, erro_html, parse_mode="HTML")
-            except Exception:
-                logger.exception("agent: falha ao reportar o erro ao dono")
+        await reporter.finish(f"❌ <b>Erro no agente</b>: {html.escape(str(e))}")
         return
     await reporter.finish(_summary_html(result, scheduled=scheduled))
     delivered = await _deliver(bot, chat_id, result)

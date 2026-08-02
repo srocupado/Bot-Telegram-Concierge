@@ -128,13 +128,9 @@ def test_ausencia_longa_avisa_o_que_ficou_de_fora(monkeypatch) -> None:
     assert "Fiquei sem checar o DOU" in texto
     assert "/mp_dou_agora" in texto, "aviso sem saída de ação não serve"
     # Os últimos 14 dias entram na fila; os mais velhos viram o aviso.
-    pendentes = [m for m in marcadas if m.startswith("mp_pendente:")]
-    assert len(pendentes) == proactive._MP_RETRO_EXPIRA_DIAS
+    assert len(marcadas) == proactive._MP_RETRO_EXPIRA_DIAS
     velhos = fora - proactive._MP_RETRO_EXPIRA_DIAS
     assert f"({velhos} dia(s))" in texto
-    # Padrão outbox: o aviso ganha registro persistente ANTES do envio, pra
-    # ser regenerado se o envio da janela falhar (baixa só pós-entrega).
-    assert any(m.startswith("mp_lacuna_pend:lacuna:") for m in marcadas)
 
 
 def test_aviso_de_lacuna_longa_nao_repete(monkeypatch) -> None:

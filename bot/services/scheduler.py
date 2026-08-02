@@ -41,7 +41,6 @@ from bot.services.weather import (
     format_weather_line,
 )
 from bot.services.travels.watches import run_travel_alerts
-from bot.services.viagem import effective_tz
 from bot.utils import as_utc
 
 logger = logging.getLogger(__name__)
@@ -131,16 +130,12 @@ async def run_congress_digest(
             "em pauta — veja com /congresso_agora mais tarde."
         )
         for u in users:
-            # A baixa do dia depende do AVISO ter chegado: marcar com o envio
-            # falho deixava o usuário sem digest E sem aviso, silenciosamente.
-            # Sem a marca, o próximo tick re-tenta (scrape + aviso) até chegar.
-            sent = await _send_html_with_fallback(bot, u.id, aviso)
-            if sent:
-                async with sessionmaker() as session:
-                    fresh = await session.get(User, u.id)
-                    if fresh is not None:
-                        fresh.last_congress_digest_at = datetime.now(timezone.utc)
-                        await session.commit()
+            await _send_html_with_fallback(bot, u.id, aviso)
+            async with sessionmaker() as session:
+                fresh = await session.get(User, u.id)
+                if fresh is not None:
+                    fresh.last_congress_digest_at = datetime.now(timezone.utc)
+                    await session.commit()
         return
 
     message = format_week_message(items, now_brt.date())
@@ -241,14 +236,12 @@ async def run_traffic_digest(
             f"({type(exc).__name__}). Tente /transito_agora mais tarde."
         )
         for u in users:
-            # Mesma regra do congresso: só dá baixa no dia se o aviso chegou.
-            sent = await _send_html_with_fallback(bot, u.id, aviso)
-            if sent:
-                async with sessionmaker() as session:
-                    fresh = await session.get(User, u.id)
-                    if fresh is not None:
-                        fresh.last_traffic_digest_at = datetime.now(timezone.utc)
-                        await session.commit()
+            await _send_html_with_fallback(bot, u.id, aviso)
+            async with sessionmaker() as session:
+                fresh = await session.get(User, u.id)
+                if fresh is not None:
+                    fresh.last_traffic_digest_at = datetime.now(timezone.utc)
+                    await session.commit()
         return
 
     message = format_traffic_message(info, "casa → trabalho")
@@ -287,24 +280,10 @@ async def run_reminders(
         # Tirar todos os lembretes vencidos para todos os usuários autorizados.
         stmt = select(User).where(User.is_authorized.is_(True))
         users = list((await session.scalars(stmt)).all())
-        # `rollback()` expira TODAS as instâncias da sessão (o
-        # expire_on_commit=False só vale pra commit). Ler atributo de instância
-        # expirada em AsyncSession dispara lazy-load síncrono → MissingGreenlet:
-        # uma falha num lembrete do usuário A derrubava os lembretes restantes
-        # dele E o tick inteiro pros usuários seguintes. Depois de um rollback,
-        # re-hidrata as instâncias antes de usá-las.
-        dirty = False
         for user in users:
-            if dirty:
-                await session.refresh(user)
-                dirty = False
             items: list[Reminder] = await due_reminders(session, user.id, now_utc)
             for rem in items:
                 try:
-                    if dirty:
-                        await session.refresh(user)
-                        await session.refresh(rem)
-                        dirty = False
                     if rem.command_kind:
                         dispatched = await run_action(
                             bot, session, user, rem.command_kind, rem.command_args
@@ -365,15 +344,8 @@ async def run_reminders(
                         },
                     )
                 except Exception:
-                    # rem.id via __dict__: se a instância estiver expirada
-                    # (refresh falhou), o acesso normal dispararia outro
-                    # MissingGreenlet aqui dentro e mataria o tick.
-                    logger.exception(
-                        "reminder send failed",
-                        extra={"reminder_id": rem.__dict__.get("id")},
-                    )
+                    logger.exception("reminder send failed", extra={"reminder_id": rem.id})
                     await session.rollback()
-                    dirty = True
 
 
 TRAFFIC_WATCH_INTERVAL_MIN = 10
@@ -577,6 +549,7 @@ async def run_proactive(
         return
     now_utc = datetime.now(timezone.utc)
     from bot.services.proactive import parse_proactive_hours, run_for_user
+    from bot.services.viagem import effective_tz
 
     hours = parse_proactive_hours(settings.proactive_hours)
     # Gate barato ANTES de tocar o banco: só há janela possível quando algum
@@ -589,22 +562,10 @@ async def run_proactive(
         return
 
     async with sessionmaker() as session:
-        # Além dos opt-in do proativo, inclui quem tem NOTA NA FILA
-        # (nota_pendente): a entrada nasce de pedido explícito do usuário e a
-        # re-tentativa vive neste loop — filtrar por proactive_enabled deixava
-        # a promessa "te envio automaticamente" sem executor, pra sempre.
-        from bot.db.models import ProactiveNotice
-        from sqlalchemy import or_
-        com_fila = select(ProactiveNotice.user_id).where(
-            ProactiveNotice.kind == "nota_pendente"
-        )
         users = list((await session.scalars(
             select(User).where(
                 User.is_authorized.is_(True),
-                or_(
-                    User.proactive_enabled.is_(True),
-                    User.id.in_(com_fila),
-                ),
+                User.proactive_enabled.is_(True),
             )
         )).all())
     for u in users:

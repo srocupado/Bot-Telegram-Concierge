@@ -526,15 +526,12 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
                         continue
                     # Corpo desconhecido: FALHA. É o padrão seguro — na dúvida,
                     # o dia fica pendente e é re-checado, nunca dado por vazio.
-                    # Vale pra QUALQUER tamanho: um stub curto (<100 bytes, ex.
-                    # "<html>Bad Gateway</html>") caía fora deste ramo e o dia
-                    # era dado por completo sem NENHUMA evidência — o falso
-                    # negativo silencioso que a premissa nº 1 proíbe.
-                    logger.warning(
-                        "dou: %s devolveu conteúdo não-ZIP (%d bytes) — tratando "
-                        "como FALHA, não como 'não publicada'", section, len(content),
-                    )
-                    failed_sections.append(section)
+                    if len(content) >= 100:
+                        logger.warning(
+                            "dou: %s devolveu conteúdo não-ZIP (%d bytes) — tratando "
+                            "como FALHA, não como 'não publicada'", section, len(content),
+                        )
+                        failed_sections.append(section)
                     continue
                 with _fase(f"unzip+parse {section}", zip_mb=round(len(content) / 1e6, 1)):
                     with zipfile.ZipFile(io.BytesIO(content)) as zf:
@@ -1287,36 +1284,18 @@ async def _fechar_outbox(
 
 async def deliver_to_user(
     bot, session: AsyncSession, user, target_date: date, *, force: bool = False,
-    only_numeros: list[str] | None = None, apenas_completo: bool = False,
-) -> tuple[int, list[str], "MPList"]:
+    only_numeros: list[str] | None = None,
+) -> int:
     """Busca MPs da data, gera nota + DOCX e entrega no Telegram. Por padrão
     pula as já notificadas (dedup); com force=True entrega tudo que achar
     (usado pelo comando manual). only_numeros restringe a entrega a essas MPs
     (números) — usado pelo botão do proativo, que avisa de um subconjunto do dia
-    e não deve regerar todas. apenas_completo=True (fila de notas "all"):
-    fetch parcial vira DouError ANTES de entregar — entregar parte e dar baixa
-    esconderia a MP da seção que falhou, e entregar parte SEM baixa duplicaria
-    tudo a cada re-tentativa.
-    Retorna (entregues, falhas_de_nota, lista) — `lista` é a MPList COMPLETA
-    do fetch (pré-filtro), com as flags `incompleto`/`provisorio`: o caller
-    PRECISA delas pra não afirmar "dia checado" sobre fetch parcial.
+    e não deve regerar todas. Retorna quantas MPs foram entregues.
     Levanta DouError se o fetch falhar (credencial, rede)."""
     from aiogram.types import BufferedInputFile
 
     with _fase(f"fetch DOU {target_date.isoformat()}"):
-        lista = await fetch_mps(target_date)
-    if apenas_completo and (
-        getattr(lista, "incompleto", False) or getattr(lista, "provisorio", False)
-    ):
-        secoes = (
-            tuple(getattr(lista, "secoes_falhas", ()))
-            + tuple(getattr(lista, "secoes_404", ()))
-        )
-        raise DouError(
-            f"DOU de {target_date.isoformat()} ainda incompleto "
-            f"(seção(ões) {', '.join(secoes) or '?'}) — sem entrega parcial."
-        )
-    mps: list[dict] = lista
+        mps = await fetch_mps(target_date)
     if only_numeros:
         alvo = set(only_numeros)
         mps = [mp for mp in mps if mp["numero"] in alvo]
@@ -1325,10 +1304,7 @@ async def deliver_to_user(
     else:
         novas = await filter_unseen(session, user.id, mps)
     if not novas:
-        # Mesmo formato do retorno final: o caminho vazio devolvia `0` e os
-        # callers desempacotam tupla — todo dia sem MP estourava TypeError (e
-        # na fila a entrada nunca recebia baixa por esse caminho).
-        return 0, [], lista
+        return 0
 
     # set de já-vistas pra não duplicar linhas no banco quando force=True.
     rows = await session.scalars(select(DouSeenMP).where(DouSeenMP.user_id == user.id))
@@ -1421,10 +1397,8 @@ async def deliver_to_user(
             falhas.append(mp["numero"])
 
     await _fechar_outbox(session, user.id, target_date, chave_outbox, falhas)
-    # Devolve (entregues, falhas, lista). O caller da FILA
-    # (_entregar_nota_pendente) precisa do `falhas` pra NÃO dar baixa na
-    # pendência quando a nota falhou — sem isso a entrada some da fila e a
-    # nota nunca mais é re-tentada, sem nem o aviso de desistência (o pior
-    # modo de falha do projeto). E precisa da `lista` (flags de completude)
-    # pra não dar baixa sobre fetch parcial.
-    return len(avisadas), falhas, lista
+    # Devolve (entregues, falhas). O caller da FILA (_entregar_nota_pendente)
+    # precisa do `falhas` pra NÃO dar baixa na pendência quando a nota falhou —
+    # sem isso a entrada some da fila e a nota nunca mais é re-tentada, sem nem
+    # o aviso de desistência (o pior modo de falha do projeto).
+    return len(avisadas), falhas

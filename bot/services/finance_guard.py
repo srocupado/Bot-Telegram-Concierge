@@ -40,10 +40,7 @@ _QUERY_CUES = (
 _SUCCESS_CLAIMS = (
     "lançad", "lancad", "lancei", "lançei", "registrad", "registrei",
     "registrado", "anotad", "anotei", "adicionad", "adicionei", "feito",
-    # "gravad" (radical) cobre gravado/gravada/gravadas; a lista antiga tinha o
-    # typo "gravd" (cue morto) e só "gravado" — "Despesa gravada!" alucinada
-    # passava pela blindagem.
-    "inseri", "salvo", "salvei", "gravad", "gravei",
+    "inseri", "salvo", "salvei", "gravd", "gravado", "gravei",
 )
 
 _VALUE_RE = re.compile(r"(r\$\s*)?\d", re.IGNORECASE)

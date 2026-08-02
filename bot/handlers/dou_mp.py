@@ -106,7 +106,7 @@ async def _rodar_nota(
         if user is None or not user.is_authorized:
             return
         try:
-            n, _falhas, lista = await deliver_to_user(
+            n, _falhas = await deliver_to_user(
                 bot, session, user, target, force=True, only_numeros=only_numeros,
             )
         except DouError as e:
@@ -127,33 +127,10 @@ async def _rodar_nota(
                 user.id, "⚠️ Erro ao gerar a nota técnica.", parse_mode=None,
             )
             return
-        # Fetch PARCIAL não pode passar por "dia checado": a seção que falhou
-        # (ou que ainda não saiu) pode ser justamente a da MP. Sem este aviso,
-        # o dono concluía "sem MP além dessas" com evidência incompleta.
-        incompleto = getattr(lista, "incompleto", False)
-        provisorio = getattr(lista, "provisorio", False)
-        if incompleto:
-            secoes = ", ".join(getattr(lista, "secoes_falhas", ())) or "?"
-            await bot.send_message(
-                user.id,
-                f"⚠️ Atenção: a(s) seção(ões) {secoes} do DOU falharam — a "
-                "lista acima pode estar INCOMPLETA. Re-cheque mais tarde com "
-                f"/mp_dou_agora {target.strftime('%d/%m/%Y')}.",
-                parse_mode=None,
-            )
         if n == 0:
-            if provisorio:
-                await bot.send_message(
-                    user.id,
-                    "Nenhuma MP encontrada até agora — mas o dia ainda está "
-                    "aberto (edição extra pode sair mais tarde). Re-cheque com "
-                    f"/mp_dou_agora {target.strftime('%d/%m/%Y')}.",
-                    parse_mode=None,
-                )
-            elif not incompleto:
-                await bot.send_message(
-                    user.id, "Nenhuma MP encontrada nessa data.", parse_mode=None,
-                )
+            await bot.send_message(
+                user.id, "Nenhuma MP encontrada nessa data.", parse_mode=None,
+            )
 
 
 # A chave vive no serviço porque o proativo também dispara esse job: os dois

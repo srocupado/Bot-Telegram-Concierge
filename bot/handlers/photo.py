@@ -104,24 +104,11 @@ async def cmd_photo(message: Message, user: User, session: AsyncSession) -> None
         )
         logger.info("photo analyzed", extra={"reply_len": len(reply or "")})
     except asyncio.TimeoutError:
-        # O timeout cancela DEPOIS que uma tool pode ter gravado (lembrete do
-        # boleto, lançamento da nota): "tenta de novo" seco induzia reenvio e
-        # duplicava o registro — o modo de falha que o deliver_llm_reply
-        # corrigiu, reintroduzido só neste handler. Avisa pra conferir antes.
         logger.warning("photo chat timed out (provider=%s)", vision_provider_name)
-        aviso = f"⚠️ A análise da imagem demorou demais ({vision_provider_name})."
-        if ctx.financial_logged_ok:
-            aviso += (
-                "\nATENÇÃO: um lançamento financeiro JÁ FOI gravado nesta "
-                "análise — confira os lançamentos antes de reenviar a foto "
-                "(reenviar pode duplicar)."
-            )
-        else:
-            aviso += (
-                "\nAlgo pode já ter sido registrado antes do corte (lembrete, "
-                "lançamento) — confira antes de reenviar."
-            )
-        await message.answer(aviso, parse_mode=None)
+        await message.answer(
+            f"⚠️ A análise da imagem demorou demais ({vision_provider_name}). Tenta de novo.",
+            parse_mode=None,
+        )
         return
     except Exception as e:
         logger.exception("photo chat failed")

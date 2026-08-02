@@ -266,13 +266,8 @@ def _norm_hotel_name(s: str) -> str:
 
 
 def hotel_name_matches(wanted: str, actual: str | None) -> bool:
-    """True se todos os tokens ≥3 do nome pedido aparecem no nome retornado.
-
-    Nome SÓ de tokens curtos ("JW", "Yoo2"): usa os tokens que houver — antes
-    a lista ficava vazia e o hotel nunca casava, então a vigia nomeada desses
-    hotéis tratava sistematicamente o resultado como "outro hotel"."""
-    todos = _norm_hotel_name(wanted).split()
-    toks = [t for t in todos if len(t) >= 3] or todos
+    """True se todos os tokens ≥3 do nome pedido aparecem no nome retornado."""
+    toks = [t for t in _norm_hotel_name(wanted).split() if len(t) >= 3]
     return bool(toks) and all(t in _norm_hotel_name(actual or "") for t in toks)
 
 

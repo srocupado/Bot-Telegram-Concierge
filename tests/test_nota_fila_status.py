@@ -71,11 +71,10 @@ def _linhas(monkeypatch, datas, com_job=None):
                            dou_ultimo_dia_ok=date.today() - timedelta(days=1))
 
     async def _main():
-        # scalars é chamado 3x: avisos de lacuna pendentes (mp_lacuna_pend),
-        # pendências da retroativa e, depois, a fila de notas. Ordem errada
-        # aqui devolvia lista vazia e os testes falhavam sem relação com o
-        # que testam.
-        session = _FakeSession([], [], rows)
+        # scalars é chamado 2x: pendências da retroativa e, depois, a fila
+        # de notas. Ordem errada aqui devolvia lista vazia e os testes
+        # falhavam sem relação com o que testam.
+        session = _FakeSession([], rows)
         facts = await proactive.collect_mp(session, user, [])
         return [f.text for f in facts if f.kind == "nota_fila"]
 

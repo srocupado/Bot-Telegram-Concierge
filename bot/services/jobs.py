@@ -63,15 +63,6 @@ def spawn(chave: str, fabrica: Callable[[], Awaitable[None]]) -> bool:
 
     task = asyncio.get_running_loop().create_task(_wrapper(), name=f"job:{chave}")
     _jobs[chave] = task
-
-    def _limpar(t: asyncio.Task, chave: str = chave) -> None:
-        # Pop CONDICIONAL à identidade: o done-callback roda via call_soon, e
-        # um spawn da mesma chave pode ter registrado um job NOVO nesse meio
-        # tempo — o pop incondicional removia o novo (quebrando o dedup e a
-        # referência forte que evita GC da task no meio).
-        if _jobs.get(chave) is t:
-            _jobs.pop(chave, None)
-
-    task.add_done_callback(_limpar)
+    task.add_done_callback(lambda t: _jobs.pop(chave, None))
     logger.info("job %s iniciado (%d ativo(s))", chave, len(jobs_ativos()))
     return True

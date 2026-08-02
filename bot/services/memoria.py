@@ -221,13 +221,6 @@ def _provider_do_resumo(user):
 _falhas_compact: dict[int, int] = {}
 _FALHAS_ALERTA = 3
 
-# Serialização POR USUÁRIO da compactação: duas compactações concorrentes
-# (overflow do append + expiração de TTL, ambos via _spawn) liam o MESMO
-# resumo antigo e a segunda a commitar sobrescrevia o da primeira — perda
-# silenciosa de memória de longo prazo. Com o lock, a segunda relê o resumo
-# já atualizado e incorpora em cima.
-_compact_locks: dict[int, asyncio.Lock] = {}
-
 
 async def _compact(user_id: int, msgs: list[ChatMessage]) -> None:
     """Funde mensagens que saíram do contexto no resumo rolante do usuário.
@@ -236,9 +229,37 @@ async def _compact(user_id: int, msgs: list[ChatMessage]) -> None:
     _provider_do_resumo). Se a chamada falhar, o resumo anterior fica."""
     assert _sessionmaker is not None
     try:
-        async with _compact_locks.setdefault(user_id, asyncio.Lock()):
-            await _compact_serializado(user_id, msgs)
+        async with _sessionmaker() as session:
+            row = await session.get(ChatSummary, user_id)
+            old = row.summary if row else "(vazio)"
+            user = await session.get(User, user_id)
+        if user is None:
+            return
+        provider = _provider_do_resumo(user)
+        today = datetime.now(timezone.utc).strftime("%d/%m/%Y")
+        prompt = (
+            f"RESUMO ATUAL:\n{old}\n\n"
+            f"NOVOS TRECHOS DA CONVERSA ({today}):\n{_transcript(msgs)}\n\n"
+            "Atualize o resumo incorporando o que for duradouro dos novos "
+            "trechos. Não duplique; preserve itens antigos ainda relevantes; "
+            "remova o que ficou obsoleto."
+        )
+        new = await provider.chat(
+            [{"role": "user", "content": prompt}],
+            system=_SUMMARY_SYSTEM, max_tokens=700,
+        )
+        new = (new or "").strip()[: SUMMARY_MAX_CHARS + 200]
+        if not new:
+            return
+        async with _sessionmaker() as session:
+            row = await session.get(ChatSummary, user_id)
+            if row is None:
+                session.add(ChatSummary(user_id=user_id, summary=new))
+            else:
+                row.summary = new
+            await session.commit()
         _falhas_compact.pop(user_id, None)
+        logger.info("memoria: resumo atualizado pra user %d (%d chars)", user_id, len(new))
     except Exception:
         n = _falhas_compact.get(user_id, 0) + 1
         _falhas_compact[user_id] = n
@@ -248,42 +269,6 @@ async def _compact(user_id: int, msgs: list[ChatMessage]) -> None:
             "longo prazo está CONGELADO (resumo antigo mantido)",
             n, user_id, exc_info=True,
         )
-
-
-async def _compact_serializado(user_id: int, msgs: list[ChatMessage]) -> None:
-    """Corpo da compactação; sempre chamada sob o lock do usuário (_compact).
-    O `old` é relido AQUI, já dentro do lock — é isso que garante que a
-    segunda compactação incorpora o resultado da primeira em vez de sobrescrever."""
-    async with _sessionmaker() as session:
-        row = await session.get(ChatSummary, user_id)
-        old = row.summary if row else "(vazio)"
-        user = await session.get(User, user_id)
-    if user is None:
-        return
-    provider = _provider_do_resumo(user)
-    today = datetime.now(timezone.utc).strftime("%d/%m/%Y")
-    prompt = (
-        f"RESUMO ATUAL:\n{old}\n\n"
-        f"NOVOS TRECHOS DA CONVERSA ({today}):\n{_transcript(msgs)}\n\n"
-        "Atualize o resumo incorporando o que for duradouro dos novos "
-        "trechos. Não duplique; preserve itens antigos ainda relevantes; "
-        "remova o que ficou obsoleto."
-    )
-    new = await provider.chat(
-        [{"role": "user", "content": prompt}],
-        system=_SUMMARY_SYSTEM, max_tokens=700,
-    )
-    new = (new or "").strip()[: SUMMARY_MAX_CHARS + 200]
-    if not new:
-        return
-    async with _sessionmaker() as session:
-        row = await session.get(ChatSummary, user_id)
-        if row is None:
-            session.add(ChatSummary(user_id=user_id, summary=new))
-        else:
-            row.summary = new
-        await session.commit()
-    logger.info("memoria: resumo atualizado pra user %d (%d chars)", user_id, len(new))
 
 
 async def get_summary(session: AsyncSession, user_id: int) -> str | None:

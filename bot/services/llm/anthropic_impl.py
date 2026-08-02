@@ -159,26 +159,9 @@ class AnthropicProvider(LLMProvider):
             resp = await asyncio.to_thread(_call)
             _log_usage("chat_with_tools", resp)
 
-            if resp.stop_reason == "pause_turn":
-                # Web search server-side pode PAUSAR o turno no meio
-                # (stop_reason="pause_turn"). Tratar como resposta final
-                # entregava texto truncado — ou vazio — sem nenhum erro.
-                # Reenvia o conteúdo pausado pra API continuar de onde parou.
-                anth_messages.append(
-                    {"role": "assistant",
-                     "content": [b.model_dump() for b in resp.content]}
-                )
-                continue
-
             if resp.stop_reason != "tool_use":
                 parts = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
-                texto = "".join(parts).strip()
-                if resp.stop_reason == "max_tokens" and texto:
-                    # Corte por teto de tokens não pode passar por resposta
-                    # completa — o usuário lia um texto interrompido no meio
-                    # sem saber que faltava o resto.
-                    texto += "\n\n⚠️ (resposta cortada pelo limite de tamanho)"
-                return texto
+                return "".join(parts).strip()
 
             # Anexa a resposta do assistant (com blocos tool_use) e executa cada tool.
             anth_messages.append({"role": "assistant", "content": [b.model_dump() for b in resp.content]})

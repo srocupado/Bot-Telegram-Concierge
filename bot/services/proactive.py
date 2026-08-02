@@ -184,20 +184,11 @@ async def _entregar_nota_pendente(
         # Usuário recarregado NA SESSÃO DO JOB: o objeto do tick pertence a uma
         # sessão que já fechou, e ORM de sessão morta estoura DetachedInstance.
         user = await session.get(User, user_id)
-        # Sem exigir dou_mp_subscribed: a entrada da fila nasce de um pedido
-        # EXPLÍCITO (/mp_dou_agora) que o bot prometeu cumprir — exigir a
-        # assinatura do monitor aqui tornava a promessa impossível pra quem
-        # não assina, sem aviso nenhum.
-        if user is None or not user.is_authorized:
+        if user is None or not user.is_authorized or not user.dou_mp_subscribed:
             return
         try:
-            # Entrada "all" (sem números): exige fetch COMPLETO — entrega
-            # parcial + baixa esconderia a MP da seção que falhou, e entrega
-            # parcial SEM baixa duplicaria tudo (force=True) a cada janela.
-            # Fetch parcial vira DouError e a entrada espera a próxima janela.
-            _entregues, falhas, lista = await deliver_to_user(
+            _entregues, falhas = await deliver_to_user(
                 bot, session, user, d, force=True, only_numeros=numeros,
-                apenas_completo=numeros is None,
             )
         except DouError as e:
             logger.warning("nota pendente %s: Inlabs ainda fora (%s)", key, e)
@@ -213,50 +204,6 @@ async def _entregar_nota_pendente(
             logger.warning("nota pendente %s: %d nota(s) falharam — mantida na fila",
                            key, len(falhas))
             return
-        if numeros:
-            # Entrada de MPs específicas: baixa só quando TODAS apareceram no
-            # fetch e foram entregues. Antes, um fetch sem a MP (seção fora ou
-            # dia enfileirado errado) devolvia falhas=[] e a baixa apagava a
-            # promessa em silêncio.
-            presentes = {mp["numero"] for mp in lista}
-            faltando = [n for n in numeros if n not in presentes]
-            parcial = getattr(lista, "incompleto", False) or getattr(
-                lista, "provisorio", False
-            )
-            if faltando and parcial:
-                logger.warning(
-                    "nota pendente %s: MP(s) %s ausentes num fetch PARCIAL — "
-                    "mantida na fila", key, faltando,
-                )
-                return
-            if faltando:
-                # Dia completo e a MP não está nele: re-tentar é inútil.
-                # Desistir exige aviso — e a baixa só sai se o aviso chegou.
-                try:
-                    await bot.send_message(
-                        user_id,
-                        f"⚠️ Não vou conseguir gerar a nota de "
-                        f"{', '.join('MP ' + n for n in faltando)}: o DOU de "
-                        f"{d.strftime('%d/%m/%Y')} está completo e essa(s) MP(s) "
-                        "não constam nele. Se o número estiver certo, confira a "
-                        f"data com /mp_dou_agora.",
-                        parse_mode=None,
-                    )
-                except Exception:
-                    logger.exception(
-                        "nota pendente %s: aviso de desistência falhou — "
-                        "mantida na fila", key,
-                    )
-                    return
-                await unmark_notified(session, user_id, "nota_pendente", key)
-                return
-            if _entregues < len(numeros):
-                # MP presente mas o AVISO dela falhou no envio — sem baixa.
-                logger.warning(
-                    "nota pendente %s: %d/%d avisos enviados — mantida na fila",
-                    key, _entregues, len(numeros),
-                )
-                return
         await unmark_notified(session, user_id, "nota_pendente", key)
         logger.info("nota pendente %s entregue", key)
 
@@ -295,17 +242,14 @@ async def _processar_notas_pendentes(
             continue
         if (hoje - d).days > _NOTA_PENDENTE_EXPIRA_DIAS:
             # Desistir em silêncio contradiz o que o bot prometeu ("te envio
-            # automaticamente"). Avisa antes de largar — e a baixa só sai se o
-            # aviso CHEGOU: com a ordem invertida, uma falha de envio apagava
-            # a entrada e a desistência ficava muda pra sempre.
-            sent = await _send(bot, user.id, (
+            # automaticamente"). Avisa antes de largar.
+            await unmark_notified(session, user.id, "nota_pendente", r.key)
+            await _send(bot, user.id, (
                 f"⚠️ Desisti da nota técnica de {d.strftime('%d/%m')} — "
                 f"{_NOTA_PENDENTE_EXPIRA_DIAS} dias sem conseguir acessar o "
                 "Inlabs. Se ainda quiser, peça de novo com "
                 f"/mp_dou_agora {d.strftime('%d/%m/%Y')}."
             ))
-            if sent:
-                await unmark_notified(session, user.id, "nota_pendente", r.key)
             continue
         numeros = [n for n in nums.split(",") if n and n != "all"] or None
         fila.append((d, numeros, r.key))
@@ -353,10 +297,7 @@ async def _mp_dias_pendentes(
             await unmark_notified(session, user_id, "mp_pendente", r.key)
             continue
         if (hoje - d).days > _MP_RETRO_EXPIRA_DIAS:
-            # SEM baixa aqui: a pendência só sai do banco depois que o aviso
-            # de desistência foi ENVIADO (run_for_user pós-envio, como o
-            # mp_retro). Baixar antes fazia o dia sumir da fila em silêncio
-            # quando o envio da janela falhava — o aviso nunca se regenerava.
+            await unmark_notified(session, user_id, "mp_pendente", r.key)
             if desistidos is not None:
                 desistidos.append(d)
             continue
@@ -406,31 +347,6 @@ def _data_da_chave(key: str) -> date | None:
         return None
 
 
-def _fact_lacuna(key: str) -> ProactiveFact | None:
-    """Reconstrói o aviso de lacuna a partir da chave
-    "lacuna:AAAA-MM-DD:AAAA-MM-DD" — usada tanto na criação quanto na
-    regeneração pós-falha de envio (mp_lacuna_pend)."""
-    try:
-        _, ini_s, fim_s = key.split(":", 2)
-        ini, fim = date.fromisoformat(ini_s), date.fromisoformat(fim_s)
-    except ValueError:
-        return None
-    n_dias = (fim - ini).days + 1
-    periodo = (
-        ini.strftime("%d/%m") if n_dias == 1
-        else f"{ini.strftime('%d/%m')} a {fim.strftime('%d/%m')}"
-    )
-    return ProactiveFact(
-        "mp", "mp_lacuna", key,
-        f"⚠️ <b>Fiquei sem checar o DOU</b> de {periodo} "
-        f"({n_dias} dia(s)) — passou dos {_MP_RETRO_EXPIRA_DIAS} "
-        "dias da re-checagem automática. Esses dias NÃO foram "
-        "verificados; se precisar, rode "
-        f"<code>/mp_dou_agora {ini.strftime('%d/%m/%Y')}</code>.",
-        date_iso=None,
-    )
-
-
 async def _cobrir_lacuna(
     session: AsyncSession, user: User, hoje: date,
 ) -> list[ProactiveFact]:
@@ -445,30 +361,6 @@ async def _cobrir_lacuna(
     A marca d'água (`dou_ultimo_dia_ok`) fecha isso: tudo entre ela e ontem
     que não foi checado entra na fila retroativa.
     """
-    # Avisos de lacuna de janelas anteriores que AINDA NÃO chegaram: o fact é
-    # regenerado a cada janela a partir do registro persistente
-    # (mp_lacuna_pend) até o envio dar baixa (run_for_user pós-envio). Antes,
-    # a marca d'água avançava junto com a criação do fact e, se o envio da
-    # janela falhasse, a lacuna nunca mais era recomputada — dias sem
-    # verificação sumiam sem aviso, pra sempre.
-    reenvio: list[ProactiveFact] = []
-    pend_rows = list(await session.scalars(
-        select(ProactiveNotice).where(
-            ProactiveNotice.user_id == user.id,
-            ProactiveNotice.kind == "mp_lacuna_pend",
-        )
-    ))
-    for r in pend_rows:
-        if await already_notified(session, user.id, "mp_lacuna", r.key):
-            # Entregue numa janela anterior — só faltava a baixa do pend.
-            await unmark_notified(session, user.id, "mp_lacuna_pend", r.key)
-            continue
-        fact = _fact_lacuna(r.key)
-        if fact is None:
-            await unmark_notified(session, user.id, "mp_lacuna_pend", r.key)
-            continue
-        reenvio.append(fact)
-
     marca = user.dou_ultimo_dia_ok
     if marca is None:
         # Primeira janela com a coluna: adota ontem, sem varrer o passado.
@@ -476,12 +368,12 @@ async def _cobrir_lacuna(
         # inundaria o dono de avisos sobre dias que ele nunca esperou.
         user.dou_ultimo_dia_ok = hoje - timedelta(days=1)
         await session.commit()
-        return reenvio
+        return []
 
     # Hoje fica de fora: está sendo checado nesta janela.
     lacuna = [marca + timedelta(days=i) for i in range(1, (hoje - marca).days)]
     if not lacuna:
-        return reenvio
+        return []
 
     limite = hoje - timedelta(days=_MP_RETRO_EXPIRA_DIAS)
     for d in (d for d in lacuna if d >= limite):
@@ -493,22 +385,27 @@ async def _cobrir_lacuna(
     # Dia velho demais pra retroativa NÃO pode sumir calado — é justamente o
     # caso em que o bot ficou fora por muito tempo e mais provavelmente perdeu
     # MP. Avisa uma vez, com as datas, e diz o que fazer.
-    facts: list[ProactiveFact] = list(reenvio)
+    facts: list[ProactiveFact] = []
     velhos = [d for d in lacuna if d < limite]
     if velhos:
         key = f"lacuna:{velhos[0].isoformat()}:{velhos[-1].isoformat()}"
         if not await already_notified(session, user.id, "mp_lacuna", key):
-            fact = _fact_lacuna(key)
-            if fact is not None:
-                # Registro persistente ANTES do envio (padrão outbox): se o
-                # envio desta janela falhar, o fact é regenerado daqui na
-                # próxima — a baixa só sai com o aviso entregue.
-                if not await already_notified(session, user.id, "mp_lacuna_pend", key):
-                    await mark_notified(session, user.id, "mp_lacuna_pend", key)
-                facts.append(fact)
+            periodo = (
+                velhos[0].strftime("%d/%m") if len(velhos) == 1
+                else f"{velhos[0].strftime('%d/%m')} a {velhos[-1].strftime('%d/%m')}"
+            )
+            facts.append(ProactiveFact(
+                "mp", "mp_lacuna", key,
+                f"⚠️ <b>Fiquei sem checar o DOU</b> de {periodo} "
+                f"({len(velhos)} dia(s)) — passou dos {_MP_RETRO_EXPIRA_DIAS} "
+                "dias da re-checagem automática. Esses dias NÃO foram "
+                "verificados; se precisar, rode "
+                f"<code>/mp_dou_agora {velhos[0].strftime('%d/%m/%Y')}</code>.",
+                date_iso=None,
+            ))
 
-    # A lacuna está contabilizada (na fila, avisada ou registrada em
-    # mp_lacuna_pend): a marca avança pra não re-enfileirar tudo na próxima.
+    # A lacuna está contabilizada (na fila ou avisada): a marca avança pra não
+    # re-enfileirar tudo na próxima janela.
     user.dou_ultimo_dia_ok = hoje - timedelta(days=1)
     await session.commit()
     return facts
@@ -1103,18 +1000,6 @@ async def run_for_user(
     today = now_brt.date()
     mp_dates = [today - timedelta(days=1), today] if briefing else [today]
 
-    if not getattr(user, "proactive_enabled", True) and not force:
-        # Usuário com proativo DESLIGADO só chega aqui porque tem nota na fila
-        # (a query do scheduler o inclui por isso): honra a promessa do
-        # /mp_dou_agora processando a fila, sem nenhum outro proativo.
-        try:
-            await _processar_notas_pendentes(bot, session, user)
-        except Exception:
-            logger.exception(
-                "proactive: fila de notas pendentes falhou p/ user %s", user.id
-            )
-        return False
-
     # Trava de nível-janela: roda 1x por (janela, dia, hora). Sem isso, como o
     # tick é de ~20s e a janela é minute<=1, rodaria ~5x — refazendo fetch de
     # DOU/coletas à toa. Marca já na entrada (mesmo que dê "sem fatos") pra os
@@ -1154,16 +1039,13 @@ async def run_for_user(
     # status `nota_fila`, que mantinha `facts` não-vazio — acoplamento, não
     # desenho: silenciar aquela linha um dia mataria a re-tentativa EM
     # SILÊNCIO, com o bot tendo prometido "te envio automaticamente".
-    # Sem gate de dou_mp_subscribed: a fila só tem entradas que o PRÓPRIO
-    # usuário criou (/mp_dou_agora com Inlabs fora) — condicionar a re-tentativa
-    # à assinatura do monitor quebrava a promessa "te envio automaticamente"
-    # pra quem não assina.
-    try:
-        disparadas = await _processar_notas_pendentes(bot, session, user)
-    except Exception:
-        logger.exception("proactive: fila de notas pendentes falhou p/ user %s", user.id)
-        disparadas = []
-    _marcar_geradas_agora(facts, disparadas)
+    if user.dou_mp_subscribed:
+        try:
+            disparadas = await _processar_notas_pendentes(bot, session, user)
+        except Exception:
+            logger.exception("proactive: fila de notas pendentes falhou p/ user %s", user.id)
+            disparadas = []
+        _marcar_geradas_agora(facts, disparadas)
 
     if not facts:
         logger.info("proactive: user %d window=%s sem fatos", user.id, window)
@@ -1202,16 +1084,6 @@ async def run_for_user(
                 await unmark_notified(
                     session, user.id, "mp_pendente", f.key.removeprefix("retro:"),
                 )
-            # Desistência ENTREGUE → aí sim a pendência expira do banco (a
-            # geração do aviso não baixa mais; ver _mp_dias_pendentes).
-            if f.kind == "mp_desisti":
-                await unmark_notified(
-                    session, user.id, "mp_pendente", f.key.removeprefix("desisti:"),
-                )
-            # Aviso de lacuna ENTREGUE → baixa o registro persistente que o
-            # regenera a cada janela (ver _cobrir_lacuna).
-            if f.kind == "mp_lacuna":
-                await unmark_notified(session, user.id, "mp_lacuna_pend", f.key)
             # Daqui pra baixo é DEDUP de aviso, e o force pula de propósito:
             # execução de teste não pode silenciar a janela real.
             if force:
