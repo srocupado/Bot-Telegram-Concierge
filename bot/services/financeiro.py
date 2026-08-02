@@ -1969,27 +1969,32 @@ async def analisar_gastos(
                 info = _entry_in_bill(it, y, m, closing)
                 if not info:
                     continue
-                # Data do EVENTO: a da compra quando ela cai no intervalo
-                # pedido; senão, a parcela é atribuída ao mês da fatura. Antes
-                # tudo virava date(y, m, 1) e o mês-fatura INTEIRO entrava —
-                # "quanto gastei essa semana" devolvia a fatura do mês toda, e
-                # o agrupamento por semana jogava o cartão todo na semana do
-                # dia 1º.
+                # TODA ocorrência de fatura do período conta, exatamente uma
+                # vez. Âncora do evento: a data da compra quando (a) esta é a
+                # fatura DA PRÓPRIA compra e (b) ela cai no intervalo pedido;
+                # senão, o 1º dia do mês da fatura.
+                #
+                # Duas regras antigas erravam aqui: (1) compra à vista/
+                # recorrente cuja fatura ≠ mês da compra caía num `continue` e
+                # sumia de TODA consulta de mês único (com fechamento dia 10,
+                # ~2/3 das compras do mês — falso negativo silencioso);
+                # (2) parcelas 2..N eram ancoradas na data da compra sempre
+                # que ela caísse no intervalo, então "evolução mês a mês"
+                # jogava o parcelamento inteiro no mês da compra.
                 try:
                     d_compra = date.fromisoformat(
                         (it.get("date") or "").replace(" ", "T")[:10]
                     )
                 except ValueError:
                     d_compra = None
-                if d_compra and inicio <= d_compra <= fim:
+                propria_fatura = (
+                    d_compra is not None
+                    and _bill_month_for_date(d_compra, closing) == (y, m)
+                )
+                if propria_fatura and inicio <= d_compra <= fim:
                     quando = d_compra
-                elif d_compra and int(info.get("total") or 1) > 1:
-                    # Parcela de compra ANTIGA que cai numa fatura do período:
-                    # conta, ancorada no 1º dia do mês da fatura.
-                    quando = date(y, m, 1)
                 else:
-                    # Compra à vista fora do intervalo de dias — não conta.
-                    continue
+                    quando = date(y, m, 1)
                 events.append((quando, it.get("category") or "outros", float(info["value"])))
 
     if not events:

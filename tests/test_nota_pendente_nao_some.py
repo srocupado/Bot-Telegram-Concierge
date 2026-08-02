@@ -10,8 +10,9 @@ entrada sumia, a nota nunca mais era re-tentada e o aviso de desistência (14
 dias) nunca disparava. O pior modo de falha do projeto (perda silenciosa),
 justamente na área que o commit do outbox dizia ter blindado.
 
-Agora `deliver_to_user` devolve `(entregues, falhas)` e a baixa só ocorre com
-`falhas == []`.
+Agora `deliver_to_user` devolve `(entregues, falhas, lista)` e a baixa só
+ocorre com `falhas == []` E todos os números pedidos presentes num fetch
+completo.
 """
 from __future__ import annotations
 
@@ -56,10 +57,13 @@ def espiao(monkeypatch):
 
 
 def _entregar(monkeypatch, *, falhas):
-    async def _deliver(bot, session, user, d, *, force, only_numeros):
-        return (1, list(falhas))
-
     from bot.services import dou_monitor
+
+    async def _deliver(bot, session, user, d, *, force, only_numeros,
+                       apenas_completo=False):
+        lista = dou_monitor.MPList([{"numero": "1381", "ano": 2026}])
+        return (1, list(falhas), lista)
+
     monkeypatch.setattr(dou_monitor, "deliver_to_user", _deliver)
     asyncio.run(proactive._entregar_nota_pendente(None, 42, D, ["1381"], KEY))
 

@@ -111,6 +111,7 @@ HELP_TEXT = (
     "• <i>\"lança 250 no cartão de crédito, mercado, hoje\"</i> → cria compra no cartão.\n"
     "• <i>\"paguei conta de luz 180\"</i> / <i>\"recebi 5 mil de salário\"</i> → lançamento no banco.\n"
     "• <i>\"aportei 1000 no Tesouro IPCA+ 2035\"</i> → contribuição em título existente.\n"
+    "• <i>\"comprei 10 HGLG11 a 168,50\"</i> / <i>\"vendi 50 ITUB4 a 32,10\"</i> → registra compra/venda de ativo (ações, FIIs, ETFs, renda fixa, fundos, cripto) na carteira de investimentos.\n"
     "• <i>\"como tá meu cartão esse mês?\"</i> → consulta os últimos lançamentos.\n"
     "• <i>\"qual meu saldo?\"</i> / <i>\"quanto tá a fatura em aberto?\"</i> → saldo bancário atual e total da fatura do ciclo.\n\n"
     "<b>Análise de gastos</b>:\n"
@@ -281,6 +282,26 @@ _HELP_KEYWORDS: dict[str, str] = {
     "aporte": "gerenciador financeiro", "investimento": "gerenciador financeiro",
     "gasto": "analise de gastos", "gastos": "analise de gastos",
     "saldo": "gerenciador financeiro", "extrato": "gerenciador financeiro",
+    # investimentos (registrar_operacao_ativo)
+    "ativo": "gerenciador financeiro", "ativos": "gerenciador financeiro",
+    "ticker": "gerenciador financeiro", "carteira": "gerenciador financeiro",
+    "comprei": "gerenciador financeiro", "vendi": "gerenciador financeiro",
+    "lancamento": "gerenciador financeiro", "lancamentos": "gerenciador financeiro",
+    "compra de acoes": "gerenciador financeiro",
+    "comprar acoes": "gerenciador financeiro",
+    "compra de ativos": "gerenciador financeiro",
+    # desfazer (desfazer_ultima_acao)
+    "desfaz": "desfazer", "desfazer": "desfazer", "desfiz": "desfazer",
+    "desfaco": "desfazer", "desfez": "desfazer", "desfazendo": "desfazer",
+    "errei": "desfazer", "cancela": "desfazer", "cancelar": "desfazer",
+    "desfaca": "desfazer", "undo": "desfazer",
+    # agendamento recorrente (agendar_comando / criar_lembrete_recorrente)
+    "recorrente": "agendamento recorrente", "recorrencia": "agendamento recorrente",
+    "agendar": "agendamento recorrente", "agenda": "agendamento recorrente",
+    "agendado": "agendamento recorrente", "agendamento": "agendamento recorrente",
+    "todo dia": "agendamento recorrente", "toda semana": "agendamento recorrente",
+    "todos os dias": "agendamento recorrente", "cron": "agendamento recorrente",
+    "repetir": "agendamento recorrente", "repete": "agendamento recorrente",
     # câmara — comissões/pautas (consultar_pauta_camara / varrer_comissoes_partido)
     "comissao": "camara", "comissoes": "camara", "camara": "camara",
     "deliberativa": "camara", "relatoria": "camara", "autoria": "camara",

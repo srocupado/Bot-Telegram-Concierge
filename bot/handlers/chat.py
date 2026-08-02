@@ -140,6 +140,12 @@ async def deliver_llm_reply(
     # um texto pronto, usa ele em vez de "(sem resposta)".
     if not (reply or "").strip() and ctx.fallback_text:
         reply = ctx.fallback_text
+    if not (reply or "").strip():
+        # NUNCA gravar turno assistant vazio: a API da Anthropic rejeita
+        # content vazio com 400, então uma resposta vazia na memória fazia
+        # TODO chat seguinte falhar até o TTL de 30 min expirar (ou /reset).
+        # Grava o mesmo placeholder que o usuário vê.
+        reply = "(sem resposta)"
 
     memory.append(chat_id, "user", para_memoria)
     memory.append(chat_id, "assistant", reply)

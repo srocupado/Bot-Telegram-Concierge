@@ -165,7 +165,20 @@ async def on_document(message: Message, user: User, session: AsyncSession) -> No
     if awaiting is None:
         raise SkipHandler
     if datetime.now(timezone.utc) > awaiting:
-        raise SkipHandler  # janela expirou — ignora silenciosamente
+        # Janela expirou DEPOIS de um /financeiro_setup: este JSON é a
+        # credencial que o dono acabou de baixar. Ignorar em silêncio deixava
+        # o arquivo (uma private key!) escorrer pros handlers genéricos de
+        # documento — podendo ir parar no LLM — e o dono achando que a
+        # rotação foi feita. Consome o update, avisa e limpa a janela.
+        user.awaiting_firebase_json_until = None
+        await session.commit()
+        await message.answer(
+            "⚠️ A janela do /financeiro_setup expirou (5 min) — este JSON "
+            "NÃO foi salvo e a credencial antiga continua ativa. Rode "
+            "/financeiro_setup de novo e reenvie o arquivo.",
+            parse_mode=None,
+        )
+        return
 
     doc = message.document
     if (doc.file_size or 0) > MAX_JSON_BYTES:
