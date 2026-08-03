@@ -236,11 +236,13 @@ async def _entregar_nota_pendente(
             # O Inlabs respondeu (não é fila/manutenção), mas não veio MP.
             # Distinguir o desfecho — senão a linha "gerando ... todas as MPs"
             # fica prometendo uma nota que não existe num dia sem Diário.
-            if motivo == "provisorio":
-                # Dia ainda em aberto (ex.: pediram HOJE e a edição pode sair à
-                # noite): NÃO limpa — fica na fila pra re-checar quando fechar.
-                # Silêncio: não há nada iminente a prometer.
-                logger.info("nota pendente %s: dia em aberto, mantida na fila", key)
+            if motivo in ("provisorio", "sem_mp_extra"):
+                # Dia ainda em aberto — nada saiu ainda (provisorio) ou a edição
+                # normal saiu sem MP mas a extra pode vir (sem_mp_extra). NÃO
+                # limpa: fica na fila pra re-checar quando fechar. Silêncio: não
+                # há nada iminente a prometer.
+                logger.info("nota pendente %s: dia em aberto (%s), mantida na fila",
+                            key, motivo)
                 return
             if motivo in ("sem_edicao", "sem_mp"):
                 # Desfecho DEFINITIVO sem MP: tira da fila e DIZ o que houve —

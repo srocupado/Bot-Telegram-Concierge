@@ -116,10 +116,24 @@ def test_motivo_sem_mp(monkeypatch) -> None:
     assert _deliver_motivo(monkeypatch, _mplist()) == (0, [], "sem_mp")
 
 
-def test_motivo_provisorio_vence_sem_edicao(monkeypatch) -> None:
-    """Dia em aberto sem fonte: é 'ainda pode sair', NÃO 'não houve edição'."""
+def test_motivo_provisorio_sem_nenhuma_edicao(monkeypatch) -> None:
+    """Dia em aberto e NADA de Seção 1 ainda: 'provisorio' (pode sair)."""
     out = _deliver_motivo(monkeypatch, _mplist(sem_edicao=True, provisorio=True))
     assert out == (0, [], "provisorio")
+
+
+def test_motivo_sem_mp_extra_quando_edicao_saiu_mas_dia_aberto(monkeypatch) -> None:
+    """Bug do 03/08: a edição NORMAL saiu sem MP (sem_edicao=False) e o dia
+    segue aberto (DO1E ainda não saiu → provisorio). NÃO é 'ainda pode sair'
+    (o DOU já está no ar) — é 'saiu sem MP, de olho na extra'."""
+    out = _deliver_motivo(monkeypatch, _mplist(sem_edicao=False, provisorio=True))
+    assert out == (0, [], "sem_mp_extra")
+
+
+def test_motivo_incompleto_vence(monkeypatch) -> None:
+    """Fonte que falhou não deixa afirmar nada — 'incompleto' tem prioridade."""
+    out = _deliver_motivo(monkeypatch, _mplist(incompleto=True, provisorio=True))
+    assert out == (0, [], "incompleto")
 
 
 # ───────────────────────── texto de desfecho ─────────────────────────
@@ -131,6 +145,12 @@ def test_texto_sem_mp_distingue_os_casos() -> None:
     assert "sem nenhuma MP nova" in texto_sem_mp("sem_mp", d)
     assert "não consegui confirmar" in texto_sem_mp("incompleto", d).lower()
     assert "02/08/2026" in texto_sem_mp("sem_edicao", d)
+    # sem_mp_extra: DOU JÁ saiu (não pode dizer "ainda pode sair") mas segue de
+    # olho na extra.
+    extra = texto_sem_mp("sem_mp_extra", d)
+    assert "Saiu o Diário Oficial" in extra
+    assert "edição extra" in extra
+    assert "ainda pode sair" not in extra, "o DOU já saiu — não pode dizer isso"
 
 
 # ──────────────── fila: resolve o dia sem edição com aviso ────────────────
@@ -198,6 +218,14 @@ def test_fila_provisorio_mantem_e_cala(reg, monkeypatch) -> None:
     nada — silêncio até o dia fechar."""
     _rodar_fila(monkeypatch, "provisorio")
     assert ("unmark", "nota_pendente", KEY) not in reg["log"], "dia aberto não pode sair da fila"
+    assert reg["enviado"] == []
+
+
+def test_fila_sem_mp_extra_mantem_e_cala(reg, monkeypatch) -> None:
+    """DOU saiu sem MP mas dia aberto (extra pode vir): mantém na fila, calado —
+    igual ao provisório. Só ao FECHAR vira 'sem_mp' e sai da fila."""
+    _rodar_fila(monkeypatch, "sem_mp_extra")
+    assert ("unmark", "nota_pendente", KEY) not in reg["log"]
     assert reg["enviado"] == []
 
 

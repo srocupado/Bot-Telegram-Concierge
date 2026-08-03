@@ -1460,10 +1460,16 @@ def texto_sem_mp(motivo: str | None, target: date) -> str:
     if motivo == "provisorio":
         return (f"⏳ O Diário Oficial de {dia} ainda pode sair (dia em aberto). "
                 "Re-checo sozinho e te aviso se vier MP.")
+    if motivo == "sem_mp_extra":
+        # O DOU JÁ saiu (edição normal), sem MP — mas o dia segue aberto e a
+        # edição extra ainda pode trazer MP. Não dizer "ainda pode sair" (o DOU
+        # já está no ar); dizer que saiu sem MP e que sigo de olho na extra.
+        return (f"✅ Saiu o Diário Oficial de {dia}, sem MP nova até agora. "
+                "Se sair edição extra com MP ainda hoje, eu te aviso.")
     if motivo == "incompleto":
         return (f"⚠️ Não consegui confirmar o DOU de {dia} agora (fonte "
                 "incompleta) — deixei pra re-checar; te aviso se vier MP.")
-    # sem_mp (ou motivo desconhecido): houve Diário, só não veio MP.
+    # sem_mp (ou motivo desconhecido): houve Diário (dia fechado), só não veio MP.
     return f"✅ Saiu o Diário Oficial de {dia}, mas sem nenhuma MP nova."
 
 
@@ -1478,11 +1484,12 @@ async def deliver_to_user(
     e não deve regerar todas.
 
     Retorna (entregues, falhas, motivo): `motivo` é None quando houve entrega;
-    quando entregues==0, diz POR QUÊ — "sem_edicao" (dia sem Diário: domingo/
-    feriado), "sem_mp" (houve DOU, nenhuma MP), "provisorio" (dia em aberto,
-    edição ainda pode sair) ou "incompleto" (uma fonte falhou). O caller usa
-    isso pra responder com precisão em vez de um "nenhuma MP" ambíguo.
-    Levanta DouError se o fetch falhar (credencial, rede)."""
+    quando entregues==0, diz POR QUÊ — "sem_edicao" (dia fechado sem Diário:
+    domingo/feriado), "sem_mp" (houve DOU fechado, nenhuma MP), "sem_mp_extra"
+    (DOU saiu sem MP mas o dia segue aberto — extra ainda pode trazer MP),
+    "provisorio" (nada saiu ainda, dia aberto) ou "incompleto" (uma fonte
+    falhou). O caller usa isso pra responder com precisão em vez de um "nenhuma
+    MP" ambíguo. Levanta DouError se o fetch falhar (credencial, rede)."""
     from aiogram.types import BufferedInputFile
 
     with _fase(f"fetch DOU {target_date.isoformat()}"):
@@ -1501,17 +1508,25 @@ async def deliver_to_user(
         novas = await filter_unseen(session, user.id, mps)
     if not novas:
         # 3-tupla como o caminho cheio (um `return 0` cru estourava TypeError no
-        # unpack do caller). `motivo` distingue os desfeches vazios — a ordem
-        # importa: dia aberto e fonte-falha vêm ANTES de "sem edição", que só é
-        # afirmável quando o dia fechou sem nenhuma fonte de Seção 1.
-        if _provisorio:
-            motivo = "provisorio"
-        elif _incompleto:
+        # unpack do caller). `motivo` distingue os desfeches vazios:
+        #  - incompleto: uma fonte FALHOU → não dá pra afirmar nada;
+        #  - houve edição (sem_edicao=False), 0 MP:
+        #       . dia aberto  → 'sem_mp_extra' (o DOU JÁ saiu sem MP; a EXTRA
+        #                        ainda pode trazer MP — NÃO dizer "ainda pode sair");
+        #       . dia fechado → 'sem_mp' (saiu sem MP, definitivo);
+        #  - sem edição (sem_edicao=True):
+        #       . dia aberto  → 'provisorio' (nada saiu ainda, pode sair);
+        #       . dia fechado → 'sem_edicao' (domingo/feriado, não houve Diário).
+        # A confusão do bug (03/08): edição normal saiu sem MP e o DO1E ainda não
+        # tinha saído → provisorio dizia "o DOU ainda pode sair", com o DOU já no ar.
+        if _incompleto:
             motivo = "incompleto"
-        elif _sem_edicao:
-            motivo = "sem_edicao"
+        elif not _sem_edicao:
+            motivo = "sem_mp_extra" if _provisorio else "sem_mp"
+        elif _provisorio:
+            motivo = "provisorio"
         else:
-            motivo = "sem_mp"
+            motivo = "sem_edicao"
         return 0, [], motivo
 
     # set de já-vistas pra não duplicar linhas no banco quando force=True.
