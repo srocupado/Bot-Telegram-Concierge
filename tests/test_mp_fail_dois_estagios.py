@@ -115,23 +115,43 @@ def test_fmt_fila_mostra_ultima_checagem() -> None:
     from bot.handlers.dou_mp import _fmt_fila_mp
     d = date(2026, 8, 3)
     fila = {
-        "notas": [], "dias": [(d, 14)], "manutencao": False,
+        "notas": [], "dias": [(d, 14)], "abertos": [d],
+        "janelas_hoje": [19], "manutencao": False,
         "ultima_ok": {d: (datetime(2026, 8, 3, 8, 55, tzinfo=BRT), 0)},
     }
     out = _fmt_fila_mp(fila)
-    assert "03/08/2026 — re-checo por mais 14 dia(s)" in out
+    assert "03/08/2026 — re-checo hoje às 19h" in out
     assert "já checado 03/08 08:55" in out
     assert "sem MP até então" in out
 
 
-def test_fmt_fila_sem_ultima_ok_fica_como_antes() -> None:
-    """Snapshot sem 'ultima_ok' (ou dia nunca checado): linha idêntica à de
-    antes — nada de inventar contexto que não existe."""
+def test_fmt_fila_sem_ultima_ok_nao_inventa_contexto() -> None:
+    """Snapshot sem 'ultima_ok' (ou dia nunca checado): sem sufixo — nada de
+    inventar apuração que não existe."""
     from bot.handlers.dou_mp import _fmt_fila_mp
     fila = {"notas": [], "dias": [(date(2026, 8, 3), 14)], "manutencao": False}
     out = _fmt_fila_mp(fila)
-    assert "03/08/2026 — re-checo por mais 14 dia(s)" in out
     assert "já checado" not in out
+
+
+def test_listar_fila_separa_dia_aberto_de_fechado() -> None:
+    """'abertos' traz só o dia que ainda pode receber edição (fecha às 6h do
+    dia seguinte); dia passado preso por falha fica de fora — é ele que
+    carrega o contador de desistência no /mp_fila."""
+    class _Sess:
+        def __init__(self, rows):
+            self._rows = rows
+
+        async def scalars(self, _stmt):
+            return list(self._rows)
+
+    hoje = datetime.now(BRT).date()
+    velho = hoje - timedelta(days=5)
+    rows = [SimpleNamespace(kind="mp_pendente", key=hoje.isoformat()),
+            SimpleNamespace(kind="mp_pendente", key=velho.isoformat())]
+    fila = asyncio.run(proactive.listar_fila_mp(_Sess(rows), 1, hoje))
+    assert fila["abertos"] == [hoje]
+    assert isinstance(fila["janelas_hoje"], list)
 
 
 def test_listar_fila_inclui_ultima_ok() -> None:

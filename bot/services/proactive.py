@@ -420,9 +420,16 @@ async def listar_fila_mp(
             _add_dia(d, _MP_RETRO_EXPIRA_DIAS)
 
     notas.sort(key=lambda t: (t[0] or date.min, t[1]))
-    from bot.services.dou_monitor import ultima_checagem_ok
+    from bot.services.dou_monitor import _dia_encerrado, ultima_checagem_ok
     ultima_ok = {d: ok for d in dias if (ok := ultima_checagem_ok(d)) is not None}
+    # Dia ABERTO (fecha às 6h do dia seguinte) × dia preso por falha: o texto
+    # do /mp_fila é diferente — aberto resolve hoje/amanhã cedo (ainda há
+    # checagens HOJE, ver janelas_hoje); preso é que carrega o contador de
+    # desistência. Sem a distinção, o "re-checo por mais 14 dias" soava como
+    # prazo esperado pro dia de HOJE (pergunta do dono, 03/08/2026).
     return {"notas": notas, "dias": sorted(dias.items()),
+            "abertos": [d for d in dias if not _dia_encerrado(d)],
+            "janelas_hoje": _janelas_restantes(datetime.now(BRT).hour),
             "ultima_ok": ultima_ok, "manutencao": manutencao}
 
 
