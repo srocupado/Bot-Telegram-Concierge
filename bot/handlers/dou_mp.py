@@ -377,37 +377,40 @@ def _fmt_fila_mp(fila: dict) -> str:
     manut = bool(fila.get("manutencao"))
 
     if not notas and not dias:
-        base = ("✅ <b>Fila do DOU vazia</b> — nenhuma nota pendente de geração "
-                "e nenhum dia pendente de re-checagem.")
+        base = ("✅ <b>Fila do DOU vazia</b> — nada pendente de checagem nem "
+                "de nota.")
         if manut:
-            base += ("\n\n⚠️ <i>O Inlabs está em manutenção/instável agora, mas "
-                     "não há nada represado.</i>")
+            base += ("\n\n⚠️ <i>O Inlabs está em manutenção agora, mas não há "
+                     "nada represado.</i>")
         return base
 
     linhas = ["📥 <b>Fila do monitor de MP</b>"]
+    # Só afirma "Inlabs" quando há causa APURADA (manutenção declarada). Sem
+    # isso, dizer "quando o Inlabs voltar" mentia com o Inlabs online — a
+    # pendência costuma ser dia em aberto/checagem, não Inlabs fora.
     if manut:
-        linhas.append("⚠️ <i>Inlabs em manutenção/instável agora — a fila drena "
-                      "assim que ele voltar.</i>")
+        linhas.append("⚠️ <i>Inlabs em manutenção agora — a fila drena quando "
+                      "ele voltar.</i>")
     if notas:
-        linhas.append("\n📄 <b>Notas esperando geração</b> (quando o Inlabs voltar):")
+        linhas.append("\n📄 <b>Notas técnicas na fila</b>:")
         for d, nums in notas:
             quando = d.strftime("%d/%m/%Y") if d else "data ?"
             linhas.append(f"• {_fmt_alvo(nums)} de {quando}")
     if dias:
-        linhas.append("\n🔁 <b>Dias ainda não verificados</b> (re-checo sozinho):")
+        linhas.append("\n🔎 <b>Dias a verificar</b> (checo sozinho):")
         for d, restantes in dias:
             linhas.append(f"• {d.strftime('%d/%m/%Y')} — re-checo por mais "
                           f"{restantes} dia(s)")
-    linhas.append("\nAssim que o Inlabs voltar, gero e envio automaticamente — "
-                  "sem precisar pedir de novo. Pra forçar uma data: "
+    linhas.append("\nProcesso sozinho e te aviso o resultado — sem precisar "
+                  "pedir de novo. Pra forçar uma data: "
                   "<code>/mp_dou_agora DD/MM/AAAA</code>.")
     return "\n".join(linhas)
 
 
 @router.message(Command("mp_em_fila", "mp_fila"))
 async def cmd_em_fila(message: Message, user: User, session: AsyncSession) -> None:
-    """Mostra o que está na fila do monitor de MP: notas técnicas aguardando
-    geração (Inlabs fora) e dias ainda não verificados que serão re-checados.
+    """Mostra o que está na fila do monitor de MP: notas técnicas com número
+    conhecido aguardando geração e dias que ainda serão verificados/re-checados.
     Read-only — não altera a fila."""
     if not user.is_authorized:
         return

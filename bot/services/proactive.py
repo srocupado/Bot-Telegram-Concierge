@@ -362,16 +362,17 @@ async def listar_fila_mp(
     """Snapshot READ-ONLY da fila do monitor de MP, pro /mp_em_fila.
 
     Devolve:
-    - 'notas': notas técnicas de MPs JÁ detectadas, esperando (re)geração
-      quando o Inlabs voltar (kind nota_pendente) — lista de (data, alvo), com
-      alvo = "all" (todas as MPs do dia) ou "1382" / "1382,1383";
-    - 'dias': dias que o bot ainda não conseguiu verificar e vai re-checar
-      (kind mp_pendente) — lista de (data, dias_restantes até expirar);
+    - 'notas': notas técnicas de MPs com NÚMERO conhecido esperando (re)geração
+      (nota_pendente "DATA:1382") — lista de (data, "1382"|"1382,1383");
+    - 'dias': dias que o bot ainda vai VERIFICAR — a união dos mp_pendente com
+      as entradas nota_pendente "all", deduplicadas por data — (data, restantes);
     - 'manutencao': True se há aviso ativo de Inlabs em manutenção (dou_manut).
 
-    NÃO expira nem altera nada — é só leitura. A expiração continua no proativo
-    (_mp_dias_pendentes); o comando de status não pode ter efeito colateral, ou
-    consultar a fila mudaria a fila."""
+    "all" entra em 'dias', não em 'notas': é CHECAGEM (ainda não confirmou MP),
+    e listá-la como "nota das MPs" prometia MP que pode não existir E duplicava o
+    dia (que também está em mp_pendente). NÃO expira nem altera nada — é só
+    leitura; consultar a fila não pode mudar a fila (a expiração fica no
+    proativo, _mp_dias_pendentes)."""
     rows = list(await session.scalars(
         select(ProactiveNotice).where(
             ProactiveNotice.user_id == user_id,
@@ -379,25 +380,34 @@ async def listar_fila_mp(
         )
     ))
     notas: list[tuple[date | None, str]] = []
-    dias: list[tuple[date, int]] = []
+    dias: dict[date, int] = {}
     manutencao = False
+
+    def _add_dia(d: date, expira: int) -> None:
+        restantes = expira - (hoje - d).days
+        if restantes >= 0:              # expirados são varridos pelo proativo
+            dias[d] = max(dias.get(d, restantes), restantes)
+
     for r in rows:
-        if r.kind == "nota_pendente":
-            _, _, nums = (r.key or "").partition(":")
-            notas.append((_data_da_chave(r.key), nums or "all"))
-        elif r.kind == "dou_manut":
+        if r.kind == "dou_manut":
             manutencao = True
+        elif r.kind == "nota_pendente":
+            d = _data_da_chave(r.key)
+            _, _, nums = (r.key or "").partition(":")
+            if not nums or nums == "all":
+                if d is not None:       # checagem do dia → vira "dia a verificar"
+                    _add_dia(d, _NOTA_PENDENTE_EXPIRA_DIAS)
+            else:
+                notas.append((d, nums))
         else:  # mp_pendente
             try:
                 d = date.fromisoformat(r.key)
             except ValueError:
                 continue
-            restantes = _MP_RETRO_EXPIRA_DIAS - (hoje - d).days
-            if restantes >= 0:      # já expirados são varridos pelo proativo
-                dias.append((d, restantes))
+            _add_dia(d, _MP_RETRO_EXPIRA_DIAS)
+
     notas.sort(key=lambda t: (t[0] or date.min, t[1]))
-    dias.sort()
-    return {"notas": notas, "dias": dias, "manutencao": manutencao}
+    return {"notas": notas, "dias": sorted(dias.items()), "manutencao": manutencao}
 
 
 _ESTADO_GERANDO = "<b>gerando agora</b>, chega em alguns minutos"
