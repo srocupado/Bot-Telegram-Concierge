@@ -444,6 +444,47 @@ def _estado_em_andamento(key: str) -> str:
     return _ESTADO_CHECANDO if (not nums or nums == "all") else _ESTADO_GERANDO
 
 
+def _proxima_janela_depois(hora: int) -> int | None:
+    """Hora da próxima janela proativa DE HOJE após `hora`; None se acabou."""
+    horas = parse_proactive_hours(settings.proactive_hours)
+    return min((h for h in horas if h > hora), default=None)
+
+
+# A extra do DOU, quando há, sai DEPOIS das 18h (regra do dono) — o parêntese
+# "(edição extra)" só entra na janela que de fato pode pegá-la.
+_HORA_EXTRA = 18
+
+
+def _estado_checado_sem_mp(key: str, agora: datetime | None = None) -> str | None:
+    """Estado APURADO de uma entrada 'all': o dia foi checado COMPLETO, sem
+    MP, e segue aberto. Devolve None quando NÃO dá pra afirmar isso — sem
+    checagem OK registrada (restart/Inlabs fora), MP encontrada, dia já
+    fechado, ou entrada com números (essa é nota em geração, não checagem).
+
+    Pedido do dono (03/08/2026): "checando agora; aviso o resultado" descreve
+    PROCESSO quando dá pra descrever ESTADO — o dia já tinha sido checado
+    minutos antes. Com o registro de última checagem OK, a linha diz o que se
+    sabe e QUANDO vem a próxima checagem (hora calculada de PROACTIVE_HOURS,
+    nunca fixa no texto). Na última janela do dia, NÃO afirma "sem MP" seco:
+    o dia só fecha às 6h e extra tardia existe — a ressalva aponta o briefing
+    de amanhã, que é quem dá o veredito ("Tirei da fila")."""
+    from bot.services.dou_monitor import _dia_encerrado, ultima_checagem_ok
+    d = _data_da_chave(key)
+    _, _, nums = (key or "").partition(":")
+    if d is None or (nums and nums != "all"):
+        return None
+    ok = ultima_checagem_ok(d)
+    if ok is None or ok[1] != 0 or _dia_encerrado(d, agora):
+        return None
+    agora = agora or datetime.now(BRT)
+    prox = _proxima_janela_depois(agora.hour)
+    if prox is not None:
+        extra = " (edição extra)" if prox >= _HORA_EXTRA else ""
+        return f"sem MP até o momento; re-checo às {prox}h{extra}"
+    return (f"sem MP na checagem das {agora.hour}h; extra tardia (se houver) "
+            "chega no briefing de amanhã")
+
+
 def _texto_fila(key: str, estado: str) -> str:
     """Linha de status de uma entrada da fila. Compartilhada entre a montagem
     (collect_mp) e a correção pós-disparo (_marcar_geradas_agora) — texto
@@ -480,7 +521,12 @@ def _marcar_geradas_agora(facts: list[ProactiveFact], disparadas: list[date]) ->
     alvo = set(disparadas)
     for i, f in enumerate(facts):
         if f.kind == "nota_fila" and _data_da_chave(f.key) in alvo:
-            facts[i] = replace(f, text=_texto_fila(f.key, _estado_em_andamento(f.key)))
+            # Estado APURADO tem precedência: dia já checado sem MP e aberto →
+            # a linha informativa fica; rebaixá-la pra "checando agora" (o job
+            # disparado resolve em milissegundos via cache e mantém na fila em
+            # silêncio) seria trocar informação por processo.
+            estado = _estado_checado_sem_mp(f.key) or _estado_em_andamento(f.key)
+            facts[i] = replace(f, text=_texto_fila(f.key, estado))
 
 
 def _data_da_chave(key: str) -> date | None:
@@ -860,8 +906,12 @@ async def collect_mp(
     )
     for pos, r in enumerate(fila_ordenada):
         d = _data_da_chave(r.key)
-        _, _, nums = r.key.partition(":")
-        alvo = "todas as MPs" if (not nums or nums == "all") else f"MP {nums.replace(',', ', ')}"
+        # Estado APURADO primeiro (dia checado COMPLETO, sem MP, ainda aberto):
+        # é mais informativo que qualquer estado de processo. Manutenção/Inlabs
+        # fora ainda vencem — nesses a checagem desta janela NÃO aconteceu, e o
+        # registro seria de horas atrás (não vale afirmar "até o momento").
+        apurado = None if (d.isoformat() in em_manutencao or inlabs_fora) \
+            else _estado_checado_sem_mp(r.key)
         if d.isoformat() in em_manutencao:
             estado = ("<b>na fila de checagem</b> — o Inlabs está em manutenção; "
                       "checo e envio quando ele voltar (pode não ser hoje)")
@@ -872,6 +922,8 @@ async def collect_mp(
             # de prazo. Causa não afirmada como manutenção (não foi declarada).
             estado = ("<b>na fila de checagem</b> — o Inlabs está fora agora; "
                       "checo e envio quando ele voltar (pode não ser hoje)")
+        elif apurado is not None:
+            estado = apurado
         elif jobs.job_em_andamento(chave_job_nota(user.id, d)):
             estado = _estado_em_andamento(r.key)
         elif pos >= _NOTA_MAX_POR_JANELA:

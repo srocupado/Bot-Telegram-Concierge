@@ -173,3 +173,114 @@ def test_texto_e_montado_num_lugar_so() -> None:
     dois lugares sairia do ar um dia sem ninguém notar."""
     linha = proactive._texto_fila(f"{D2.isoformat()}:1381,1382", "qualquer estado")
     assert linha == "📄 Nota técnica (MP 1381, 1382 de 31/07) — qualquer estado."
+
+
+# ─────────────── estado APURADO: "sem MP até o momento" ───────────────
+#
+# Pedido do dono (03/08/2026): com o dia já checado COMPLETO minutos antes
+# (cache/última checagem OK), a linha "checando agora; aviso o resultado"
+# descrevia PROCESSO onde dava pra descrever ESTADO. Agora:
+# - há janela ainda hoje → "sem MP até o momento; re-checo às Xh", com
+#   "(edição extra)" só quando a próxima janela é ≥18h (regra do dono: a
+#   extra, quando há, sai depois das 18h);
+# - última janela do dia → "sem MP na checagem das Xh" + ressalva da extra
+#   tardia (o dia só fecha às 6h — não se afirma "sem MP" seco);
+# - sem checagem OK / MP encontrada / dia fechado / entrada com números →
+#   None (mantém os estados de processo — não se afirma o que não se apurou).
+
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from bot.services import dou_monitor
+
+_BRT = ZoneInfo("America/Sao_Paulo")
+_D = date(2026, 8, 3)
+_KEY_ALL = f"{_D.isoformat()}:all"
+
+
+@pytest.fixture(autouse=True)
+def _ultima_ok_limpa():
+    dou_monitor._ultima_ok.clear()
+    yield
+    dou_monitor._ultima_ok.clear()
+
+
+def _as_13h05() -> datetime:
+    return datetime(2026, 8, 3, 13, 5, tzinfo=_BRT)
+
+
+def test_apurado_meio_do_dia_aponta_proxima_janela_com_extra() -> None:
+    dou_monitor._ultima_ok[_D] = (_as_13h05(), 0)
+    estado = proactive._estado_checado_sem_mp(_KEY_ALL, _as_13h05())
+    assert estado == "sem MP até o momento; re-checo às 19h (edição extra)"
+
+
+def test_apurado_manha_nao_promete_extra_na_janela_das_13h() -> None:
+    """Às 10h a próxima janela é 13h — antes das 18h não há extra pra pegar."""
+    agora = datetime(2026, 8, 3, 10, 10, tzinfo=_BRT)
+    dou_monitor._ultima_ok[_D] = (agora, 0)
+    estado = proactive._estado_checado_sem_mp(_KEY_ALL, agora)
+    assert estado == "sem MP até o momento; re-checo às 13h"
+    assert "extra" not in estado
+
+
+def test_apurado_ultima_janela_ressalva_extra_tardia() -> None:
+    """Às 19h NÃO se afirma 'sem MP' seco: o dia só fecha às 6h e extra
+    tardia existe — a ressalva aponta o briefing, que dá o veredito."""
+    agora = datetime(2026, 8, 3, 19, 4, tzinfo=_BRT)
+    dou_monitor._ultima_ok[_D] = (agora, 0)
+    estado = proactive._estado_checado_sem_mp(_KEY_ALL, agora)
+    assert estado == ("sem MP na checagem das 19h; extra tardia (se houver) "
+                      "chega no briefing de amanhã")
+
+
+def test_apurado_exige_checagem_ok_registrada() -> None:
+    """Restart/Inlabs fora → sem registro → None (não inventa apuração)."""
+    assert proactive._estado_checado_sem_mp(_KEY_ALL, _as_13h05()) is None
+
+
+def test_apurado_com_mp_encontrada_nao_se_aplica() -> None:
+    dou_monitor._ultima_ok[_D] = (_as_13h05(), 2)
+    assert proactive._estado_checado_sem_mp(_KEY_ALL, _as_13h05()) is None
+
+
+def test_apurado_dia_fechado_nao_se_aplica() -> None:
+    """Dia encerrado (6h do dia seguinte) resolve pela fila ('Tirei da
+    fila'), não por esta linha."""
+    depois = datetime(2026, 8, 4, 7, 0, tzinfo=_BRT)
+    dou_monitor._ultima_ok[_D] = (depois, 0)
+    assert proactive._estado_checado_sem_mp(_KEY_ALL, depois) is None
+
+
+def test_apurado_entrada_com_numeros_nao_se_aplica() -> None:
+    """Entrada ':1382' é NOTA em geração (MP confirmada) — 'sem MP até o
+    momento' seria contradição."""
+    dou_monitor._ultima_ok[_D] = (_as_13h05(), 0)
+    assert proactive._estado_checado_sem_mp(f"{_D.isoformat()}:1382",
+                                            _as_13h05()) is None
+
+
+def test_collect_usa_o_estado_apurado(monkeypatch) -> None:
+    """Integração: com checagem OK de HOJE registrada (0 MP), a linha da
+    janela diz 'sem MP', não 'checando agora'. Hora real varia → só o
+    prefixo do estado é travado aqui; as variantes exatas, acima."""
+    hoje = date.today()
+    dou_monitor._ultima_ok[hoje] = (datetime.now(_BRT), 0)
+    linhas = _linhas(monkeypatch, [hoje])
+    assert len(linhas) == 1
+    assert "sem MP" in linhas[0]
+    assert "checando agora" not in linhas[0]
+    assert "próxima janela" not in linhas[0]
+
+
+def test_marcar_geradas_nao_rebaixa_o_estado_apurado() -> None:
+    """O disparo do job da fila NÃO pode trocar a linha informativa por
+    'checando agora' — era exatamente o texto que o dono pediu pra tirar."""
+    hoje = date.today()
+    dou_monitor._ultima_ok[hoje] = (datetime.now(_BRT), 0)
+    key = f"{hoje.isoformat()}:all"
+    fatos = [proactive.ProactiveFact("mp", "nota_fila", key,
+                                     proactive._texto_fila(key, "qualquer"))]
+    proactive._marcar_geradas_agora(fatos, [hoje])
+    assert "sem MP" in fatos[0].text
+    assert "checando agora" not in fatos[0].text
