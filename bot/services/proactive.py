@@ -156,6 +156,13 @@ async def collect_vencimentos(
 _MP_RETRO_MAX_POR_JANELA = 2
 _MP_RETRO_EXPIRA_DIAS = 14
 
+# Idade máxima de uma checagem COMPLETA do dia pra ela ainda "valer" como
+# contexto quando uma re-checagem falha: dentro dela, o aviso vira linha
+# informativa ("chequei às HH:MM, sem MP até então"); fora, alarme forte.
+# 6h = o maior vão entre janelas proativas (7→13→19): falhou a janela
+# seguinte inteira sem nenhuma checagem OK no meio → volta a gritar.
+_OK_RECENTE_H = 6
+
 # Fila de NOTA TÉCNICA pendente: MP detectada, usuário pediu a nota (botão) e o
 # Inlabs caiu na hora de gerar — o pedido fica na fila (kind nota_pendente,
 # key "AAAA-MM-DD:num1,num2|all") e é re-tentado silenciosamente a cada janela
@@ -368,6 +375,10 @@ async def listar_fila_mp(
       (nota_pendente "DATA:1382") — lista de (data, "1382"|"1382,1383");
     - 'dias': dias que o bot ainda vai VERIFICAR — a união dos mp_pendente com
       as entradas nota_pendente "all", deduplicadas por data — (data, restantes);
+    - 'ultima_ok': {data: (quando BRT, nº MPs)} da última checagem COMPLETA de
+      cada dia listado em 'dias' (memória do processo; ausente = nunca checado
+      OK desde o último restart). Dá contexto pro dono: "re-checo por mais N
+      dias" sozinho soava como se NADA tivesse sido visto daquele dia;
     - 'manutencao': True se há aviso ativo de Inlabs em manutenção (dou_manut).
 
     "all" entra em 'dias', não em 'notas': é CHECAGEM (ainda não confirmou MP),
@@ -409,7 +420,10 @@ async def listar_fila_mp(
             _add_dia(d, _MP_RETRO_EXPIRA_DIAS)
 
     notas.sort(key=lambda t: (t[0] or date.min, t[1]))
-    return {"notas": notas, "dias": sorted(dias.items()), "manutencao": manutencao}
+    from bot.services.dou_monitor import ultima_checagem_ok
+    ultima_ok = {d: ok for d in dias if (ok := ultima_checagem_ok(d)) is not None}
+    return {"notas": notas, "dias": sorted(dias.items()),
+            "ultima_ok": ultima_ok, "manutencao": manutencao}
 
 
 _ESTADO_GERANDO = "<b>gerando agora</b>, chega em alguns minutos"
@@ -713,21 +727,55 @@ async def collect_mp(
             await mark_notified(session, user.id, "mp_pendente", d.isoformat())
 
     # CRÍTICO: se NÃO conseguiu checar o DOU, AVISA — senão o usuário vê o
-    # briefing sem MP e conclui (errado) que não houve MP publicada. Dedup por
-    # conjunto de datas falhas (kind 'mp_fail' é marcado após o envio), pra
-    # avisar 1x e não repetir a cada janela na mesma pane. date_iso=None mantém
-    # o aviso FORA do botão de nota técnica (não é uma MP de verdade).
+    # briefing sem MP e conclui (errado) que não houve MP publicada.
+    #
+    # DOIS ESTÁGIOS (03/08/2026): o alarme forte ("NÃO assuma que não houve
+    # MP") disparava minutos depois de o /mp_dou_agora ter checado o MESMO dia
+    # com sucesso e respondido "nenhuma MP" — as duas frases, lado a lado,
+    # minavam a confiança no monitor. Alarme que grita à toa treina o dono a
+    # ignorar, e isso perde MP tão bem quanto o silêncio. Agora:
+    # - houve checagem COMPLETA do dia há pouco (≤ _OK_RECENTE_H) → linha
+    #   INFORMATIVA com o contexto apurado ("chequei às HH:MM, sem MP até
+    #   então"), 1x por data;
+    # - sem checagem OK recente → alarme forte, como antes. A checagem OK
+    #   "envelhecendo" (> _OK_RECENTE_H) reescala pro forte sozinha.
+    # A falha nunca deixa de ser DITA (premissa: falha ≠ silêncio) — muda só o
+    # tom, conforme o que o bot consegue AFIRMAR. A pendência de re-checagem
+    # independe do aviso (já foi gravada acima). date_iso=None mantém os avisos
+    # FORA do botão de nota técnica (não são MP de verdade).
     if failed:
-        fkey = "fail:" + ",".join(sorted(d.isoformat() for d in failed))
-        if force or not await already_notified(session, user.id, "mp_fail", fkey):
-            datas = ", ".join(d.strftime("%d/%m") for d in failed)
+        from bot.services.dou_monitor import ultima_checagem_ok
+        agora_brt = datetime.now(BRT)
+        fortes: list[date] = []
+        for d in failed:
+            ok = ultima_checagem_ok(d)
+            if ok is None or (agora_brt - ok[0]) > timedelta(hours=_OK_RECENTE_H):
+                fortes.append(d)
+                continue
+            skey = f"failsoft:{d.isoformat()}"
+            if not force and await already_notified(session, user.id, "mp_fail", skey):
+                continue
+            quando, n_mps = ok
+            ate_entao = (f"{n_mps} MP(s) detectada(s) até então" if n_mps
+                         else "sem MP até então")
             facts.append(ProactiveFact(
-                "mp", "mp_fail", fkey,
-                f"⚠️ <b>Não consegui checar o DOU</b> de {datas} (Inlabs "
-                "instável). NÃO assuma que não houve MP — confira depois com "
-                "<code>/mp_dou_agora</code>.",
+                "mp", "mp_fail", skey,
+                f"ℹ️ DOU de {d.strftime('%d/%m')}: chequei às "
+                f"{quando.strftime('%H:%M')} ({ate_entao}); a re-checagem de "
+                "agora falhou — sigo re-checando sozinho e te aviso se vier MP.",
                 date_iso=None,
             ))
+        if fortes:
+            fkey = "fail:" + ",".join(sorted(d.isoformat() for d in fortes))
+            if force or not await already_notified(session, user.id, "mp_fail", fkey):
+                datas = ", ".join(d.strftime("%d/%m") for d in fortes)
+                facts.append(ProactiveFact(
+                    "mp", "mp_fail", fkey,
+                    f"⚠️ <b>Não consegui checar o DOU</b> de {datas} (Inlabs "
+                    "instável). NÃO assuma que não houve MP — confira depois com "
+                    "<code>/mp_dou_agora</code>.",
+                    date_iso=None,
+                ))
 
     # Checagem RETROATIVA dos dias pendentes de janelas anteriores. A pendência
     # só é limpa APÓS o envio (run() → mp_retro), então falha de envio não

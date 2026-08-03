@@ -397,10 +397,21 @@ def _fmt_fila_mp(fila: dict) -> str:
             quando = d.strftime("%d/%m/%Y") if d else "data ?"
             linhas.append(f"• {_fmt_alvo(nums)} de {quando}")
     if dias:
+        ultima_ok = fila.get("ultima_ok") or {}
         linhas.append("\n🔎 <b>Dias a verificar</b> (checo sozinho):")
         for d, restantes in dias:
-            linhas.append(f"• {d.strftime('%d/%m/%Y')} — re-checo por mais "
-                          f"{restantes} dia(s)")
+            linha = (f"• {d.strftime('%d/%m/%Y')} — re-checo por mais "
+                     f"{restantes} dia(s)")
+            # Contexto da última checagem COMPLETA (quando houver): sem ele,
+            # "re-checo por mais 14 dias" logo após um "nenhuma MP" soava
+            # contraditório — como se NADA daquele dia tivesse sido visto.
+            ok = ultima_ok.get(d)
+            if ok:
+                quando, n_mps = ok
+                ate_entao = (f"{n_mps} MP(s) até então" if n_mps
+                             else "sem MP até então")
+                linha += f" · já checado {quando.strftime('%d/%m %H:%M')} ({ate_entao})"
+            linhas.append(linha)
     linhas.append("\nProcesso sozinho e te aviso o resultado — sem precisar "
                   "pedir de novo. Pra forçar uma data: "
                   "<code>/mp_dou_agora DD/MM/AAAA</code>.")
