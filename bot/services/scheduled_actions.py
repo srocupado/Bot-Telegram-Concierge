@@ -170,7 +170,10 @@ async def _run_chat(
             user=user, session=session, tz=effective_tz(user), user_text=prompt,
         )
         reply = await provider.chat_with_tools(
-            inject_context(history, user.timezone, summary), tools=TOOLS, ctx=ctx,
+            # tz efetivo TAMBÉM aqui: o ctx acima já usava; o inject_context
+            # ficou com o fuso de casa — em viagem, "que horas são"/datas
+            # relativas do prompt agendado divergiam do resto do turno.
+            inject_context(history, effective_tz(user), summary), tools=TOOLS, ctx=ctx,
             system=_build_system_prompt(),
             max_tokens=800,
         )

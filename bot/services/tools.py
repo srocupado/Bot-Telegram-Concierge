@@ -640,7 +640,14 @@ async def _h_apagar_treino_dia(args: dict, ctx: ToolContext) -> str:
 
 
 async def _h_consultar_clima(args: dict, ctx: ToolContext) -> str:
-    coords = (args.get("coords") or "").strip() or settings.home_coords
+    from bot.services.viagem import effective_coords
+
+    # Coords EFETIVAS (viagem conta), como o briefing já faz: o default fixo
+    # em HOME_COORDS respondia o tempo de CASA pra quem perguntou "vai
+    # chover?" em Tóquio — e pior, com ctx.tz do DESTINO, o agregado diário
+    # do Open-Meteo (coords de Brasília + fuso de Tóquio) cruzava dois dias.
+    coords = ((args.get("coords") or "").strip()
+              or effective_coords(ctx.user) or settings.home_coords)
     if not coords:
         return "erro: coords não fornecido e HOME_COORDS não configurado"
     # 'dias' inválido NÃO vira 1 em silêncio: quem pediu "previsão da semana"

@@ -1350,7 +1350,14 @@ async def run_for_user(
     após envio OK. Retorna True se enviou."""
     briefing = window == "briefing"
     today = now_brt.date()
-    mp_dates = [today - timedelta(days=1), today] if briefing else [today]
+    # Datas do DOU SEMPRE em BRT: o Diário é de Brasília. `now_brt` aqui é o
+    # relógio LOCAL do usuário (viagem conta) — em Tóquio (UTC+9) o "hoje"
+    # local é o AMANHÃ de Brasília: as janelas checavam um dia sem edição,
+    # enfileiravam pendência-fantasma e a MP do dia corrente só aparecia no
+    # briefing seguinte. A JANELA dispara no fuso da viagem (correto); as
+    # DATAS consultadas, não.
+    hoje_dou = datetime.now(BRT).date()
+    mp_dates = [hoje_dou - timedelta(days=1), hoje_dou] if briefing else [hoje_dou]
 
     # Trava de nível-janela: roda 1x por janela (briefing: por dia; regular:
     # por dia+hora — ver run_key_da_janela). Sem isso, como o tick é de ~20s

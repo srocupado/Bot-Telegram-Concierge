@@ -41,14 +41,17 @@ router = Router(name="search")
 _DIAS_SEMANA = ["segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo"]
 
 
-def _dated_system() -> str:
+def _dated_system(tz_name: str | None = None) -> str:
     """_SEARCH_SYSTEM + a data/hora local de hoje, pra a busca resolver
-    'hoje'/'amanhã'/datas relativas no fuso de Brasília — e não em UTC (que
-    deixava a busca um dia adiantada à noite)."""
-    now = datetime.now(ZoneInfo(settings.timezone))
+    'hoje'/'amanhã'/datas relativas no fuso do USUÁRIO — efetivo (viagem
+    conta): com o fuso de casa fixo, "amanhã" em Tóquio à noite resolvia
+    um dia errado (o mesmo bug de UTC que o docstring antigo já citava,
+    só que agora entre BRT e o destino)."""
+    tz_name = tz_name or settings.timezone
+    now = datetime.now(ZoneInfo(tz_name))
     return _SEARCH_SYSTEM + (
         f"\n\nData/hora atual: {_DIAS_SEMANA[now.weekday()]}, "
-        f"{now.strftime('%d/%m/%Y %H:%M')} ({settings.timezone}). "
+        f"{now.strftime('%d/%m/%Y %H:%M')} ({tz_name}). "
         "Resolva 'hoje', 'amanhã' e datas relativas a partir dela."
     )
 
@@ -88,7 +91,8 @@ async def _synth(query: str, context: str, user: User) -> str:
     resultados do Google Shopping) com o provider do usuário."""
     provider = get_provider_for_user(user)
     messages = [{"role": "user", "content": _SYNTH_PROMPT.format(query=query, context=context)}]
-    return await provider.chat(messages, system=_dated_system(), max_tokens=2000)
+    from bot.services.viagem import effective_tz
+    return await provider.chat(messages, system=_dated_system(effective_tz(user)), max_tokens=2000)
 
 
 # Detecção de intenção de PREÇO de produto → roteia pro buscar_preco (Google
@@ -138,12 +142,12 @@ def _strip_price_words(q: str) -> str:
     return " ".join(toks[i:]).strip() or q
 
 
-def _anthropic_search(query: str) -> str:
+def _anthropic_search(query: str, tz_name: str) -> str:
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
     resp = client.messages.create(
         model=settings.anthropic_model,
         max_tokens=2000,
-        system=_dated_system(),
+        system=_dated_system(tz_name),
         messages=[{"role": "user", "content": query}],
         tools=[{
             "type": "web_search_20250305",
@@ -155,10 +159,10 @@ def _anthropic_search(query: str) -> str:
     return "".join(parts).strip()
 
 
-def _gemini_search(query: str) -> str:
+def _gemini_search(query: str, tz_name: str) -> str:
     client = genai.Client(api_key=settings.gemini_api_key)
     config = types.GenerateContentConfig(
-        system_instruction=_dated_system(),
+        system_instruction=_dated_system(tz_name),
         tools=[types.Tool(google_search=types.GoogleSearch())],
         max_output_tokens=2000,
     )
@@ -172,11 +176,13 @@ def _gemini_search(query: str) -> str:
 
 async def _native_search(query: str, user: User) -> tuple[str, str]:
     """Busca nativa (fallback). Retorna (engine, resultado)."""
+    from bot.services.viagem import effective_tz
+    tz_name = effective_tz(user)
     use_anthropic = user.provider == "anthropic" and bool(settings.anthropic_api_key)
     if use_anthropic:
-        return "anthropic", await asyncio.to_thread(_anthropic_search, query)
+        return "anthropic", await asyncio.to_thread(_anthropic_search, query, tz_name)
     if settings.gemini_api_key:
-        return "gemini", await asyncio.to_thread(_gemini_search, query)
+        return "gemini", await asyncio.to_thread(_gemini_search, query, tz_name)
     raise RuntimeError("nenhum motor de busca nativo disponível")
 
 
@@ -198,7 +204,10 @@ async def cmd_buscar(message: Message, command: CommandObject, user: User) -> No
     if _is_cinema_query(query):
         await message.bot.send_chat_action(message.chat.id, "typing")
         from bot.services.cinema import consultar_sessoes_texto
-        tz = getattr(user, "timezone", None) or settings.timezone
+        # Fuso EFETIVO (viagem): "sessões de amanhã" à noite no destino
+        # resolvia o dia errado com o fuso de casa.
+        from bot.services.viagem import effective_tz
+        tz = effective_tz(user)
         try:
             ans = await consultar_sessoes_texto(query, tz=tz)
         except Exception as e:
