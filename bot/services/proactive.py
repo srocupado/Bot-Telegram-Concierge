@@ -401,7 +401,12 @@ async def listar_fila_mp(
 
 
 _ESTADO_GERANDO = "<b>gerando agora</b>, chega em alguns minutos"
-_ESTADO_CHECANDO = "<b>checando agora</b>, te aviso o resultado em minutos"
+# CHECAGEM (entrada 'all') NÃO promete prazo: o desfecho pode ser MP+nota,
+# "não houve edição" (dia fechado) ou "ainda em aberto" (resolve quando o dia
+# fechar). "em minutos" dava a percepção de resposta iminente — e o silêncio no
+# caso do dia aberto parecia bug (feedback do dono). O bot SEMPRE avisa o
+# desfecho; o texto deixa claro que não precisa ficar esperando.
+_ESTADO_CHECANDO = "<b>checando</b> — te aviso o resultado, não precisa ficar esperando"
 
 
 def _estado_em_andamento(key: str) -> str:

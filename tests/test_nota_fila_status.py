@@ -81,19 +81,22 @@ def _linhas(monkeypatch, datas, com_job=None):
     return asyncio.run(_main())
 
 
-def test_job_vivo_diz_checando_agora(monkeypatch) -> None:
+def test_job_vivo_checagem_nao_promete_prazo(monkeypatch) -> None:
     """O caso que expôs a mentira: o job estava rodando e a linha culpava o
     Inlabs. Entrada 'all' (pedido que não confirmou MP) é CHECAGEM em andamento
     — não 'gerando a nota das MPs', que prometeria MP que pode não existir (num
-    domingo sem DOU). Só com os números conhecidos é que vira 'gerando agora'
+    domingo sem DOU). E não pode prometer PRAZO ("em minutos") — o desfecho pode
+    só vir quando o dia fechar; o silêncio no meio parecia bug pro dono. Só com
+    os números conhecidos é que vira 'gerando agora, chega em alguns minutos'
     (ver test_linha_vira_gerando_agora_apos_o_disparo, que usa chave :1381)."""
     # `spawn` exige loop rodando, então marca o job direto no registro — é o
     # mesmo estado que `job_em_andamento` consulta.
     jobs._jobs[chave_job_nota(USER_ID, D2)] = _TarefaViva()
 
     linhas = _linhas(monkeypatch, [D2])
-    assert "checando agora" in linhas[0]
     assert "Checagem do DOU" in linhas[0]
+    assert "não precisa ficar esperando" in linhas[0]
+    assert "em minutos" not in linhas[0], "checagem não pode prometer prazo"
     assert "Inlabs" not in linhas[0]
 
 
