@@ -98,6 +98,41 @@ _DL_ATTEMPTS = 2
 # que isso; o tempo folgado fica pro download do arquivo em si.
 _GETFILE_TIMEOUT = 20
 
+
+async def _diagnostico_pos_timeout(bot) -> None:
+    """Sondas disparadas NO MOMENTO do timeout, pra fechar o diagnóstico que
+    ficou aberto em 03/08/2026 (get_file estourando 20s com o polling vivo):
+
+    - httpx numa conexão NOVA (fora do aiogram): responde? → a rede do Pi
+      alcança a api.telegram.org agora;
+    - get_me pela MESMA sessão do bot: responde? → a sessão/pool do aiogram
+      está saudável.
+
+    httpx-ok + get_me-FALHOU = sessão emperrada (conserto no bot);
+    httpx-FALHOU = rede/ISP do Pi (nada a consertar no código);
+    os dois ok = problema específico do getFile/arquivo no lado do Telegram."""
+    import time as _time
+
+    import httpx
+
+    t0 = _time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as cli:
+            r = await cli.get("https://api.telegram.org")
+        logger.warning("voice[sonda]: conexão NOVA (httpx): HTTP %d em %.1fs",
+                       r.status_code, _time.monotonic() - t0)
+    except Exception as e:
+        logger.warning("voice[sonda]: conexão NOVA (httpx) FALHOU em %.1fs: %s: %s",
+                       _time.monotonic() - t0, type(e).__name__, e)
+    t0 = _time.monotonic()
+    try:
+        await asyncio.wait_for(bot.get_me(), timeout=8.0)
+        logger.warning("voice[sonda]: get_me pela sessão do bot: ok em %.1fs",
+                       _time.monotonic() - t0)
+    except Exception as e:
+        logger.warning("voice[sonda]: get_me pela sessão do bot FALHOU em %.1fs: %s",
+                       _time.monotonic() - t0, type(e).__name__)
+
 # "cem" e "sem" são HOMÓFONOS em PT-BR (ambos /sẽj̃/) — nenhum STT distingue
 # pelo som, é decisão de contexto. Num comando do bot "sem reais" é quase
 # sempre "cem reais" (ninguém compra "sem reais"). Corrige só nesse contexto
@@ -263,6 +298,7 @@ async def cmd_voice(message: Message, user: User, session: AsyncSession) -> None
         except asyncio.TimeoutError:
             logger.warning("voice download timed out na fase %s (tentativa %d/%d)",
                            fase, attempt, _DL_ATTEMPTS)
+            await _diagnostico_pos_timeout(message.bot)
         except Exception:
             logger.exception("voice download failed na fase %s (tentativa %d/%d)",
                              fase, attempt, _DL_ATTEMPTS)
