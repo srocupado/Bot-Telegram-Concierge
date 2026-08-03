@@ -403,10 +403,11 @@ async def listar_fila_mp(
 _ESTADO_GERANDO = "<b>gerando agora</b>, chega em alguns minutos"
 # CHECAGEM (entrada 'all') NÃO promete prazo: o desfecho pode ser MP+nota,
 # "não houve edição" (dia fechado) ou "ainda em aberto" (resolve quando o dia
-# fechar). "em minutos" dava a percepção de resposta iminente — e o silêncio no
+# fechar). "em minutos" dava percepção de resposta iminente — e o silêncio no
 # caso do dia aberto parecia bug (feedback do dono). O bot SEMPRE avisa o
-# desfecho; o texto deixa claro que não precisa ficar esperando.
-_ESTADO_CHECANDO = "<b>checando</b> — te aviso o resultado, não precisa ficar esperando"
+# desfecho; o texto deixa claro que não precisa acompanhar. Sem repetir
+# "checagem" (o prefixo da linha 'all' já é neutro — ver _texto_fila).
+_ESTADO_CHECANDO = "<b>checando agora</b>; aviso o resultado, sem precisar acompanhar"
 
 
 def _estado_em_andamento(key: str) -> str:
@@ -430,7 +431,10 @@ def _texto_fila(key: str, estado: str) -> str:
     _, _, nums = (key or "").partition(":")
     quando = d.strftime("%d/%m") if d else "?"
     if not nums or nums == "all":
-        return f"📄 Checagem do DOU de {quando} — {estado}."
+        # Sujeito NEUTRO ("DOU de DD/MM"): compõe com qualquer estado (checando,
+        # aguardando a vez, Inlabs fora…) sem repetir "checagem/checando", que
+        # era o que deixava a linha torta ("Checagem do DOU… checando").
+        return f"📄 DOU de {quando} — {estado}."
     return f"📄 Nota técnica (MP {nums.replace(',', ', ')} de {quando}) — {estado}."
 
 

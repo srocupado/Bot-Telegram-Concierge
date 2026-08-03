@@ -94,8 +94,9 @@ def test_job_vivo_checagem_nao_promete_prazo(monkeypatch) -> None:
     jobs._jobs[chave_job_nota(USER_ID, D2)] = _TarefaViva()
 
     linhas = _linhas(monkeypatch, [D2])
-    assert "Checagem do DOU" in linhas[0]
-    assert "não precisa ficar esperando" in linhas[0]
+    assert linhas[0].startswith("📄 DOU de "), "prefixo neutro (sem 'Checagem…checando')"
+    assert "checando agora" in linhas[0]
+    assert "sem precisar acompanhar" in linhas[0]
     assert "em minutos" not in linhas[0], "checagem não pode prometer prazo"
     assert "Inlabs" not in linhas[0]
 
