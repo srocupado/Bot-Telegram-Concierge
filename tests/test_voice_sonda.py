@@ -53,3 +53,39 @@ def test_sondas_sobrevivem_a_tudo_falhando(caplog) -> None:
     msgs = " | ".join(r.getMessage() for r in caplog.records)
     assert "conexão NOVA (httpx) FALHOU" in msgs
     assert "get_me pela sessão do bot FALHOU" in msgs
+
+
+def test_get_file_direto_devolve_o_file_path() -> None:
+    from bot.handlers.voice import _get_file_direto
+
+    bot = SimpleNamespace(token="123:ABC")
+
+    async def _main():
+        with respx.mock:
+            respx.route(host="api.telegram.org", path__regex=r".*getFile").respond(
+                200, json={"ok": True, "result": {"file_path": "voice/file_7.oga"}},
+            )
+            return await _get_file_direto(bot, "FILEID")
+
+    assert asyncio.run(_main()) == "voice/file_7.oga"
+
+
+def test_get_file_direto_not_ok_levanta_sem_vazar_token() -> None:
+    from bot.handlers.voice import _get_file_direto
+
+    bot = SimpleNamespace(token="123:ABC")
+
+    async def _main():
+        with respx.mock:
+            respx.route(host="api.telegram.org", path__regex=r".*getFile").respond(
+                200, json={"ok": False, "description": "file not found"},
+            )
+            try:
+                await _get_file_direto(bot, "FILEID")
+            except RuntimeError as e:
+                return str(e)
+            raise AssertionError("devia ter levantado")
+
+    msg = asyncio.run(_main())
+    assert "not-ok" in msg
+    assert "123:ABC" not in msg, "token do bot vazou na mensagem de erro"
