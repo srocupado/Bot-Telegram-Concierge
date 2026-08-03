@@ -68,7 +68,7 @@ def espiao(monkeypatch):
 
 def _entregar(monkeypatch, *, falhas):
     async def _deliver(bot, session, user, d, *, force, only_numeros):
-        return (1, list(falhas))
+        return (1, list(falhas), None)
 
     from bot.services import dou_monitor
     monkeypatch.setattr(dou_monitor, "deliver_to_user", _deliver)

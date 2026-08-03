@@ -106,7 +106,7 @@ async def _rodar_nota(
         if user is None or not user.is_authorized:
             return
         try:
-            n, _falhas = await deliver_to_user(
+            n, _falhas, motivo = await deliver_to_user(
                 bot, session, user, target, force=True, only_numeros=only_numeros,
             )
         except DouError as e:
@@ -128,8 +128,9 @@ async def _rodar_nota(
             )
             return
         if n == 0:
+            from bot.services.dou_monitor import texto_sem_mp
             await bot.send_message(
-                user.id, "Nenhuma MP encontrada nessa data.", parse_mode=None,
+                user.id, texto_sem_mp(motivo, target), parse_mode="HTML",
             )
 
 

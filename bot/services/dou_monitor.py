@@ -704,6 +704,13 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
             "tente de novo em instantes."
         )
     out = MPList(results)
+    # "Não houve edição" (dia sem publicação — domingo/feriado) ≠ "houve DOU
+    # sem MP nova". A distinção existe pro aviso não dizer "gerando a nota"/
+    # "sem MP" num dia que nem teve Diário. É por FONTE de Seção 1 encontrada na
+    # listagem, não por 0 MP (dia útil pode ter DOU e nenhuma MP).
+    out.sem_edicao = not any(
+        fontes[s]["zip"] or fontes[s]["pdf"] for s in DOU_SECTIONS
+    )
     if sections_404 and not _dia_encerrado(target_date):
         # Dia ainda aberto: o 404 não prova ausência. NÃO é falha (nada de
         # aviso "não consegui checar" — seria alarme falso todo dia útil, já
@@ -741,6 +748,12 @@ class MPList(list):
     # Ver `_dia_encerrado`.
     provisorio: bool = False
     secoes_404: tuple[str, ...] = ()
+
+    # Nenhuma fonte de Seção 1 (zip nem PDF) na listagem do dia: o Diário não
+    # foi publicado (domingo/feriado). Distinto de "houve DOU, 0 MP". Combinado
+    # com _dia_encerrado, é o que separa "não houve edição" (definitivo) de
+    # "ainda não saiu" (provisorio).
+    sem_edicao: bool = False
 
 
 async def fetch_mps(target_date: date) -> list[dict]:
@@ -1423,20 +1436,50 @@ async def _fechar_outbox(
                    len(falhas), d, chave_falha)
 
 
+def texto_sem_mp(motivo: str | None, target: date) -> str:
+    """Frase de desfecho quando a busca não trouxe MP — distingue 'não houve
+    edição' (domingo/feriado) de 'houve DOU sem MP' de 'ainda pode sair'. Antes
+    tudo isso virava um único "Nenhuma MP encontrada", que num domingo soava
+    como se o bot não tivesse checado (ou pior, prometia nota que nunca vinha)."""
+    dia = target.strftime("%d/%m/%Y")
+    if motivo == "sem_edicao":
+        return (f"📭 Não houve edição do Diário Oficial em {dia} "
+                "(dia sem publicação — fim de semana/feriado).")
+    if motivo == "provisorio":
+        return (f"⏳ O Diário Oficial de {dia} ainda pode sair (dia em aberto). "
+                "Re-checo sozinho e te aviso se vier MP.")
+    if motivo == "incompleto":
+        return (f"⚠️ Não consegui confirmar o DOU de {dia} agora (fonte "
+                "incompleta) — deixei pra re-checar; te aviso se vier MP.")
+    # sem_mp (ou motivo desconhecido): houve Diário, só não veio MP.
+    return f"✅ Saiu o Diário Oficial de {dia}, mas sem nenhuma MP nova."
+
+
 async def deliver_to_user(
     bot, session: AsyncSession, user, target_date: date, *, force: bool = False,
     only_numeros: list[str] | None = None,
-) -> int:
+) -> tuple[int, list[str], str | None]:
     """Busca MPs da data, gera nota + DOCX e entrega no Telegram. Por padrão
     pula as já notificadas (dedup); com force=True entrega tudo que achar
     (usado pelo comando manual). only_numeros restringe a entrega a essas MPs
     (números) — usado pelo botão do proativo, que avisa de um subconjunto do dia
-    e não deve regerar todas. Retorna quantas MPs foram entregues.
+    e não deve regerar todas.
+
+    Retorna (entregues, falhas, motivo): `motivo` é None quando houve entrega;
+    quando entregues==0, diz POR QUÊ — "sem_edicao" (dia sem Diário: domingo/
+    feriado), "sem_mp" (houve DOU, nenhuma MP), "provisorio" (dia em aberto,
+    edição ainda pode sair) ou "incompleto" (uma fonte falhou). O caller usa
+    isso pra responder com precisão em vez de um "nenhuma MP" ambíguo.
     Levanta DouError se o fetch falhar (credencial, rede)."""
     from aiogram.types import BufferedInputFile
 
     with _fase(f"fetch DOU {target_date.isoformat()}"):
         mps = await fetch_mps(target_date)
+    # Flags do fetch ANTES do filtro por only_numeros (que troca o MPList por uma
+    # list crua e perderia provisorio/sem_edicao/incompleto).
+    _provisorio = bool(getattr(mps, "provisorio", False))
+    _incompleto = bool(getattr(mps, "incompleto", False))
+    _sem_edicao = bool(getattr(mps, "sem_edicao", False))
     if only_numeros:
         alvo = set(only_numeros)
         mps = [mp for mp in mps if mp["numero"] in alvo]
@@ -1445,11 +1488,19 @@ async def deliver_to_user(
     else:
         novas = await filter_unseen(session, user.id, mps)
     if not novas:
-        # MESMO formato do caminho cheio (entregues, falhas). Um `return 0` cru
-        # aqui fazia o caller `n, _falhas = await deliver_to_user(...)` estourar
-        # TypeError (unpack de int) em TODO dia sem MP nova → "Erro ao gerar a
-        # nota técnica". Regressão do fix da tupla; agora consistente.
-        return 0, []
+        # 3-tupla como o caminho cheio (um `return 0` cru estourava TypeError no
+        # unpack do caller). `motivo` distingue os desfeches vazios — a ordem
+        # importa: dia aberto e fonte-falha vêm ANTES de "sem edição", que só é
+        # afirmável quando o dia fechou sem nenhuma fonte de Seção 1.
+        if _provisorio:
+            motivo = "provisorio"
+        elif _incompleto:
+            motivo = "incompleto"
+        elif _sem_edicao:
+            motivo = "sem_edicao"
+        else:
+            motivo = "sem_mp"
+        return 0, [], motivo
 
     # set de já-vistas pra não duplicar linhas no banco quando force=True.
     rows = await session.scalars(select(DouSeenMP).where(DouSeenMP.user_id == user.id))
@@ -1542,8 +1593,9 @@ async def deliver_to_user(
             falhas.append(mp["numero"])
 
     await _fechar_outbox(session, user.id, target_date, chave_outbox, falhas)
-    # Devolve (entregues, falhas). O caller da FILA (_entregar_nota_pendente)
-    # precisa do `falhas` pra NÃO dar baixa na pendência quando a nota falhou —
-    # sem isso a entrada some da fila e a nota nunca mais é re-tentada, sem nem
-    # o aviso de desistência (o pior modo de falha do projeto).
-    return len(avisadas), falhas
+    # Devolve (entregues, falhas, motivo). O caller da FILA
+    # (_entregar_nota_pendente) precisa do `falhas` pra NÃO dar baixa na
+    # pendência quando a nota falhou — sem isso a entrada some da fila e a nota
+    # nunca mais é re-tentada, sem nem o aviso de desistência (o pior modo de
+    # falha do projeto). motivo=None aqui: houve entrega.
+    return len(avisadas), falhas, None

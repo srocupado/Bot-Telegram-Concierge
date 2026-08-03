@@ -66,7 +66,7 @@ def _entregar(monkeypatch, *, erro=None, falhas=None):
     async def _deliver(bot, session, user, d, *, force, only_numeros):
         if erro:
             raise erro
-        return (1, list(falhas or []))
+        return (1, list(falhas or []), None)
 
     from bot.services import dou_monitor
     monkeypatch.setattr(dou_monitor, "deliver_to_user", _deliver)

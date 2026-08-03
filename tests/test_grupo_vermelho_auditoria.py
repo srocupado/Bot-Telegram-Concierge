@@ -290,8 +290,9 @@ def test_deliver_dia_sem_mp_devolve_tupla(monkeypatch) -> None:
     resultado = asyncio.run(dou_monitor.deliver_to_user(
         None, SimpleNamespace(), SimpleNamespace(id=1), date(2026, 8, 2),
     ))
-    n, falhas = resultado   # NÃO pode estourar (era int)
+    n, falhas, motivo = resultado   # 3-tupla; NÃO pode estourar (era int)
     assert (n, falhas) == (0, [])
+    assert motivo == "sem_mp"   # MPList() sem flags → houve DOU, 0 MP
 
 
 # ═══ #3 congresso: usa data BRT, não o relógio UTC do container ══════════════

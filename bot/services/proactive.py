@@ -201,7 +201,7 @@ async def _entregar_nota_pendente(
         if user is None or not user.is_authorized or not user.dou_mp_subscribed:
             return
         try:
-            _entregues, falhas = await deliver_to_user(
+            _entregues, falhas, motivo = await deliver_to_user(
                 bot, session, user, d, force=True, only_numeros=numeros,
             )
         except InlabsMaintenanceError as e:
@@ -232,6 +232,29 @@ async def _entregar_nota_pendente(
             await _marca_manut(session, False)
             return
         await _marca_manut(session, False)
+        if _entregues == 0:
+            # O Inlabs respondeu (não é fila/manutenção), mas não veio MP.
+            # Distinguir o desfecho — senão a linha "gerando ... todas as MPs"
+            # fica prometendo uma nota que não existe num dia sem Diário.
+            if motivo == "provisorio":
+                # Dia ainda em aberto (ex.: pediram HOJE e a edição pode sair à
+                # noite): NÃO limpa — fica na fila pra re-checar quando fechar.
+                # Silêncio: não há nada iminente a prometer.
+                logger.info("nota pendente %s: dia em aberto, mantida na fila", key)
+                return
+            if motivo in ("sem_edicao", "sem_mp"):
+                # Desfecho DEFINITIVO sem MP: tira da fila e DIZ o que houve —
+                # some em silêncio contradiz o "te envio automaticamente".
+                from bot.services.dou_monitor import texto_sem_mp
+                await unmark_notified(session, user_id, "nota_pendente", key)
+                await _send(bot, user_id, texto_sem_mp(motivo, d) +
+                            " Tirei da fila de checagem.")
+                logger.info("nota pendente %s resolvida sem MP (%s)", key, motivo)
+                return
+            # incompleto/desconhecido: não dá pra afirmar ausência — mantém na
+            # fila (na dúvida é pendência), silêncio, re-tenta na próxima janela.
+            logger.info("nota pendente %s: sem baixa (motivo=%s)", key, motivo)
+            return
         await unmark_notified(session, user_id, "nota_pendente", key)
         logger.info("nota pendente %s entregue", key)
 
@@ -378,18 +401,32 @@ async def listar_fila_mp(
 
 
 _ESTADO_GERANDO = "<b>gerando agora</b>, chega em alguns minutos"
+_ESTADO_CHECANDO = "<b>checando agora</b>, te aviso o resultado em minutos"
+
+
+def _estado_em_andamento(key: str) -> str:
+    """Estado 'em andamento' conforme o tipo da entrada. 'all' nasce de um
+    pedido que não chegou a confirmar MP (Inlabs fora) → é CHECAGEM, não geração
+    de nota; dizer 'gerando a nota' prometeria MP que pode não existir."""
+    _, _, nums = (key or "").partition(":")
+    return _ESTADO_CHECANDO if (not nums or nums == "all") else _ESTADO_GERANDO
 
 
 def _texto_fila(key: str, estado: str) -> str:
     """Linha de status de uma entrada da fila. Compartilhada entre a montagem
     (collect_mp) e a correção pós-disparo (_marcar_geradas_agora) — texto
-    duplicado nos dois lugares sairia do ar um dia sem ninguém notar."""
+    duplicado nos dois lugares sairia do ar um dia sem ninguém notar.
+
+    'all' (pedido que não chegou a confirmar MP — Inlabs fora) vira CHECAGEM do
+    DOU: falar em 'nota das MPs' promete MP que pode não existir (num domingo,
+    p.ex., era exatamente o texto enganoso 'gerando ... todas as MPs de 02/08').
+    Só com os NÚMEROS conhecidos é 'nota técnica da MP X'."""
     d = _data_da_chave(key)
     _, _, nums = (key or "").partition(":")
-    alvo = ("todas as MPs" if (not nums or nums == "all")
-            else f"MP {nums.replace(',', ', ')}")
     quando = d.strftime("%d/%m") if d else "?"
-    return f"📄 Nota técnica ({alvo} de {quando}) — {estado}."
+    if not nums or nums == "all":
+        return f"📄 Checagem do DOU de {quando} — {estado}."
+    return f"📄 Nota técnica (MP {nums.replace(',', ', ')} de {quando}) — {estado}."
 
 
 def _marcar_geradas_agora(facts: list[ProactiveFact], disparadas: list[date]) -> None:
@@ -408,7 +445,7 @@ def _marcar_geradas_agora(facts: list[ProactiveFact], disparadas: list[date]) ->
     alvo = set(disparadas)
     for i, f in enumerate(facts):
         if f.kind == "nota_fila" and _data_da_chave(f.key) in alvo:
-            facts[i] = replace(f, text=_texto_fila(f.key, _ESTADO_GERANDO))
+            facts[i] = replace(f, text=_texto_fila(f.key, _estado_em_andamento(f.key)))
 
 
 def _data_da_chave(key: str) -> date | None:
@@ -767,7 +804,7 @@ async def collect_mp(
             estado = ("<b>na fila de checagem</b> — o Inlabs está fora agora; "
                       "checo e envio quando ele voltar (pode não ser hoje)")
         elif jobs.job_em_andamento(chave_job_nota(user.id, d)):
-            estado = _ESTADO_GERANDO
+            estado = _estado_em_andamento(r.key)
         elif pos >= _NOTA_MAX_POR_JANELA:
             estado = (f"aguardando a vez (gero até {_NOTA_MAX_POR_JANELA} por "
                       "janela) — envio assim que sair")

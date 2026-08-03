@@ -81,15 +81,19 @@ def _linhas(monkeypatch, datas, com_job=None):
     return asyncio.run(_main())
 
 
-def test_job_vivo_diz_gerando_agora(monkeypatch) -> None:
-    """O caso que expôs a mentira: a nota estava sendo gerada e a linha
-    culpava o Inlabs."""
+def test_job_vivo_diz_checando_agora(monkeypatch) -> None:
+    """O caso que expôs a mentira: o job estava rodando e a linha culpava o
+    Inlabs. Entrada 'all' (pedido que não confirmou MP) é CHECAGEM em andamento
+    — não 'gerando a nota das MPs', que prometeria MP que pode não existir (num
+    domingo sem DOU). Só com os números conhecidos é que vira 'gerando agora'
+    (ver test_linha_vira_gerando_agora_apos_o_disparo, que usa chave :1381)."""
     # `spawn` exige loop rodando, então marca o job direto no registro — é o
     # mesmo estado que `job_em_andamento` consulta.
     jobs._jobs[chave_job_nota(USER_ID, D2)] = _TarefaViva()
 
     linhas = _linhas(monkeypatch, [D2])
-    assert "gerando agora" in linhas[0]
+    assert "checando agora" in linhas[0]
+    assert "Checagem do DOU" in linhas[0]
     assert "Inlabs" not in linhas[0]
 
 
