@@ -153,23 +153,38 @@ async def _fetch_day(
         raise CongressScrapeError(f"parse error for {day}: {e}") from e
 
 
-async def fetch_week_mps(client: httpx.AsyncClient, today: date) -> list[MPItem]:
+class WeekMPs(list):
+    """`list` de MPItem com os DIAS cuja página FALHOU no scrape parcial.
+
+    Sem a flag, semana com 4 dias em 503 e 1 dia ok saía como "pauta da
+    semana" completa — o dono concluía "não há MP na quinta" quando na
+    verdade a quinta não foi checada (falso negativo, a regra nº 1)."""
+
+    dias_falhos: tuple[date, ...] = ()
+
+
+async def fetch_week_mps(client: httpx.AsyncClient, today: date) -> WeekMPs:
     """Fetch MP items from the Congresso Nacional agenda for Mon-Fri of `today`'s week.
 
-    Fetches one page per weekday in parallel. Raises CongressScrapeError if any day fails.
+    Fetches one page per weekday in parallel. Raises CongressScrapeError se
+    TODOS os dias falharem; falha PARCIAL entrega o que veio com os dias
+    falhos marcados em `dias_falhos` (o formatador avisa quais ficaram fora).
     """
     monday, _ = _week_bounds(today)
     days = [monday + timedelta(days=i) for i in range(5)]
     results = await asyncio.gather(
         *(_fetch_day(client, d) for d in days), return_exceptions=True
     )
-    items: list[MPItem] = []
+    items = WeekMPs()
     errors: list[str] = []
-    for res in results:
+    falhos: list[date] = []
+    for day, res in zip(days, results):
         if isinstance(res, CongressScrapeError):
             errors.append(str(res))
+            falhos.append(day)
         elif isinstance(res, BaseException):
             errors.append(repr(res))
+            falhos.append(day)
         else:
             items.extend(res)
     if errors and not items:
@@ -177,6 +192,7 @@ async def fetch_week_mps(client: httpx.AsyncClient, today: date) -> list[MPItem]
     if errors:
         logger.warning("partial congress scrape: %s", "; ".join(errors))
     items.sort(key=lambda i: (i.date, i.hora or ""))
+    items.dias_falhos = tuple(falhos)
     return items
 
 
@@ -186,8 +202,19 @@ def format_week_message(items: list[MPItem], today: date) -> str:
         f"🏛️ <b>Agenda do Congresso — semana de "
         f"{monday.strftime('%d/%m')} a {friday.strftime('%d/%m')}</b>"
     )
+    # Dias que o scrape NÃO conseguiu checar (falha parcial): ditos SEMPRE —
+    # sem isso, a semana parcial passava por completa e "sem MP na quinta"
+    # era afirmação sobre um dia que ninguém olhou.
+    falhos = getattr(items, "dias_falhos", ())
+    aviso = ""
+    if falhos:
+        dias_txt = ", ".join(
+            f"{_WEEKDAY_PT[d.weekday()]} {d.strftime('%d/%m')}" for d in falhos
+        )
+        aviso = (f"\n\n⚠️ Não consegui checar: {dias_txt} — NÃO assuma "
+                 "pauta vazia nesses dias.")
     if not items:
-        return f"{header}\n\nSem MP esta semana."
+        return f"{header}\n\nSem MP esta semana.{aviso}"
     lines = [header, ""]
     for item in items:
         wd = _WEEKDAY_PT[item.date.weekday()]
@@ -205,4 +232,4 @@ def format_week_message(items: list[MPItem], today: date) -> str:
             )
         else:
             lines.append(f"• <b>{when}</b> — {descricao_html}")
-    return "\n".join(lines)
+    return "\n".join(lines) + aviso

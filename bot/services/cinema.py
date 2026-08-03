@@ -358,22 +358,29 @@ async def _programacao(
     sessões do dia (1 priceTable por filme, concorrente)."""
     sem = asyncio.Semaphore(_DIR_CONCURRENCY)
 
-    async def _sess(m: dict) -> tuple[str, list[dict]]:
+    async def _sess(m: dict) -> tuple[str, list[dict] | None]:
         async with sem:
             try:
                 res = await _get(client, "/v1/ticketTypes/priceTable",
                                  {"movieId": m["id"], "theaterId": th["id"],
                                   "sessionDate": d.isoformat()})
             except CinemaError:
-                return (m.get("name") or "?", [])
+                # None ≠ []: falha da API neste filme NÃO é "sem sessão". O
+                # texto sai VERBATIM com selo de dado confiável — listar o
+                # filme em "Sem sessões nessa data" era falso negativo
+                # carimbado (429/WAF em 40 chamadas concorrentes acontece).
+                return (m.get("name") or "?", None)
         res = res if isinstance(res, dict) else {}
         return (m.get("name") or "?", res.get("sessions") or [])
 
     results = await asyncio.gather(*(_sess(m) for m in em_cartaz))
     linhas = [f"🎬 Programação — Cinemark {th['name']} ({th['city']}/{_uf(th['state'])})",
               f"📅 {_quando_label(d, hoje)}", ""]
-    sem_sessao, teve = [], False
+    sem_sessao, falharam, teve = [], [], False
     for nome, sessoes in results:
+        if sessoes is None:
+            falharam.append(nome)
+            continue
         grupos = _group_sessions(sessoes)
         if not grupos:
             sem_sessao.append(nome)
@@ -383,9 +390,14 @@ async def _programacao(
         linhas.extend(grupos)
         linhas.append("")
     if not teve:
-        linhas.append("(nenhum filme com sessão nessa data)")
+        linhas.append("(nenhum filme com sessão confirmada nessa data)")
     elif sem_sessao:
         linhas.append("Sem sessões nessa data: " + ", ".join(sem_sessao))
+    if falharam:
+        linhas.append(
+            "⚠️ Não consegui checar: " + ", ".join(falharam)
+            + " — a consulta falhou pra esses; NÃO significa que não há sessão."
+        )
     return "\n".join(linhas).strip()
 
 

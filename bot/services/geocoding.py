@@ -189,15 +189,27 @@ async def geocode(
     else:
         ordem = [("Places", _via_places), ("Geocoding", _via_geocoding)]
 
+    ultima_falha: GeocodingError | None = None
+    algum_respondeu = False
     for nome, metodo in ordem:
         try:
             hit = await metodo()
         except GeocodingError as e:
+            ultima_falha = e
             logger.warning("geocode: %s falhou p/ %r (%s)", nome, query, e)
             continue
+        algum_respondeu = True
         if hit is not None:
             logger.info("geocode: resolvido via %s (%r)", nome, query)
             return hit
 
+    if not algum_respondeu and ultima_falha is not None:
+        # TODOS os métodos falharam (chave sem billing, API desabilitada,
+        # rede): isso é ERRO, não "endereço não existe". Engolir aqui fazia o
+        # usuário receber "🤷 Não encontrei o endereço. Tente um endereço mais
+        # específico" pra um endereço perfeito — e o except GeocodingError do
+        # route.py (com a dica de conferir a API no Cloud Console) era código
+        # morto, inalcançável.
+        raise ultima_falha
     logger.info("geocode: nada encontrado (Geocoding + Places) p/ %r", query)
     return None

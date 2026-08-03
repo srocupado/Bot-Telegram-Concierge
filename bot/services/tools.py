@@ -687,7 +687,11 @@ async def _h_consultar_cotacao(args: dict, ctx: ToolContext) -> str:
     try:
         texto = await consultar_cotacao(ativo, tipo)
     except CotacaoError as e:
-        return f"erro: {e}"
+        # A FALHA também vai verbatim: "erro: ..." como texto pro LLM deixava
+        # o modelo leve responder um preço de memória do treino ("o dólar está
+        # por volta de R$ 5,20") — pior que não responder. Mesmo short-circuit
+        # do consultar_mp_dou pra fonte indisponível.
+        return _falha_verbatim(ctx, f"a cotação de {ativo}", str(e))
     # Cotação é dado monetário determinístico: vai VERBATIM (convenção do
     # projeto). "Repasse o valor exato" já não segurou noutros casos — modelo
     # leve trocava dígitos ao reescrever (mesmo modo de falha do consultar_mp_dou).
@@ -1033,7 +1037,22 @@ async def _h_consultar_lancamentos(args: dict, ctx: ToolContext) -> str:
         return f"erro: {e}"
     except FinanceiroError as e:
         return f"erro: {e}"
-    return "ok (repasse estas linhas EXATAMENTE como estão, sem reformatar nem trocar emojis/valores):\n" + out
+    if out.strip() == "(sem dados)":
+        return "ok: nenhum lançamento no período (diga isso ao usuário)"
+    # Extrato é dado monetário determinístico: o corpo vai VERBATIM
+    # (direct_html) — "repasse EXATAMENTE" não segurava (modelo leve trocava
+    # dígitos, ver comentário do consultar_cotacao). SEM short_circuit, de
+    # propósito: os IDS_INTERNOS precisam voltar pro modelo pra encadear
+    # apagar_lancamento no MESMO turno ("apaga a compra do mercado" faz
+    # consulta→apagar em sequência). Não sai mensagem duplicada: quando há
+    # direct_html, o deliver_llm_reply envia o verbatim e DESCARTA o texto
+    # final do modelo.
+    corpo, sep, ids = out.partition("[IDS_INTERNOS")
+    ctx.fallback_text = corpo.strip()
+    ctx.direct_html = _html_escape(corpo.strip())
+    resto = (sep + ids) if sep else "(nenhum lançamento do bot no período — nada apagável)"
+    return ("ok: extrato JÁ ENVIADO ao usuário verbatim — NÃO repita as "
+            "linhas. Pra apagar algo, use os ids abaixo.\n" + resto)
 
 
 async def _h_consultar_saldo(args: dict, ctx: ToolContext) -> str:
@@ -1255,7 +1274,15 @@ async def _h_analisar_gastos(args: dict, ctx: ToolContext) -> str:
         return f"erro: {e}"
     except FinanceiroError as e:
         return f"erro: {e}"
-    return "ok:\n" + out
+    if not out.strip() or out.strip() == "(sem dados)":
+        return "ok: sem gastos no período (diga isso ao usuário)"
+    # Totais/percentuais de gasto são dado monetário determinístico: verbatim
+    # + short_circuit, como o consultar_saldo logo acima — era a última tool
+    # financeira cujos números passavam pela paráfrase do LLM.
+    ctx.fallback_text = out
+    ctx.direct_html = _html_escape(out)
+    ctx.short_circuit = True
+    return "ok: análise enviada ao usuário (não escreva nada, a mensagem já foi enviada)"
 
 
 async def _h_consultar_mp_dou(args: dict, ctx: ToolContext) -> str:
