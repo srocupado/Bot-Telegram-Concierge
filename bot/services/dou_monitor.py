@@ -1463,9 +1463,10 @@ def texto_sem_mp(motivo: str | None, target: date) -> str:
     if motivo == "sem_mp_extra":
         # O DOU JÁ saiu (edição normal), sem MP — mas o dia segue aberto e a
         # edição extra ainda pode trazer MP. Não dizer "ainda pode sair" (o DOU
-        # já está no ar); dizer que saiu sem MP e que sigo de olho na extra.
-        return (f"✅ Saiu o Diário Oficial de {dia}, sem MP nova até agora. "
-                "Se sair edição extra com MP ainda hoje, eu te aviso.")
+        # já está no ar). A extra, quando há, SEMPRE sai depois das 18h (regra
+        # do dono) — então o texto diz QUANDO esperar, não um "ainda hoje" vago.
+        return (f"✅ Saiu o Diário Oficial de {dia}, sem MP nova. A edição extra "
+                "(quando há) só sai depois das 18h — se vier MP nela, eu te aviso.")
     if motivo == "incompleto":
         return (f"⚠️ Não consegui confirmar o DOU de {dia} agora (fonte "
                 "incompleta) — deixei pra re-checar; te aviso se vier MP.")
