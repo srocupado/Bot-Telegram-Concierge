@@ -1084,6 +1084,19 @@ async def lancar_despesa_cartao(
     return entry
 
 
+def _taxa_para_fracao(taxa: float) -> float:
+    """Normaliza a taxa do aporte pra FRAÇÃO anual antes de gravar.
+
+    A tool declara `taxa` em % a.a. ("aportei a 6%"), mas o campo `rate` é
+    lido como FRAÇÃO por _project_contribution_to_today e pelo app React
+    ((1+i)*(1+r)-1). Gravar 6 onde se lê 0.06 multiplicava o aporte por 7 AO
+    ANO no patrimônio — e corrompia o dado que o app lê, não só a exibição do
+    bot. Limiar: >=1 é % (divide por 100); <1 já veio como fração. Nenhum
+    título real paga menos de 1% a.a., então não há zona morta na prática."""
+    t = float(taxa)
+    return t / 100.0 if t >= 1 else t
+
+
 async def registrar_aporte_tesouro(
     session: AsyncSession,
     user,
@@ -1101,7 +1114,7 @@ async def registrar_aporte_tesouro(
         "source": "bot",
     }
     if taxa is not None:
-        contrib["rate"] = float(taxa)
+        contrib["rate"] = _taxa_para_fracao(taxa)
 
     matched_name = await _run_blocking(
         _set_treasury_contribution, db, uid, titulo, contrib,
