@@ -553,6 +553,12 @@ def _fontes_secao1(nomes: set[str]) -> dict[str, dict[str, list[str]]]:
 _SESSION_LOCK = threading.Lock()
 _SESSION: dict = {"cookie": None, "ts": 0.0}
 _SESSION_TTL = 1800.0   # 30 min — cobre uma rodada inteira; renova sem esticar
+# Tentativas de LISTAGEM por ciclo antes de desistir do cookie. A listagem é um
+# GET (barato, NÃO conta no limite de LOGIN), então re-tentar o GET recupera o
+# BLIP do Inlabs (serve tela de login numa requisição isolada mesmo logado —
+# medido 03/08/2026: 02/08 falhou 1x e 03/08 funcionou nos GETs vizinhos) sem
+# rajada de login (o que derrubava a sessão).
+_LISTAGEM_TRIES = 3
 
 
 def _invalidar_sessao() -> None:
@@ -623,35 +629,37 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
             rl.raise_for_status()
             return rl.text
 
-        # Reusa a sessão (1 login/rodada; ver _obter_cookie). Se o cookie do
-        # cache tiver VENCIDO (listagem vira tela de login), invalida e loga UMA
-        # vez — sem rajada.
-        cookie = _obter_cookie(email, password)
-        corpo = _listar(cookie)
-        if _MAINT_RE.search(corpo):
-            raise InlabsMaintenanceError(
-                "o Inlabs (sistema oficial do DOU) está em manutenção agora "
-                "— não dá pra checar as MPs. Tente mais tarde."
+        # 2 ciclos: (0) cookie do cache reusado; (1) UM login novo, só se o cookie
+        # tiver mesmo vencido. Dentro do ciclo, re-tenta a LISTAGEM (GET barato)
+        # pra absorver o blip do Inlabs. Recupera o caso 02/08 (blip isolado) SEM
+        # rajada de login. Manutenção declarada tem precedência (pane, não blip).
+        corpo: str | None = None
+        cookie = ""
+        for ciclo in range(2):
+            cookie = _obter_cookie(email, password, force=(ciclo == 1))
+            for tentativa in range(_LISTAGEM_TRIES):
+                body = _listar(cookie)
+                if _MAINT_RE.search(body):
+                    raise InlabsMaintenanceError(
+                        "o Inlabs (sistema oficial do DOU) está em manutenção agora "
+                        "— não dá pra checar as MPs. Tente mais tarde."
+                    )
+                if _e_listagem(body):
+                    corpo = body
+                    break
+                if tentativa < _LISTAGEM_TRIES - 1:
+                    time.sleep(2)   # blip transitório — dá um beat e re-tenta o GET
+            if corpo is not None:
+                break
+            _invalidar_sessao()   # cookie deste ciclo não colou → login novo no próximo
+        if corpo is None:
+            # Recusa mesmo com login novo e re-tentativas: FALHA explícita (dia
+            # pendente, re-checado nas próximas janelas), NUNCA "não houve MP".
+            raise DouError(
+                "não consegui baixar o DOU — o Inlabs recusou a sessão "
+                "(instabilidade/limite de login) — não dá pra confirmar se houve "
+                "MP; tente de novo em instantes."
             )
-        if not _e_listagem(corpo):
-            _invalidar_sessao()
-            cookie = _obter_cookie(email, password, force=True)   # login fresco
-            corpo = _listar(cookie)
-            if _MAINT_RE.search(corpo):
-                raise InlabsMaintenanceError(
-                    "o Inlabs (sistema oficial do DOU) está em manutenção agora "
-                    "— não dá pra checar as MPs. Tente mais tarde."
-                )
-            if not _e_listagem(corpo):
-                # Recusa mesmo com login fresco: FALHA explícita (dia pendente,
-                # re-checado nas próximas janelas), NUNCA "não houve MP". Não
-                # deixa cookie ruim no cache.
-                _invalidar_sessao()
-                raise DouError(
-                    "não consegui baixar o DOU — o Inlabs recusou a sessão "
-                    "(instabilidade/limite de login) — não dá pra confirmar se "
-                    "houve MP; tente de novo em instantes."
-                )
 
         hdr = {"Cookie": f"inlabs_session_cookie={cookie}"}
 
