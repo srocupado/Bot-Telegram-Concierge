@@ -214,3 +214,40 @@ def test_sessao_recusada_uma_vez_recupera_no_relogin(monkeypatch) -> None:
     out = dm._fetch_mps_sync(datetime.now(dm.BRT).date())
     assert out.incompleto is False, "recuperou no re-login — não é falha"
     assert respostas == [], "não re-logou: consumiu só a 1ª resposta e desistiu"
+
+
+def test_sessao_reusada_entre_dias_loga_uma_vez(monkeypatch) -> None:
+    """O bug do rate-limit (03/08/2026): o Inlabs limita logins, e o proativo
+    logava POR DIA numa rodada → derrubava a própria sessão e NADA passava.
+    Fetches de dias diferentes têm que COMPARTILHAR um login (cookie reusado)."""
+    from types import SimpleNamespace
+    from datetime import datetime, timedelta
+    logins = {"n": 0}
+
+    class _Fake:
+        def __init__(self):
+            self.cookies = {"inlabs_session_cookie": "c"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, *a, **kw):          # login
+            logins["n"] += 1
+            return _Resp(200, b"ok")
+
+        def get(self, url, **kw):          # listagem (sessão viva)
+            return _Resp(200, LISTAGEM.encode())
+
+    monkeypatch.setattr(dm.httpx, "Client", lambda **kw: _Fake())
+    monkeypatch.setattr(dm.settings, "inlabs_email", "e@x")
+    monkeypatch.setattr(dm.settings, "inlabs_password",
+                        SimpleNamespace(get_secret_value=lambda: "s"))
+
+    hoje = datetime.now(dm.BRT).date()
+    dm._fetch_mps_sync(hoje)
+    dm._fetch_mps_sync(hoje - timedelta(days=1))
+    dm._fetch_mps_sync(hoje - timedelta(days=2))
+    assert logins["n"] == 1, f"logou {logins['n']}x em 3 dias — devia reusar a sessão"

@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import zipfile
 from contextlib import contextmanager
@@ -541,12 +542,60 @@ def _fontes_secao1(nomes: set[str]) -> dict[str, dict[str, list[str]]]:
     }
 
 
-# Quantas vezes re-logar quando o Inlabs RECUSA a sessão (tela de login em 200,
-# ou login sem cookie). Medido: a recusa é TRANSITÓRIA e passa ao re-logar COM
-# CLIENTE NOVO — a sonda dos PDFs de 01/08/2026 só pegou sessão depois de
-# algumas tentativas, sempre re-criando o cliente. Uma tentativa só (o que havia
-# antes) deixava o dia "na fila de checagem" com o Inlabs de pé.
-_LOGIN_TRIES = 4
+# ── Sessão do Inlabs COMPARTILHADA entre fetches ──
+# O Inlabs LIMITA logins por minuto (medido 03/08/2026: rajada de 8 logins → TODOS
+# recusados, e depois nem login solto passava por alguns minutos). O proativo
+# checa vários dias por rodada e logava POR DIA (~12 logins) → derrubava a
+# própria sessão; aí NADA passava, nem o /mp_dou_agora logo depois. A correção é
+# LOGAR UMA VEZ e reusar o cookie (a sessão vai no header Cookie, então o mesmo
+# cookie serve pra QUALQUER data) — corta de ~12 logins/rodada pra 1 — e NÃO
+# re-tentar login em rajada (isso aprofundava o bloqueio).
+_SESSION_LOCK = threading.Lock()
+_SESSION: dict = {"cookie": None, "ts": 0.0}
+_SESSION_TTL = 1800.0   # 30 min — cobre uma rodada inteira; renova sem esticar
+
+
+def _invalidar_sessao() -> None:
+    with _SESSION_LOCK:
+        _SESSION["cookie"] = None
+
+
+def _obter_cookie(email: str, password: str, *, force: bool = False) -> str:
+    """Cookie de sessão do Inlabs, REUSADO entre fetches. Loga só em
+    cache-miss/expirado (ou force=True). UMA tentativa por chamada: re-tentar
+    login em rajada aprofunda o rate-limit do Inlabs. Falhou? levanta DouError e
+    o dia fica pendente pra próxima janela (~6h), com o limite já resetado.
+    Serializado (lock): fetches concorrentes reusam o mesmo login, não logam em
+    dobro."""
+    with _SESSION_LOCK:
+        if (not force and _SESSION["cookie"]
+                and time.monotonic() - _SESSION["ts"] < _SESSION_TTL):
+            return _SESSION["cookie"]
+        # cliente NOVO (conexão nova) — a recusa de sessão não passa na conexão
+        # reusada (medido 01/08/2026).
+        with httpx.Client(headers=_HEADERS, follow_redirects=True) as login:
+            try:
+                resp = _inlabs_call(lambda: login.post(
+                    f"{INLABS_BASE}/logar.php",
+                    data={"email": email, "password": password},
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    timeout=20.0,
+                ))
+                resp.raise_for_status()
+            except DouError:
+                raise  # InlabsMaintenanceError já traz mensagem clara
+            except Exception as exc:
+                raise DouError(f"falha ao autenticar no Inlabs: {exc}") from exc
+            cookie = login.cookies.get("inlabs_session_cookie")
+        if not cookie:
+            raise DouError(
+                "o Inlabs recusou o login agora (não devolveu cookie) — costuma "
+                "ser o limite de tentativas dele e passa em minutos. O dia fica "
+                "pendente e é re-checado na próxima janela."
+            )
+        _SESSION["cookie"] = cookie
+        _SESSION["ts"] = time.monotonic()
+        return cookie
 
 
 def _fetch_mps_sync(target_date: date) -> list[dict]:
@@ -563,73 +612,46 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
     with httpx.Client(headers=_HEADERS, follow_redirects=True) as client:
         date_str = target_date.strftime("%Y-%m-%d")
 
-        # LOGIN + LISTAGEM com retry na RECUSA DE SESSÃO. O Inlabs recusa sessão
-        # de forma TRANSITÓRIA — mede-se tela de login (6.032 bytes) em 200 mesmo
-        # com a credencial certa (01-02/08/2026), e passa ao re-logar. Sem este
-        # laço, uma recusa passageira derrubava a checagem INTEIRA e o dia ficava
-        # "na fila de checagem" pra sempre, sem resolver e sem avisar — o dono
-        # via "checando agora" toda janela e não recebia nada. A listagem servida
-        # é a PROVA de sessão viva: se ela veio, o cookie vale.
-        corpo: str | None = None
-        cookie: str | None = None
-        motivo_recusa = "sessão recusada"
-        for tentativa in range(1, _LOGIN_TRIES + 1):
-            # Cliente NOVO (conexão nova) a cada tentativa: a recusa de sessão do
-            # Inlabs NÃO passa só limpando o cookie na mesma conexão — a sonda dos
-            # PDFs (01/08/2026) só recuperou re-criando o cliente. O cookie obtido
-            # serve pro download no `client` de fora: a sessão vai pelo header
-            # Cookie, não pela conexão que logou. `with` fecha a conexão recusada.
-            with httpx.Client(headers=_HEADERS, follow_redirects=True) as login:
-                try:
-                    resp = _inlabs_call(lambda: login.post(
-                        f"{INLABS_BASE}/logar.php",
-                        data={"email": email, "password": password},
-                        headers={"Content-Type": "application/x-www-form-urlencoded"},
-                        timeout=20.0,
-                    ))
-                    resp.raise_for_status()
-                except DouError:
-                    raise  # InlabsMaintenanceError já traz mensagem clara
-                except Exception as exc:
-                    raise DouError(f"falha ao autenticar no Inlabs: {exc}") from exc
-                ck = login.cookies.get("inlabs_session_cookie")
-                if ck:
-                    hdr = {"Cookie": f"inlabs_session_cookie={ck}"}
-                    with _fase("listagem"):
-                        rl = _inlabs_call(lambda: login.get(
-                            f"{INLABS_BASE}/index.php?p={date_str}", headers=hdr, timeout=60.0,
-                        ))
-                    rl.raise_for_status()
-                    body = rl.text
-                    # Manutenção declarada é PANE, não recusa — não adianta re-logar.
-                    if _MAINT_RE.search(body):
-                        raise InlabsMaintenanceError(
-                            "o Inlabs (sistema oficial do DOU) está em manutenção agora "
-                            "— não dá pra checar as MPs. Tente mais tarde."
-                        )
-                    if _e_listagem(body):
-                        cookie, corpo = ck, body   # sessão VIVA (listagem = logado)
-                        break
-                    motivo_recusa = ("tela de login" if _E_LOGIN_RE.search(body)
-                                     else "resposta inesperada")
-                else:
-                    motivo_recusa = "sem cookie"
-            logger.warning("dou: Inlabs recusou a sessão (%s) — tentativa %d/%d",
-                           motivo_recusa, tentativa, _LOGIN_TRIES)
-            if tentativa < _LOGIN_TRIES:
-                time.sleep(tentativa * 2)
+        def _listar(cookie: str) -> str:
+            """Lista a pasta do dia com o cookie da sessão. A listagem servida é
+            a PROVA de sessão viva — se veio, o cookie vale."""
+            with _fase("listagem"):
+                rl = _inlabs_call(lambda: client.get(
+                    f"{INLABS_BASE}/index.php?p={date_str}",
+                    headers={"Cookie": f"inlabs_session_cookie={cookie}"}, timeout=60.0,
+                ))
+            rl.raise_for_status()
+            return rl.text
 
-        if corpo is None:
-            # Recusa PERSISTENTE mesmo re-logando: FALHA explícita (o dia fica
-            # pendente e é re-checado nas próximas janelas), NUNCA "não houve MP".
-            # Culpar a credencial seria mandar o dono atrás de problema que quase
-            # nunca é dele — a recusa é do Inlabs e costuma passar sozinha.
-            raise DouError(
-                "não consegui baixar o DOU — o Inlabs recusou a sessão "
-                f"({motivo_recusa}) mesmo re-logando. Costuma ser instabilidade "
-                "dele e passa sozinho; se persistir por horas, confira "
-                "INLABS_EMAIL/INLABS_PASSWORD."
+        # Reusa a sessão (1 login/rodada; ver _obter_cookie). Se o cookie do
+        # cache tiver VENCIDO (listagem vira tela de login), invalida e loga UMA
+        # vez — sem rajada.
+        cookie = _obter_cookie(email, password)
+        corpo = _listar(cookie)
+        if _MAINT_RE.search(corpo):
+            raise InlabsMaintenanceError(
+                "o Inlabs (sistema oficial do DOU) está em manutenção agora "
+                "— não dá pra checar as MPs. Tente mais tarde."
             )
+        if not _e_listagem(corpo):
+            _invalidar_sessao()
+            cookie = _obter_cookie(email, password, force=True)   # login fresco
+            corpo = _listar(cookie)
+            if _MAINT_RE.search(corpo):
+                raise InlabsMaintenanceError(
+                    "o Inlabs (sistema oficial do DOU) está em manutenção agora "
+                    "— não dá pra checar as MPs. Tente mais tarde."
+                )
+            if not _e_listagem(corpo):
+                # Recusa mesmo com login fresco: FALHA explícita (dia pendente,
+                # re-checado nas próximas janelas), NUNCA "não houve MP". Não
+                # deixa cookie ruim no cache.
+                _invalidar_sessao()
+                raise DouError(
+                    "não consegui baixar o DOU — o Inlabs recusou a sessão "
+                    "(instabilidade/limite de login) — não dá pra confirmar se "
+                    "houve MP; tente de novo em instantes."
+                )
 
         hdr = {"Cookie": f"inlabs_session_cookie={cookie}"}
 
