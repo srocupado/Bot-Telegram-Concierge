@@ -51,7 +51,9 @@ class Settings(BaseSettings):
 
     # Monitor de MPs no Diário Oficial (Inlabs/DOU). Independente do Monitor-de-MP
     # externo — credencial própria do cadastro gratuito em inlabs.in.gov.br.
-    dou_mp_hour: int = Field(18, alias="DOU_MP_HOUR")
+    # As checagens rodam nas janelas do proativo (PROACTIVE_HOURS) — o antigo
+    # DOU_MP_HOUR era config morta de antes do proativo e só aparecia numa
+    # mensagem que mentia o horário pro dono.
     # Pesquisa de contexto via web search (Passo 2 das diretrizes).
     # Desligue se a conta não tiver acesso ou se estiver lenta.
     dou_mp_web_research: bool = Field(True, alias="DOU_MP_WEB_RESEARCH")

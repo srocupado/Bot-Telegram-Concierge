@@ -340,11 +340,27 @@ async def cmd_dou_provider(
 async def cmd_on(message: Message, user: User, session: AsyncSession) -> None:
     if not user.is_authorized:
         return
+    from bot.services.proactive import parse_proactive_hours
+
     user.dou_mp_subscribed = True
     await session.commit()
+    # Horas REAIS das janelas (o antigo "todo dia às 18h" vinha do
+    # DOU_MP_HOUR, config morta de antes do proativo — mentia pro dono).
+    horas = sorted(parse_proactive_hours(settings.proactive_hours))
+    janelas = ", ".join(f"{h}h" for h in horas)
+    aviso = ""
+    if not settings.proactive_enabled:
+        # Dependência SILENCIOSA: o monitor roda dentro do agente proativo.
+        # Assinar com ele desligado era prometer avisos que nunca viriam.
+        aviso = (
+            "\n\n⚠️ ATENÇÃO: o agente proativo está DESLIGADO "
+            "(PROACTIVE_ENABLED=false no .env) — é ele que roda este monitor. "
+            "Sem ligá-lo, as MPs NÃO chegam automaticamente."
+        )
     await message.answer(
-        f"✅ Monitor de MPs no DOU ativado. Você recebe as MPs novas "
-        f"todo dia às {settings.dou_mp_hour:02d}h (se houver). "
+        f"✅ Monitor de MPs no DOU ativado. As checagens rodam nas janelas "
+        f"do proativo ({janelas}), com abertura no briefing e fechamento do "
+        f"dia na última janela.{aviso}\n"
         "Use /mp_dou_agora pra checar agora.",
         parse_mode=None,
     )

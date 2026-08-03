@@ -171,3 +171,77 @@ def test_listar_fila_inclui_ultima_ok() -> None:
 
     fila = asyncio.run(proactive.listar_fila_mp(_Sess(rows), 1, date(2026, 8, 3)))
     assert fila["ultima_ok"] == {d: (quando, 1)}
+
+
+# ─────────── dedup do coletor: união com dou_seen_mps ───────────
+
+def test_mp_entregue_com_nota_nao_e_reanunciada(monkeypatch) -> None:
+    """MP entregue via /mp_dou_agora (dou_seen_mps, sem ProactiveNotice
+    'mp'): a janela seguinte NÃO pode re-anunciá-la com botão de nota — é a
+    mesma união da conferência com a Câmara ("o dono FICOU SABENDO?")."""
+    from bot.services.dou_monitor import MPList
+
+    hoje = datetime.now(proactive.BRT).date()
+    mp = {"numero": "1381", "ano": 2026, "ementa": "Dispõe sobre teste."}
+
+    async def _fetch(_d):
+        return MPList([mp])
+
+    async def _false(*a, **kw):
+        return False
+
+    async def _none(*a, **kw):
+        return None
+
+    monkeypatch.setattr(dou_monitor, "fetch_mps", _fetch)
+    monkeypatch.setattr(proactive, "already_notified", _false)
+    monkeypatch.setattr(proactive, "mark_notified", _none)
+    monkeypatch.setattr(proactive, "unmark_notified", _none)
+
+    user = SimpleNamespace(id=7, dou_mp_subscribed=True,
+                           dou_ultimo_dia_ok=hoje - timedelta(days=1))
+    # 1ª resposta: dou_seen_mps com a MP JÁ ENTREGUE; demais: vazias.
+    session = _FakeSession(
+        [SimpleNamespace(numero="1381", ano=2026)], [], [], [],
+    )
+    facts = asyncio.run(proactive.collect_mp(session, user, [hoje]))
+    assert [f for f in facts if f.kind == "mp"] == [], (
+        "MP já entregue com nota foi re-anunciada (duplicata sistemática)"
+    )
+
+
+def test_curto_circuito_para_de_insistir_no_inlabs(monkeypatch) -> None:
+    """Primeira data falhou → as seguintes NÃO pagam a cascata de timeouts:
+    viram pendência direto (re-checadas quando o Inlabs voltar)."""
+    tentativas = {"n": 0}
+
+    async def _fetch(_d):
+        tentativas["n"] += 1
+        raise dou_monitor.DouError("Inlabs fora")
+
+    async def _false(*a, **kw):
+        return False
+
+    async def _none(*a, **kw):
+        return None
+
+    monkeypatch.setattr(dou_monitor, "fetch_mps", _fetch)
+    monkeypatch.setattr(proactive, "already_notified", _false)
+    monkeypatch.setattr(proactive, "mark_notified", _none)
+    monkeypatch.setattr(proactive, "unmark_notified", _none)
+
+    hoje = datetime.now(proactive.BRT).date()
+    user = SimpleNamespace(id=7, dou_mp_subscribed=True,
+                           dou_ultimo_dia_ok=hoje - timedelta(days=1))
+    session = _FakeSession([], [], [])
+    facts = asyncio.run(proactive.collect_mp(
+        session, user, [hoje - timedelta(days=1), hoje],
+    ))
+    assert tentativas["n"] == 1, (
+        f"insistiu {tentativas['n']}x no Inlabs morto — cascata de timeouts no tick"
+    )
+    falha = next(f for f in facts if f.kind == "mp_fail")
+    assert (hoje - timedelta(days=1)).strftime("%d/%m") in falha.text
+    assert hoje.strftime("%d/%m") in falha.text, (
+        "a data pulada pelo curto-circuito sumiu do aviso"
+    )

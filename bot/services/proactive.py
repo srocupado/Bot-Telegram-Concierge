@@ -27,7 +27,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
-from bot.db.models import ProactiveNotice, Reminder, User, WorkoutLog
+from bot.db.models import DouSeenMP, ProactiveNotice, Reminder, User, WorkoutLog
 from bot.services import jobs
 from bot.services import shopping
 from bot.services import tasks as tasks_svc
@@ -700,12 +700,20 @@ async def collect_mp(
     seen: set[str] = set()
     failed: list[date] = []
     provisorios: list[date] = []
+    # (numero, ano) já ENTREGUES com nota (dou_seen_mps) — carregado só
+    # quando aparece MP (lazy). É a mesma semântica da conferência com a
+    # Câmara: "o dono FICOU SABENDO?" = aviso do proativo OU nota entregue.
+    # Sem a união, toda MP entregue via /mp_dou_agora era RE-ANUNCIADA na
+    # janela seguinte com botão de gerar a nota de novo — duplicata
+    # sistemática, não caso de dúvida.
+    entregues: set | None = None
 
     async def _colher(d: date) -> _Colheita:
         """Colheita das MPs de um dia (dedup por número e por
         já-notificada). `completo=False` quando uma seção do DOU falhou: o que
         veio é entregue, mas o dia NÃO recebe baixa da pendência.
         Levanta exceção quando o fetch falha inteiro — o caller decide."""
+        nonlocal entregues
         mps = await fetch_mps(d)
         completo = not getattr(mps, "incompleto", False)
         provisorio = bool(getattr(mps, "provisorio", False))
@@ -717,6 +725,14 @@ async def collect_mp(
             seen.add(key)
             if not force and await already_notified(session, user.id, "mp", key):
                 continue
+            if not force:
+                if entregues is None:
+                    rows_seen = await session.scalars(
+                        select(DouSeenMP).where(DouSeenMP.user_id == user.id)
+                    )
+                    entregues = {(r.numero, r.ano) for r in rows_seen}
+                if (mp["numero"], mp["ano"]) in entregues:
+                    continue
             ementa = _clean_ementa(mp.get("ementa") or "")
             out.append(ProactiveFact(
                 "mp", "mp", key,
@@ -740,6 +756,14 @@ async def collect_mp(
     inlabs_fora = False   # fetch RAISOU este run → Inlabs inacessível agora
     colheita_hoje: _Colheita | None = None
     for d in dates:
+        # CURTO-CIRCUITO: o primeiro fetch que falhou já provou que o Inlabs
+        # está fora AGORA — insistir nas datas seguintes só repete a cascata
+        # de timeouts (login 3x + retries = minutos por data) segurando o
+        # tick inteiro, com o mesmo desfecho. As datas puladas viram
+        # pendência igual às falhas (re-checadas quando ele voltar).
+        if inlabs_fora:
+            failed.append(d)
+            continue
         try:
             c = await _colher(d)
             if d == hoje_:
@@ -888,10 +912,16 @@ async def collect_mp(
     resolvidos: list[date] = [d for d in pendentes if d in ok_dates]
     restantes = [d for d in pendentes if d not in dates][:_MP_RETRO_MAX_POR_JANELA]
     for d in restantes:
+        # Mesmo curto-circuito da varredura: Inlabs fora neste run → não paga
+        # a cascata de timeouts de novo; os dias seguem pendentes.
+        if inlabs_fora:
+            logger.info("proactive: Inlabs fora neste run — retroativa de %s adiada", d)
+            break
         try:
             c = await _colher(d)
         except Exception as exc:
             logger.warning("proactive: retroativa DOU %s ainda falhando: %s", d, exc)
+            inlabs_fora = True
             continue
         facts += c.facts
         if not c.baixa:
@@ -911,6 +941,10 @@ async def collect_mp(
             f"✅ Checagem retroativa do DOU de {d.strftime('%d/%m')} concluída — {detalhe}.",
             date_iso=None,
         ))
+
+    # A retroativa pode ter descoberto o Inlabs fora DEPOIS da atribuição
+    # inicial — re-sincroniza o sinal que trava o disparo de jobs de nota.
+    user.dou_fora_agora = inlabs_fora
 
     # Marca d'água avança com o dia mais recente que recebeu baixa. É o que
     # permite detectar a lacuna na próxima volta — sem isso ela congelaria em
