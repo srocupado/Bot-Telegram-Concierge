@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from html import escape as _html_escape
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -703,12 +704,64 @@ async def _h_consultar_cotacao(args: dict, ctx: ToolContext) -> str:
 
 def _resolve_data_iso(args: dict, tz_name: str) -> str:
     raw = (args.get("data_iso") or "").strip()
-    if raw:
-        try:
-            return datetime.fromisoformat(raw.replace(" ", "T")).date().isoformat()
-        except ValueError:
-            return ""  # sinaliza erro pro chamador
-    return datetime.now(ZoneInfo(tz_name)).date().isoformat()
+    if not raw:
+        return datetime.now(ZoneInfo(tz_name)).date().isoformat()
+    try:
+        d = datetime.fromisoformat(raw.replace(" ", "T")).date()
+    except ValueError:
+        return ""  # sinaliza erro pro chamador
+    # Plausibilidade além do formato: ano ALUCINADO pelo modelo ("2025-07-15"
+    # pra um "dia 15" dito hoje) era aceito e o lançamento caía numa fatura de
+    # 12 meses atrás — invisível em toda consulta; o dono, não vendo a compra,
+    # re-lançava (duplicata). ±13 meses / +45 dias cobrem qualquer retroativo
+    # ou agendamento legítimo.
+    hoje = datetime.now(ZoneInfo(tz_name)).date()
+    if not (hoje - timedelta(days=400) <= d <= hoje + timedelta(days=45)):
+        return ""
+    return d.isoformat()
+
+
+# ── idempotência dos lançamentos (janela curta) ──
+#
+# Cada lancar_* gera id novo e ANEXA no Firestore — a transaction protege de
+# outro escritor concorrente (esposa no app), não da MESMA escrita duas vezes.
+# Três caminhos reais de duplicata (auditoria 03/08/2026): tool_use DUPLO no
+# mesmo turno (o loop executa todos os blocos), retry do modelo após timeout
+# com commit já feito, e o dono repetindo o pedido ao não ver confirmação. A
+# única defesa era prosa no schema ("CHAME UMA VEZ") — e prosa não segura
+# modelo leve (o "repasse o valor exato" da cotação já provou). Janela CURTA
+# de propósito: pega o duplo (segundos) e o retry (minutos) sem bloquear
+# compra igual legítima horas depois (dois cafés no mesmo dia). Memória de
+# processo: restart zera, e o rebuild demora mais que a janela.
+_IDEMP_TTL_S = 180.0
+_lancamentos_recentes: dict[tuple, float] = {}
+
+
+def _lancamento_repetido(assinatura: tuple) -> bool:
+    """True se um lançamento IDÊNTICO foi GRAVADO há menos de _IDEMP_TTL_S.
+    Não registra — quem registra é _registrar_gravacao, APÓS o commit (falha
+    de gravação não pode bloquear a re-tentativa legítima)."""
+    agora = time.monotonic()
+    for k in [k for k, t in _lancamentos_recentes.items() if agora - t > _IDEMP_TTL_S]:
+        del _lancamentos_recentes[k]
+    return assinatura in _lancamentos_recentes
+
+
+def _registrar_gravacao(assinatura: tuple) -> None:
+    _lancamentos_recentes[assinatura] = time.monotonic()
+
+
+def _resposta_repetida(ctx: ToolContext, resumo: str) -> str:
+    """Desfecho idempotente: avisa (verbatim) que já estava gravado — nunca
+    silêncio, nunca segunda gravação."""
+    logger.info("financeiro: lançamento repetido bloqueado (%s)", resumo)
+    aviso = f"ℹ️ Já registrado há instantes — não dupliquei: {resumo}."
+    ctx.fallback_text = aviso
+    ctx.direct_html = _html_escape(aviso)
+    ctx.short_circuit = True
+    return ("ok: pedido REPETIDO — o lançamento já tinha sido gravado há "
+            "instantes e o usuário foi avisado (não escreva nada e NÃO "
+            "chame a tool de novo)")
 
 
 def _parse_valor(valor) -> float | None:
@@ -758,6 +811,10 @@ def _parse_valor(valor) -> float | None:
 # detectado pelo padrão "Nx" (3x, 10 x), que só aparece em compra parcelada.
 _CARD_CUES = ("credito", "crédito", "cartao", "cartão")
 _PARCELAS_RE = re.compile(r"\b(\d{1,2})\s*x\b", re.IGNORECASE)
+# "3x de 100" / "3x de R$ 1.250,50" — captura N e o valor DA PARCELA dito.
+_PARCELAS_DE_RE = re.compile(
+    r"\b(\d{1,2})\s*x\s*de\s*(?:r\$\s*)?([\d.,]+)", re.IGNORECASE,
+)
 
 
 def _looks_like_card_purchase(text: str, tipo: str) -> bool:
@@ -787,6 +844,22 @@ async def _h_lancar_movimento_banco(args: dict, ctx: ToolContext) -> str:
         parcelas = int(m_parc.group(1)) if m_parc else 1
         if not 1 <= parcelas <= 36:
             parcelas = 1
+        # E preserva o TOTAL: o schema do BANCO não tem o contrato "valor =
+        # total da compra" (só o do cartão tem) — se o modelo mandou o valor
+        # DA PARCELA ("3x de 100" → valor=100), gravava R$ 100 em 3x
+        # (R$ 33,33/mês) em vez de R$ 300. Quando o texto diz "Nx de V" e o
+        # valor recebido é V, o total é N*V.
+        if parcelas > 1:
+            m_pv = _PARCELAS_DE_RE.search(ctx.user_text or "")
+            if m_pv:
+                v_txt = _parse_valor(m_pv.group(2))
+                try:
+                    v_in = _parse_valor(valor)
+                except (TypeError, ValueError):
+                    v_in = None
+                if (v_txt is not None and v_in is not None
+                        and abs(v_in - v_txt) < 0.01):
+                    valor = round(v_txt * int(m_pv.group(1)), 2)
         return await _h_lancar_despesa_cartao(
             {"desc": desc, "valor": valor, "data_iso": args.get("data_iso"),
              "categoria": args.get("categoria"), "parcelas": parcelas}, ctx,
@@ -806,9 +879,16 @@ async def _h_lancar_movimento_banco(args: dict, ctx: ToolContext) -> str:
         )
     data_iso = _resolve_data_iso(args, ctx.tz)
     if not data_iso:
-        return f"erro: 'data_iso' inválido ({args.get('data_iso')!r}). Use 'YYYY-MM-DD'."
+        return (f"erro: 'data_iso' inválido ou fora de faixa "
+                f"({args.get('data_iso')!r}). Use 'YYYY-MM-DD' entre ~13 meses "
+                "atrás e 45 dias à frente — se a data veio do usuário, confirme "
+                "com ele o ANO antes de registrar.")
     categoria = (args.get("categoria") or "outros").strip() or "outros"
     recorrente = bool(args.get("recorrente") or False)
+    assin = ("banco", ctx.user.id, desc.casefold(), round(valor_f, 2),
+             data_iso, tipo.lower())
+    if _lancamento_repetido(assin):
+        return _resposta_repetida(ctx, f"{desc} — R$ {valor_f:.2f}")
     try:
         entry = await lancar_movimento_banco(
             ctx.session, ctx.user, desc, valor_f, tipo, data_iso,
@@ -818,6 +898,7 @@ async def _h_lancar_movimento_banco(args: dict, ctx: ToolContext) -> str:
         return f"erro: {e}"
     except FinanceiroError as e:
         return f"erro: {e}"
+    _registrar_gravacao(assin)
     await record_action(
         ctx.session, ctx.user.id, "financeiro",
         f"lançamento no banco: {entry['desc']} R$ {entry['amount']:.2f}",
@@ -854,13 +935,20 @@ async def _h_lancar_despesa_cartao(args: dict, ctx: ToolContext) -> str:
         )
     data_iso = _resolve_data_iso(args, ctx.tz)
     if not data_iso:
-        return f"erro: 'data_iso' inválido ({args.get('data_iso')!r}). Use 'YYYY-MM-DD'."
+        return (f"erro: 'data_iso' inválido ou fora de faixa "
+                f"({args.get('data_iso')!r}). Use 'YYYY-MM-DD' entre ~13 meses "
+                "atrás e 45 dias à frente — se a data veio do usuário, confirme "
+                "com ele o ANO antes de registrar.")
     categoria = (args.get("categoria") or "outros").strip() or "outros"
     parcelas = args.get("parcelas") or 1
     try:
         parcelas = int(parcelas)
     except (TypeError, ValueError):
         return "erro: 'parcelas' deve ser inteiro"
+    assin = ("cartao", ctx.user.id, desc.casefold(), round(valor_f, 2),
+             data_iso, parcelas)
+    if _lancamento_repetido(assin):
+        return _resposta_repetida(ctx, f"{desc} — R$ {valor_f:.2f}")
     try:
         entry = await lancar_despesa_cartao(
             ctx.session, ctx.user, desc, valor_f, data_iso,
@@ -871,6 +959,7 @@ async def _h_lancar_despesa_cartao(args: dict, ctx: ToolContext) -> str:
         return f"erro: {e}"
     except FinanceiroError as e:
         return f"erro: {e}"
+    _registrar_gravacao(assin)
     await record_action(
         ctx.session, ctx.user.id, "financeiro",
         f"compra no cartão: {entry['desc']} R$ {entry['amount']:.2f}",
@@ -903,13 +992,19 @@ async def _h_registrar_aporte_tesouro(args: dict, ctx: ToolContext) -> str:
         )
     data_iso = _resolve_data_iso(args, ctx.tz)
     if not data_iso:
-        return f"erro: 'data_iso' inválido ({args.get('data_iso')!r}). Use 'YYYY-MM-DD'."
+        return (f"erro: 'data_iso' inválido ou fora de faixa "
+                f"({args.get('data_iso')!r}). Use 'YYYY-MM-DD' entre ~13 meses "
+                "atrás e 45 dias à frente — se a data veio do usuário, confirme "
+                "com ele o ANO antes de registrar.")
     taxa = args.get("taxa")
     if taxa is not None:
         try:
             taxa = float(taxa)
         except (TypeError, ValueError):
             return "erro: 'taxa' deve ser número"
+    assin = ("tesouro", ctx.user.id, titulo.casefold(), round(valor_f, 2), data_iso)
+    if _lancamento_repetido(assin):
+        return _resposta_repetida(ctx, f"aporte em {titulo} — R$ {valor_f:.2f}")
     try:
         res = await registrar_aporte_tesouro(
             ctx.session, ctx.user, titulo, valor_f, data_iso, taxa=taxa,
@@ -918,6 +1013,7 @@ async def _h_registrar_aporte_tesouro(args: dict, ctx: ToolContext) -> str:
         return f"erro: {e}"
     except FinanceiroError as e:
         return f"erro: {e}"
+    _registrar_gravacao(assin)
     contrib_id = (res.get("contribution") or {}).get("id")
     if contrib_id:
         await record_action(
@@ -964,7 +1060,10 @@ async def _h_registrar_operacao_ativo(args: dict, ctx: ToolContext) -> str:
 
     data_iso = _resolve_data_iso(args, ctx.tz)
     if not data_iso:
-        return f"erro: 'data_iso' inválido ({args.get('data_iso')!r}). Use 'YYYY-MM-DD'."
+        return (f"erro: 'data_iso' inválido ou fora de faixa "
+                f"({args.get('data_iso')!r}). Use 'YYYY-MM-DD' entre ~13 meses "
+                "atrás e 45 dias à frente — se a data veio do usuário, confirme "
+                "com ele o ANO antes de registrar.")
 
     try:
         res = await registrar_operacao_ativo(

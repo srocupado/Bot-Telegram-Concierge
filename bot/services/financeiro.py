@@ -1077,10 +1077,22 @@ async def lancar_despesa_cartao(
     arr = await _run_blocking(_append_in_transaction, db, uid, "cardEntries", entry)
     # Total da fatura ABERTA (ciclo atual) pós-lançamento — pra confirmação,
     # sobre o array COMMITADO (ver _append_in_transaction). Só se houver dia de
-    # fechamento configurado. Chave _ não é persistida.
+    # fechamento configurado. Chaves _ não são persistidas.
     closing = _get_card_closing_day(state)
     if closing is not None and today is not None:
-        entry["_fatura_aberta"] = _open_bill_total(arr or [entry], closing, today)
+        try:
+            d_compra = datetime.fromisoformat(data_iso[:10]).date()
+        except ValueError:
+            d_compra = today
+        destino = _bill_month_for_date(d_compra, closing)
+        if destino == _bill_month_for_date(today, closing):
+            entry["_fatura_aberta"] = _open_bill_total(arr or [entry], closing, today)
+        else:
+            # Lançamento fora do ciclo atual (retroativo — ou futuro): mostrar
+            # o total do ciclo ATUAL, que NÃO contém a compra, fazia parecer
+            # que não gravou — e o dono re-lançava (duplicata). A confirmação
+            # diz a fatura de DESTINO.
+            entry["_fatura_destino"] = destino
     return entry
 
 
@@ -1518,6 +1530,10 @@ def confirm_cartao(entry: dict, parcelas: int = 1) -> str:
     fatura = entry.get("_fatura_aberta")
     if fatura is not None:
         linha += f"\n🧾 Fatura aberta (ciclo atual): {_fmt_brl(fatura)}"
+    destino = entry.get("_fatura_destino")
+    if destino:
+        y, m = destino
+        linha += f"\n🧾 Entrou na fatura de {m:02d}/{y} (fora do ciclo atual)"
     return linha
 
 
