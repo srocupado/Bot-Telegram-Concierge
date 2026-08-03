@@ -22,6 +22,7 @@ from bot.services.congress import (
 )
 from bot.services.reminders import due_reminders, mark_sent, next_due_from
 from bot.services.scheduled_actions import run_action
+from bot.services.viagem import effective_tz
 from bot.services.traffic import (
     USER_AGENT as TRAFFIC_USER_AGENT,
     TrafficError,
@@ -301,81 +302,114 @@ async def run_traffic_digest(
             logger.info("traffic digest enviado a %d", u.id)
 
 
+async def _entregar_lembrete(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    bot: Bot,
+    user_id: int,
+    rem_id: int,
+) -> None:
+    """Entrega UM lembrete, em sessão própria.
+
+    Sessão por lembrete de propósito: quando tudo rodava numa sessão única, o
+    `rollback()` do tratamento de erro EXPIRAVA todos os objetos ORM do lote
+    (rollback expira independente de expire_on_commit) — o acesso seguinte a
+    qualquer atributo estourava MissingGreenlet e uma única falha de envio
+    (chat bloqueado, rede) derrubava em silêncio os lembretes restantes de
+    TODOS os usuários daquele tick."""
+    async with sessionmaker() as session:
+        user = await session.get(User, user_id)
+        rem = await session.get(Reminder, rem_id)
+        if user is None or rem is None or rem.sent:
+            return  # consumido por outro caminho (botão done/snooze) no meio tempo
+        if rem.command_kind:
+            dispatched = await run_action(
+                bot, session, user, rem.command_kind, rem.command_args
+            )
+            if not dispatched:
+                # Ex.: agente ocupado — mantém pendente e tenta
+                # de novo no próximo tick, sem reagendar.
+                return
+        else:
+            # Lembretes recorrentes não mostram botões snooze/done
+            # (a próxima ocorrência já vem; snooze não faz sentido).
+            kb = None
+            if not rem.recurrence:
+                kb = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="💤 +15min", callback_data=f"snz:15:{rem.id}"),
+                    InlineKeyboardButton(text="💤 +1h", callback_data=f"snz:60:{rem.id}"),
+                    InlineKeyboardButton(text="✅ feito", callback_data=f"done:{rem.id}"),
+                ]])
+            prefix = "🔁 *Recorrente*" if rem.recurrence else "🔔 *Lembrete*"
+            # Fallback pra texto puro: o TEXTO DO USUÁRIO entra cru
+            # no Markdown — um '_' ou '[' desbalanceado ("pagar
+            # João_Silva [urgente") fazia o envio falhar, o lembrete
+            # continuava pendente e o tick retentava A CADA 60s pra
+            # sempre, sem nunca entregar e sem avisar ninguém.
+            try:
+                await bot.send_message(
+                    user.id,
+                    f"{prefix}: {rem.text}",
+                    parse_mode="Markdown",
+                    reply_markup=kb,
+                )
+            except TelegramBadRequest:
+                logger.warning(
+                    "reminder %d: markdown inválido no texto; enviando puro",
+                    rem.id,
+                )
+                await bot.send_message(
+                    user.id,
+                    f"{prefix.replace('*', '')}: {rem.text}",
+                    parse_mode=None,
+                    reply_markup=kb,
+                )
+        if rem.recurrence:
+            # Reagenda: mesmo HH:MM, próximo dia conforme rrule (cron:
+            # avaliado no tz EFETIVO do usuário — viagem conta). Mantém row.
+            # `effective_tz` importado NO MÓDULO: a regressão de 31/07 usava o
+            # nome sem import (só run_proactive tinha, local) — o NameError
+            # estourava DEPOIS do envio, o rollback mantinha sent=False e o
+            # recorrente era reenviado a cada 60s pra sempre.
+            rem.due_at = next_due_from(rem.recurrence, rem.due_at, effective_tz(user))
+            rem.sent = False
+            rem.sent_at = None
+            await session.commit()
+        else:
+            await mark_sent(session, rem)
+        logger.info(
+            "reminder sent",
+            extra={
+                "user_id": user.id,
+                "reminder_id": rem.id,
+                "kind": rem.command_kind or "text",
+            },
+        )
+
+
 async def run_reminders(
     sessionmaker: async_sessionmaker[AsyncSession],
     bot: Bot,
 ) -> None:
     now_utc = datetime.now(timezone.utc)
+    # Fase 1 (sessão curta): só coleta os IDs vencidos. Fase 2: cada lembrete
+    # é entregue em sessão PRÓPRIA (_entregar_lembrete) — falha de um não
+    # contamina os demais nem os usuários seguintes.
+    pares: list[tuple[int, int]] = []
     async with sessionmaker() as session:
-        # Tirar todos os lembretes vencidos para todos os usuários autorizados.
-        stmt = select(User).where(User.is_authorized.is_(True))
-        users = list((await session.scalars(stmt)).all())
-        for user in users:
-            items: list[Reminder] = await due_reminders(session, user.id, now_utc)
-            for rem in items:
-                try:
-                    if rem.command_kind:
-                        dispatched = await run_action(
-                            bot, session, user, rem.command_kind, rem.command_args
-                        )
-                        if not dispatched:
-                            # Ex.: agente ocupado — mantém pendente e tenta
-                            # de novo no próximo tick, sem reagendar.
-                            continue
-                    else:
-                        # Lembretes recorrentes não mostram botões snooze/done
-                        # (a próxima ocorrência já vem; snooze não faz sentido).
-                        kb = None
-                        if not rem.recurrence:
-                            kb = InlineKeyboardMarkup(inline_keyboard=[[
-                                InlineKeyboardButton(text="💤 +15min", callback_data=f"snz:15:{rem.id}"),
-                                InlineKeyboardButton(text="💤 +1h", callback_data=f"snz:60:{rem.id}"),
-                                InlineKeyboardButton(text="✅ feito", callback_data=f"done:{rem.id}"),
-                            ]])
-                        prefix = "🔁 *Recorrente*" if rem.recurrence else "🔔 *Lembrete*"
-                        # Fallback pra texto puro: o TEXTO DO USUÁRIO entra cru
-                        # no Markdown — um '_' ou '[' desbalanceado ("pagar
-                        # João_Silva [urgente") fazia o envio falhar, o lembrete
-                        # continuava pendente e o tick retentava A CADA 60s pra
-                        # sempre, sem nunca entregar e sem avisar ninguém.
-                        try:
-                            await bot.send_message(
-                                user.id,
-                                f"{prefix}: {rem.text}",
-                                parse_mode="Markdown",
-                                reply_markup=kb,
-                            )
-                        except TelegramBadRequest:
-                            logger.warning(
-                                "reminder %d: markdown inválido no texto; enviando puro",
-                                rem.id,
-                            )
-                            await bot.send_message(
-                                user.id,
-                                f"{prefix.replace('*', '')}: {rem.text}",
-                                parse_mode=None,
-                                reply_markup=kb,
-                            )
-                    if rem.recurrence:
-                        # Reagenda: mesmo HH:MM, próximo dia conforme rrule
-                        # (cron: avaliado no tz do usuário). Mantém row.
-                        rem.due_at = next_due_from(rem.recurrence, rem.due_at, effective_tz(user))
-                        rem.sent = False
-                        rem.sent_at = None
-                        await session.commit()
-                    else:
-                        await mark_sent(session, rem)
-                    logger.info(
-                        "reminder sent",
-                        extra={
-                            "user_id": user.id,
-                            "reminder_id": rem.id,
-                            "kind": rem.command_kind or "text",
-                        },
-                    )
-                except Exception:
-                    logger.exception("reminder send failed", extra={"reminder_id": rem.id})
-                    await session.rollback()
+        user_ids = list((await session.scalars(
+            select(User.id).where(User.is_authorized.is_(True))
+        )).all())
+        for uid in user_ids:
+            items: list[Reminder] = await due_reminders(session, uid, now_utc)
+            pares += [(uid, rem.id) for rem in items]
+    for uid, rem_id in pares:
+        try:
+            await _entregar_lembrete(sessionmaker, bot, uid, rem_id)
+        except Exception:
+            # IDs planos no log (não atributos ORM): objeto expirado aqui já
+            # derrubou o lote inteiro uma vez.
+            logger.exception("reminder send failed",
+                             extra={"user_id": uid, "reminder_id": rem_id})
 
 
 TRAFFIC_WATCH_INTERVAL_MIN = 10
