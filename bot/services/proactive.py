@@ -1195,6 +1195,16 @@ async def _redigir(user: User, deterministic: str) -> str:
         return deterministic
 
 
+def run_key_da_janela(window: str, today: date, hour: int) -> str:
+    """Chave da trava de janela. BRIEFING é POR DIA (sem hora): com o
+    catch-up do scheduler (tentativas a cada hora até meio-dia quando o bot
+    perdeu as 7h), a chave com hora deixaria o mesmo briefing rodar de novo
+    a cada hora do catch-up. Janela regular continua por (dia, hora)."""
+    if window == "briefing":
+        return f"briefing:{today.isoformat()}"
+    return f"{window}:{today.isoformat()}:{hour}"
+
+
 async def run_for_user(
     bot, session: AsyncSession, user: User, now_brt: datetime, *,
     window: str, force: bool = False,
@@ -1205,12 +1215,13 @@ async def run_for_user(
     today = now_brt.date()
     mp_dates = [today - timedelta(days=1), today] if briefing else [today]
 
-    # Trava de nível-janela: roda 1x por (janela, dia, hora). Sem isso, como o
-    # tick é de ~20s e a janela é minute<=1, rodaria ~5x — refazendo fetch de
-    # DOU/coletas à toa. Marca já na entrada (mesmo que dê "sem fatos") pra os
-    # ticks seguintes pularem. force (/proativo_agora) ignora a trava.
+    # Trava de nível-janela: roda 1x por janela (briefing: por dia; regular:
+    # por dia+hora — ver run_key_da_janela). Sem isso, como o tick é de ~20s
+    # e a janela é minute<=1, rodaria ~5x — refazendo fetch de DOU/coletas à
+    # toa. Marca já na entrada (mesmo que dê "sem fatos") pra os ticks
+    # seguintes pularem. force (/proativo_agora) ignora a trava.
     if not force:
-        run_key = f"{window}:{today.isoformat()}:{now_brt.hour}"
+        run_key = run_key_da_janela(window, today, now_brt.hour)
         if await already_notified(session, user.id, "proactive_run", run_key):
             return False
         await mark_notified(session, user.id, "proactive_run", run_key)

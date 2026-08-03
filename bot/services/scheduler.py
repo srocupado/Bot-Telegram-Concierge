@@ -53,6 +53,36 @@ CONGRESS_HOUR = 7
 # catch-up. O dedup por run_key impede execução dupla, então alargar é seguro.
 _PROACTIVE_CATCHUP_MIN = 20
 
+# Até que hora local o BRIEFING perdido ainda é recuperado. Restart às 08:53
+# (deploy, queda de luz no Orange Pi) perdia o briefing do dia INTEIRO — junto
+# com a conferência diária com a Câmara e a re-checagem de ontem, que só rodam
+# nele. Mesmo padrão do run_card_closing_summary (janela 9h→12h): a janela
+# larga é segura porque o dedup (run_key do briefing, POR DIA) garante 1
+# execução. A tentativa é no início de cada hora (minuto ≤ catch-up), o que
+# preserva o gate barato de minutos do run_proactive.
+_BRIEFING_CATCHUP_ATE_H = 12
+
+
+def janela_proativa(now_local: datetime, hours: set[int], briefing_hour: int) -> str | None:
+    """Qual janela (se alguma) vale pra este instante LOCAL do usuário.
+
+    'briefing' na hora do briefing OU — catch-up — no início de qualquer hora
+    seguinte até _BRIEFING_CATCHUP_ATE_H (o run_key por dia derruba as
+    tentativas repetidas quando o briefing já rodou). Hora REGULAR configurada
+    tem precedência sobre o catch-up: sem isso, um PROACTIVE_HOURS com janela
+    entre 8h e 11h (ex.: "7,10,13") teria a janela das 10h ENGOLIDA pelo
+    catch-up em todo dia em que o briefing já tivesse saído às 7h — o briefing
+    atrasado se recupera na hora seguinte."""
+    if now_local.minute > _PROACTIVE_CATCHUP_MIN:
+        return None
+    if now_local.hour == briefing_hour:
+        return "briefing"
+    if now_local.hour in hours:
+        return "regular"
+    if briefing_hour < now_local.hour < _BRIEFING_CATCHUP_ATE_H:
+        return "briefing"
+    return None
+
 
 async def _send_html_with_fallback(bot: Bot, chat_id: int, text: str) -> bool:
     """Envia em HTML, com fallback pra texto puro — e QUEBRANDO em blocos.
@@ -579,11 +609,13 @@ async def run_proactive(
         # Janela de CATCH-UP (não 2 min): o tick é sequencial e pode carregar
         # I/O de minutos (nota técnica: web search 55s + LLM até 240s), então
         # a passagem exata pelos 2 primeiros minutos podia simplesmente não
-        # acontecer e a janela evaporava sem catch-up. O run_key (janela+dia+
-        # hora local) segue garantindo 1 execução só.
-        if now_local.hour not in hours or now_local.minute > _PROACTIVE_CATCHUP_MIN:
+        # acontecer e a janela evaporava sem catch-up. O run_key segue
+        # garantindo 1 execução só (briefing: por dia; regular: por hora).
+        # Briefing perdido (bot fora do ar às 7h) é recuperado no início de
+        # cada hora até _BRIEFING_CATCHUP_ATE_H — ver janela_proativa.
+        window = janela_proativa(now_local, hours, settings.proactive_briefing_hour)
+        if window is None:
             continue
-        window = "briefing" if now_local.hour == settings.proactive_briefing_hour else "regular"
         async with sessionmaker() as session:
             try:
                 fresh = await session.get(User, u.id)
