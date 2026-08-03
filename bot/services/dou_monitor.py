@@ -768,10 +768,76 @@ class MPList(list):
     sem_edicao: bool = False
 
 
+# ── cache single-flight do fetch ──
+#
+# Vários caminhos buscam o MESMO dia com minutos de diferença: o coletor da
+# janela proativa, o job da nota (deliver_to_user re-busca), o /mp_dou_agora
+# e cada usuário da casa separadamente. Cada busca re-baixa os ZIPs do dia
+# (~100-200MB no Orange Pi) e dá ao Inlabs uma chance nova de recusar a
+# sessão — foi assim que, em 03/08/2026, o proativo alarmou "não consegui
+# checar o DOU" minutos depois de o comando manual ter checado com sucesso.
+#
+# Regras do cache (erram SEMPRE pro lado da premissa "não perder MP"):
+# - Só resultado COMPLETO entra (incompleto=False). Falha/exceção NUNCA é
+#   cacheada — re-tentar sempre vai à fonte.
+# - TTL curto: janelas distam horas; o desperdício acontece em minutos.
+# - Single-flight: chamadas concorrentes da mesma data esperam a primeira
+#   em vez de baixar em paralelo (o caso coletor × job de nota).
+# - O MPList cacheado é COMPARTILHADO entre chamadores — ninguém o muta
+#   (deliver_to_user e collect_mp criam listas novas ao filtrar).
+_FETCH_TTL_S = 10 * 60.0
+_fetch_cache: dict[date, tuple[float, "MPList"]] = {}
+_fetch_locks: dict[date, asyncio.Lock] = {}
+
+# Última checagem COMPLETA de cada data: (quando em BRT, qtde de MPs vistas).
+# Memória de processo, não banco: o que ela responde é "este processo checou
+# esta data há pouco?" — exatamente o contexto que falta quando uma re-checagem
+# falha minutos depois de uma OK. Restart zera, e tudo bem: sem checagem OK
+# recente, o alarme forte é o comportamento certo mesmo.
+_ultima_ok: dict[date, tuple[datetime, int]] = {}
+_ULTIMA_OK_RETENCAO_DIAS = 30
+
+
+def ultima_checagem_ok(d: date) -> tuple[datetime, int] | None:
+    """(quando BRT, nº de MPs no DOU) da última checagem COMPLETA da data,
+    ou None se este processo nunca a checou com sucesso."""
+    return _ultima_ok.get(d)
+
+
+def _podar_estado_fetch() -> None:
+    agora = time.monotonic()
+    for d in [d for d, (t, _) in _fetch_cache.items() if agora - t >= _FETCH_TTL_S]:
+        del _fetch_cache[d]
+    corte = datetime.now(BRT).date() - timedelta(days=_ULTIMA_OK_RETENCAO_DIAS)
+    for d in [d for d in _ultima_ok if d < corte]:
+        del _ultima_ok[d]
+    for d in [d for d, lk in _fetch_locks.items() if d < corte and not lk.locked()]:
+        del _fetch_locks[d]
+
+
 async def fetch_mps(target_date: date) -> list[dict]:
     """Busca MPs publicadas na data (Inlabs DO1E + DO1). Roda o I/O
-    bloqueante numa thread pra não travar o event loop."""
-    return await asyncio.to_thread(_fetch_mps_sync, target_date)
+    bloqueante numa thread pra não travar o event loop.
+
+    Single-flight + cache por data (TTL de 10 min): resultado completo
+    recente é reusado em vez de re-baixar os ZIPs — inclusive pelo
+    /mp_dou_agora (dado ≤10min é "agora" pra efeito de DOU; falha nunca é
+    cacheada, então re-checar depois de um erro sempre vai à fonte)."""
+    lock = _fetch_locks.setdefault(target_date, asyncio.Lock())
+    async with lock:
+        hit = _fetch_cache.get(target_date)
+        if hit is not None:
+            idade = time.monotonic() - hit[0]
+            if idade < _FETCH_TTL_S:
+                logger.info("dou: fetch %s servido do cache (%.0fs de idade)",
+                            target_date.isoformat(), idade)
+                return hit[1]
+        result = await asyncio.to_thread(_fetch_mps_sync, target_date)
+        if not result.incompleto:
+            _fetch_cache[target_date] = (time.monotonic(), result)
+            _ultima_ok[target_date] = (datetime.now(BRT), len(result))
+            _podar_estado_fetch()
+        return result
 
 
 # ──────────────────────── nota técnica (Claude) ────────────────────────
