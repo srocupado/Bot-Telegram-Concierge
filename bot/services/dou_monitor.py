@@ -541,6 +541,14 @@ def _fontes_secao1(nomes: set[str]) -> dict[str, dict[str, list[str]]]:
     }
 
 
+# Quantas vezes re-logar quando o Inlabs RECUSA a sessão (tela de login em 200,
+# ou login sem cookie). Medido: a recusa é TRANSITÓRIA e passa ao re-logar — a
+# sonda dos PDFs de 01/08/2026 só pegou sessão depois de algumas tentativas.
+# Uma tentativa só (o que havia antes) deixava um dia inteiro "na fila de
+# checagem" sem nunca resolver, numa janela de instabilidade do Inlabs.
+_LOGIN_TRIES = 3
+
+
 def _fetch_mps_sync(target_date: date) -> list[dict]:
     email = settings.inlabs_email
     password = settings.inlabs_password.get_secret_value() if settings.inlabs_password else None
@@ -553,32 +561,71 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
     results: list[dict] = []
     seen_numeros: set[str] = set()
     with httpx.Client(headers=_HEADERS, follow_redirects=True) as client:
-        # login (com retry em 502/503/504/timeout transitórios do Inlabs)
-        try:
-            resp = _inlabs_call(lambda: client.post(
-                f"{INLABS_BASE}/logar.php",
-                data={"email": email, "password": password},
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-                timeout=20.0,
-            ))
-            resp.raise_for_status()
-        except DouError:
-            raise  # InlabsMaintenanceError já traz mensagem clara
-        except Exception as exc:
-            raise DouError(f"falha ao autenticar no Inlabs: {exc}") from exc
-        cookie = client.cookies.get("inlabs_session_cookie")
-        if not cookie:
-            # Medido em 01/08/2026: o mesmo par e-mail/senha logou e, minutos
-            # depois, voltou sem cookie — o Inlabs recusa sessão de forma
-            # transitória. Culpar a credencial mandava o dono conferir o .env
-            # atrás de um problema que não é dele.
+        date_str = target_date.strftime("%Y-%m-%d")
+
+        # LOGIN + LISTAGEM com retry na RECUSA DE SESSÃO. O Inlabs recusa sessão
+        # de forma TRANSITÓRIA — mede-se tela de login (6.032 bytes) em 200 mesmo
+        # com a credencial certa (01-02/08/2026), e passa ao re-logar. Sem este
+        # laço, uma recusa passageira derrubava a checagem INTEIRA e o dia ficava
+        # "na fila de checagem" pra sempre, sem resolver e sem avisar — o dono
+        # via "checando agora" toda janela e não recebia nada. A listagem servida
+        # é a PROVA de sessão viva: se ela veio, o cookie vale.
+        corpo: str | None = None
+        cookie: str | None = None
+        motivo_recusa = "sessão recusada"
+        for tentativa in range(1, _LOGIN_TRIES + 1):
+            try:
+                resp = _inlabs_call(lambda: client.post(
+                    f"{INLABS_BASE}/logar.php",
+                    data={"email": email, "password": password},
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    timeout=20.0,
+                ))
+                resp.raise_for_status()
+            except DouError:
+                raise  # InlabsMaintenanceError já traz mensagem clara
+            except Exception as exc:
+                raise DouError(f"falha ao autenticar no Inlabs: {exc}") from exc
+            cookie = client.cookies.get("inlabs_session_cookie")
+            if cookie:
+                hdr = {"Cookie": f"inlabs_session_cookie={cookie}"}
+                with _fase("listagem"):
+                    rl = _inlabs_call(lambda: client.get(
+                        f"{INLABS_BASE}/index.php?p={date_str}", headers=hdr, timeout=60.0,
+                    ))
+                rl.raise_for_status()
+                corpo = rl.text
+                # Manutenção declarada é PANE, não recusa — não adianta re-logar.
+                if _MAINT_RE.search(corpo):
+                    raise InlabsMaintenanceError(
+                        "o Inlabs (sistema oficial do DOU) está em manutenção agora "
+                        "— não dá pra checar as MPs. Tente mais tarde."
+                    )
+                if _e_listagem(corpo):
+                    break   # sessão VIVA: a listagem só é servida logado
+                motivo_recusa = ("tela de login" if _E_LOGIN_RE.search(corpo)
+                                 else "resposta inesperada")
+            else:
+                motivo_recusa = "sem cookie"
+            corpo = None
+            client.cookies.clear()   # descarta a sessão recusada antes de re-logar
+            logger.warning("dou: Inlabs recusou a sessão (%s) — tentativa %d/%d",
+                           motivo_recusa, tentativa, _LOGIN_TRIES)
+            if tentativa < _LOGIN_TRIES:
+                time.sleep(tentativa * 2)
+
+        if corpo is None:
+            # Recusa PERSISTENTE mesmo re-logando: FALHA explícita (o dia fica
+            # pendente e é re-checado nas próximas janelas), NUNCA "não houve MP".
+            # Culpar a credencial seria mandar o dono atrás de problema que quase
+            # nunca é dele — a recusa é do Inlabs e costuma passar sozinha.
             raise DouError(
-                "o Inlabs não abriu sessão agora (não devolveu cookie). "
-                "Costuma ser instabilidade dele e passa sozinho; se persistir "
-                "por horas, aí sim confira INLABS_EMAIL/INLABS_PASSWORD."
+                "não consegui baixar o DOU — o Inlabs recusou a sessão "
+                f"({motivo_recusa}) mesmo re-logando. Costuma ser instabilidade "
+                "dele e passa sozinho; se persistir por horas, confira "
+                "INLABS_EMAIL/INLABS_PASSWORD."
             )
 
-        date_str = target_date.strftime("%Y-%m-%d")
         hdr = {"Cookie": f"inlabs_session_cookie={cookie}"}
 
         def _baixar(nome: str) -> bytes:
@@ -587,41 +634,6 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
             r = _inlabs_call(lambda: client.get(url, headers=hdr, timeout=90.0))
             r.raise_for_status()
             return r.content
-
-        # A LISTAGEM do dia é a FONTE DA VERDADE do que o Inlabs publicou —
-        # substitui o chute `DO1E`/`DO1`. Isso fecha o buraco medido em
-        # 01/08/2026: dia só com edição extra sai SÓ em PDF (do1_extra_C/D.pdf),
-        # sem NENHUM zip — o chute 404ava e a MP sumia em silêncio. Reagir à
-        # listagem também dispensa a "dança do 404" de seção que nunca existiria.
-        with _fase("listagem"):
-            rl = _inlabs_call(lambda: client.get(
-                f"{INLABS_BASE}/index.php?p={date_str}", headers=hdr, timeout=60.0,
-            ))
-        rl.raise_for_status()
-        corpo = rl.text
-        # Mesma classificação de sempre (manutenção → login → listagem), agora
-        # aplicada UMA vez à listagem em vez de a cada seção. Precedência importa.
-        if _MAINT_RE.search(corpo):
-            raise InlabsMaintenanceError(
-                "o Inlabs (sistema oficial do DOU) está em manutenção agora "
-                "— não dá pra checar as MPs. Tente mais tarde."
-            )
-        if _E_LOGIN_RE.search(corpo) and not _e_listagem(corpo):
-            # Sessão recusada ao listar. NÃO é "não publicado": tratar como tal
-            # daria baixa no dia e a MP sumiria. Falha → o dia volta na retroativa.
-            raise DouError(
-                "não consegui baixar o DOU (o Inlabs recusou a sessão ao listar "
-                "o dia — tela de login) — não dá pra confirmar se houve MP; "
-                "tente de novo em instantes."
-            )
-        if not _e_listagem(corpo):
-            # Corpo desconhecido (ex.: 502 em HTML): FALHA. Padrão seguro — na
-            # dúvida o dia fica pendente, nunca dado por vazio.
-            raise DouError(
-                "não consegui baixar o DOU (resposta inesperada do Inlabs ao "
-                "listar o dia) — não dá pra confirmar se houve MP; tente de "
-                "novo em instantes."
-            )
 
         nomes = _arquivos_da_listagem(corpo)
         fontes = _fontes_secao1(nomes)

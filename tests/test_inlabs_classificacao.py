@@ -104,7 +104,9 @@ def test_erro_de_login_nao_culpa_a_credencial() -> None:
     o dono conferir o .env é mandá-lo atrás de problema que não é dele."""
     import inspect
     fonte = inspect.getsource(dm._fetch_mps_sync)
-    assert "não abriu sessão agora" in fonte
+    # A recusa de sessão é do Inlabs, não da credencial — a mensagem re-loga e
+    # só sugere conferir o .env "se persistir por horas".
+    assert "recusou a sessão" in fonte
     assert "verifique e-mail/senha" not in fonte
 
 
@@ -148,6 +150,9 @@ def _rodar(monkeypatch, corpo: str, alvo):
     monkeypatch.setattr(dm.settings, "inlabs_email", "e@x")
     monkeypatch.setattr(dm.settings, "inlabs_password",
                         SimpleNamespace(get_secret_value=lambda: "s"))
+    # O login re-tenta na recusa de sessão (backoff real); sem mock o teste
+    # dormiria 6s à toa no caminho de LOGIN persistente.
+    monkeypatch.setattr(dm.time, "sleep", lambda *a, **kw: None)
     return dm._fetch_mps_sync(alvo)
 
 
@@ -171,3 +176,41 @@ def test_login_continua_sendo_falha(monkeypatch) -> None:
     from datetime import datetime
     with pytest.raises(dm.DouError, match="não consegui baixar o DOU"):
         _rodar(monkeypatch, LOGIN, datetime.now(dm.BRT).date())
+
+
+def test_sessao_recusada_uma_vez_recupera_no_relogin(monkeypatch) -> None:
+    """Recusa TRANSITÓRIA: a 1ª listagem vem como tela de login, a 2ª (após
+    re-logar) vem como listagem. O fetch tem que RECUPERAR — não desistir e
+    deixar o dia preso "na fila de checagem" pra sempre (bug de 02/08/2026)."""
+    from types import SimpleNamespace
+    from datetime import datetime
+
+    respostas = [LOGIN, LISTAGEM]   # 1ª recusa, 2ª OK
+
+    class _Fake:
+        def __init__(self):
+            self.cookies = {"inlabs_session_cookie": "c"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, *a, **kw):
+            self.cookies["inlabs_session_cookie"] = "c"   # re-loga → cookie volta
+            return _Resp(200, b"ok")
+
+        def get(self, url, **kw):
+            corpo = respostas.pop(0) if respostas else LISTAGEM
+            return _Resp(200, corpo.encode())
+
+    monkeypatch.setattr(dm.httpx, "Client", lambda **kw: _Fake())
+    monkeypatch.setattr(dm.settings, "inlabs_email", "e@x")
+    monkeypatch.setattr(dm.settings, "inlabs_password",
+                        SimpleNamespace(get_secret_value=lambda: "s"))
+    monkeypatch.setattr(dm.time, "sleep", lambda *a, **kw: None)
+
+    out = dm._fetch_mps_sync(datetime.now(dm.BRT).date())
+    assert out.incompleto is False, "recuperou no re-login — não é falha"
+    assert respostas == [], "não re-logou: consumiu só a 1ª resposta e desistiu"
