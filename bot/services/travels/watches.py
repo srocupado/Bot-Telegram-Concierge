@@ -73,6 +73,20 @@ def _should_alert(
     return False, "no_change"
 
 
+def _registrar_leitura(watch: TravelWatch, price: float, alerta_entregue: bool) -> None:
+    """Atualiza o estado do watch após uma checagem.
+
+    `min_price_seen` só avança quando não havia alerta a entregar OU o alerta
+    FOI entregue. Avançar com o envio falho (Telegram fora, rate limit)
+    descartava a queda de preço PRA SEMPRE: o novo mínimo virava o "já visto"
+    sem o dono nunca ter sabido, e no dia seguinte o mesmo preço era
+    "no_change" — perda silenciosa, o modo de falha que este módulo inteiro
+    existe pra evitar (last_alert_at já tinha esse cuidado; o mínimo não)."""
+    watch.last_price = price
+    if alerta_entregue and (watch.min_price_seen is None or price < watch.min_price_seen):
+        watch.min_price_seen = price
+
+
 def _headline(kind: str, summary: str, price: float, reason: str) -> str:
     emoji = "✈️" if kind == "flight" else "🏨"
     motivo = {
@@ -291,10 +305,7 @@ async def check_watch(
     await session.flush()
 
     fire, reason = _should_alert(watch, price)
-    watch.last_price = price
-    if watch.min_price_seen is None or price < watch.min_price_seen:
-        watch.min_price_seen = price
-
+    entregue = True
     if fire:
         headline = _headline(watch.kind, watch.summary or watch.kind, price, reason)
         details = (
@@ -304,17 +315,42 @@ async def check_watch(
         )
         message = f"{headline}\n\n{details}"
         user = await session.get(User, watch.user_id)
-        if user is not None:
-            sent = await _send_with_fallback(bot, user.id, message)
-            if sent:
-                watch.last_alert_at = now
-                session.add(
-                    TravelAlert(
-                        watch_id=watch.id, snapshot_id=snapshot.id,
-                        price=price, reason=reason,
-                    )
+        entregue = user is not None and await _send_with_fallback(bot, user.id, message)
+        if entregue:
+            watch.last_alert_at = now
+            session.add(
+                TravelAlert(
+                    watch_id=watch.id, snapshot_id=snapshot.id,
+                    price=price, reason=reason,
                 )
+            )
+    _registrar_leitura(watch, price, entregue)
     await session.commit()
+
+
+async def _avisar_vigias_sem_chave(
+    sessionmaker: async_sessionmaker[AsyncSession], bot: Bot,
+) -> None:
+    """Avisa (1x/mês, por usuário com vigia ativa) que as vigias estão
+    paradas por falta de SERPAPI_KEY. Dedup mensal em vez de diário: o
+    lembrete precisa existir, não virar spam."""
+    from bot.services.proactive import already_notified, mark_notified
+
+    chave_mes = datetime.now(timezone.utc).strftime("%Y-%m")
+    async with sessionmaker() as session:
+        rows = list((await session.scalars(
+            select(TravelWatch.user_id).where(TravelWatch.status == "active").distinct()
+        )).all())
+        for uid in rows:
+            if await already_notified(session, uid, "watch_sem_chave", chave_mes):
+                continue
+            ok = await _send_with_fallback(bot, uid, (
+                "⚠️ Suas vigias de preço de viagem estão <b>paradas</b>: "
+                "SERPAPI_KEY ausente no .env — nenhum preço está sendo "
+                "checado. Configurando a chave, elas voltam sozinhas."
+            ))
+            if ok:
+                await mark_notified(session, uid, "watch_sem_chave", chave_mes)
 
 
 async def run_travel_alerts(
@@ -323,6 +359,12 @@ async def run_travel_alerts(
 ) -> None:
     """Roda 1x/dia (a partir de TRAVELS_ALERT_HOUR BRT) por watch ativo."""
     if settings.serpapi_key is None:
+        # NÃO retorna mudo: sem a chave, check_watch nunca roda, o contador
+        # de falhas consecutivas nunca sobe e o alarme de "não estou
+        # conseguindo checar" (feito pra isso) nunca dispara — chave revogada
+        # num redeploy virava silêncio PERMANENTE sobre vigias que o dono
+        # criou. Aviso 1x/mês por usuário com vigia ativa.
+        await _avisar_vigias_sem_chave(sessionmaker, bot)
         return
     now_utc = datetime.now(timezone.utc)
     async with sessionmaker() as session:
