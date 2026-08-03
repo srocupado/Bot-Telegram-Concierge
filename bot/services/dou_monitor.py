@@ -1221,7 +1221,10 @@ def format_telegram_message(mp: dict, nota: dict | None) -> str:
     resumo = (nota or {}).get("p1_contexto") or (nota or {}).get("ementa") or mp.get("ementa") or "(sem ementa)"
     lines = [
         f"📄 <b>{titulo}</b>",
-        f"<i>Edição {mp.get('edicao', 'Normal')} do DOU de {_br(pub)}</i>",
+        # Sem rótulo "Edição Extra/Normal": a distinção não tem relevância pro
+        # dono (regra dele) — o que importa é que HÁ uma MP. `edicao` segue no
+        # dict (a nota técnica .docx cita "Edição Extra" por convenção legal).
+        f"<i>Diário Oficial de {_br(pub)}</i>",
         "",
         resumo,
         "",
