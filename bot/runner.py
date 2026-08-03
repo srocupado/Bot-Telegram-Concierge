@@ -126,8 +126,22 @@ async def main() -> None:
     memoria.attach(SessionLocal)
     await memoria.hydrate(SessionLocal, memory)
 
+    # Sessão do bot FORÇADA a IPv4. Medido no Orange Pi (03/08/2026, de dentro
+    # do container): connect v6 à api.telegram.org = ENETUNREACH; v4 = 0.2s.
+    # O v6 morto é descartado rápido no caso "unreachable", mas é um caminho
+    # quebrado tentado em conexão nova — e o aiogram cacheia o DNS (AAAA
+    # incluso) por 1h (ttl_dns_cache=3600). Há modos de falha v6 piores que
+    # o unreachable (blackhole que pendura até o timeout); com family=AF_INET
+    # a classe inteira sai da equação. `_connector_init` é privado do
+    # AiohttpSession — aceitável com a versão pinada (aiogram==3.20.0.post0);
+    # o teste de regressão quebra se o atributo mudar de forma.
+    import socket as _socket
+    from aiogram.client.session.aiohttp import AiohttpSession
+    bot_session = AiohttpSession()
+    bot_session._connector_init["family"] = _socket.AF_INET
     bot = Bot(
         settings.bot_token,
+        session=bot_session,
         default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN),
     )
     dp = _build_dispatcher()

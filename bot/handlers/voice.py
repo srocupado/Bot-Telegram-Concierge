@@ -94,6 +94,9 @@ _STT_ERROR = "⚠️ Não consegui transcrever o áudio agora. Tenta de novo em 
 # travar o caminho quente (que baixa em ~1-2s).
 _DL_TIMEOUT = 60
 _DL_ATTEMPTS = 2
+# get_file é um POST pequeno na API (metadados) — não tem por que levar mais
+# que isso; o tempo folgado fica pro download do arquivo em si.
+_GETFILE_TIMEOUT = 20
 
 # "cem" e "sem" são HOMÓFONOS em PT-BR (ambos /sẽj̃/) — nenhum STT distingue
 # pelo som, é decisão de contexto. Num comando do bot "sem reais" é quase
@@ -226,18 +229,43 @@ async def cmd_voice(message: Message, user: User, session: AsyncSession) -> None
 
     audio_bytes = b""
     for attempt in range(1, _DL_ATTEMPTS + 1):
+        # Download em DUAS metades instrumentadas (get_file = POST na API;
+        # download_file = GET do arquivo em si). O `bot.download(file_id)`
+        # monolítico estourava 60s sem dizer QUAL metade travou — três
+        # timeouts em 03/08/2026 ficaram sem diagnóstico por isso. Cada
+        # metade tem timeout e log próprios; a falha aponta o culpado.
+        import time as _time
+        fase = "get_file"
         try:
+            t0 = _time.monotonic()
+            file = await asyncio.wait_for(
+                message.bot.get_file(file_id), timeout=_GETFILE_TIMEOUT,
+            )
+            t_meta = _time.monotonic() - t0
+            fase = "download_file"
             buf = io.BytesIO()
+            t0 = _time.monotonic()
             await asyncio.wait_for(
-                message.bot.download(file_id, destination=buf), timeout=_DL_TIMEOUT,
+                # timeout interno do aiogram (default 30) alinhado ao nosso,
+                # senão ele estoura antes do wait_for e mascara a medição.
+                message.bot.download_file(file.file_path, destination=buf,
+                                          timeout=_DL_TIMEOUT),
+                timeout=_DL_TIMEOUT,
             )
             audio_bytes = buf.getvalue()
-            logger.info("voice downloaded", extra={"bytes": len(audio_bytes), "attempt": attempt})
+            logger.info(
+                "voice downloaded",
+                extra={"bytes": len(audio_bytes), "attempt": attempt,
+                       "get_file_s": round(t_meta, 1),
+                       "download_s": round(_time.monotonic() - t0, 1)},
+            )
             break
         except asyncio.TimeoutError:
-            logger.warning("voice download timed out (tentativa %d/%d)", attempt, _DL_ATTEMPTS)
+            logger.warning("voice download timed out na fase %s (tentativa %d/%d)",
+                           fase, attempt, _DL_ATTEMPTS)
         except Exception:
-            logger.exception("voice download failed (tentativa %d/%d)", attempt, _DL_ATTEMPTS)
+            logger.exception("voice download failed na fase %s (tentativa %d/%d)",
+                             fase, attempt, _DL_ATTEMPTS)
         if attempt < _DL_ATTEMPTS:
             await asyncio.sleep(2)
     else:
