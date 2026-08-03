@@ -1265,18 +1265,35 @@ def _card_due_date(due_day: int, today: date) -> date:
     return cand
 
 
+def _vencimento_da_fatura(cy: int, cm: int, closing: int, due_day: int) -> date:
+    """Data de vencimento da fatura que FECHA em (cy, cm, dia `closing`).
+
+    O vencimento é a PRIMEIRA ocorrência do dia `due_day` APÓS o fechamento:
+    due_day > closing → MESMO mês (fecha dia 10, vence dia 20 → vence em dez
+    dias, não num mês e dez); due_day <= closing → mês seguinte. O hardcode
+    antigo ("sempre mês seguinte") anunciava vencimento 20/08 pra fatura
+    fechada em 10/07 que vence 20/07 — e contradizia o card_due_soon (que
+    calcula a próxima ocorrência) no MESMO dia. Clamp de fim de mês."""
+    from calendar import monthrange
+
+    if due_day > closing:
+        dy, dm = cy, cm
+    elif cm == 12:
+        dy, dm = cy + 1, 1
+    else:
+        dy, dm = cy, cm + 1
+    return date(dy, dm, min(due_day, monthrange(dy, dm)[1]))
+
+
 def _closed_bill_to_pay(
     today: date, closing: int | None, due_day: int | None,
 ) -> tuple[int, int, date] | None:
     """Fatura FECHADA aguardando pagamento: (ano, mês da fatura, data_vencimento).
 
     É a fatura cujo fechamento (dia `closing`) já passou e cujo vencimento
-    (dia `due_day` do mês seguinte ao fechamento) ainda não passou — ou seja,
-    o que o usuário tem a pagar no próximo dia 1º. None quando não há fatura
+    ainda não passou (ver _vencimento_da_fatura). None quando não há fatura
     fechada pendente (ex.: já paga e a próxima ainda não fechou).
     """
-    from calendar import monthrange
-
     if closing is None or due_day is None:
         return None
     # Fechamento mais recente <= hoje → mês da fatura fechada.
@@ -1286,12 +1303,7 @@ def _closed_bill_to_pay(
         cy, cm = today.year - 1, 12
     else:
         cy, cm = today.year, today.month - 1
-    # Vencimento = due_day do mês SEGUINTE ao fechamento (clamp de fim de mês).
-    if cm == 12:
-        dy, dm = cy + 1, 1
-    else:
-        dy, dm = cy, cm + 1
-    due = date(dy, dm, min(due_day, monthrange(dy, dm)[1]))
+    due = _vencimento_da_fatura(cy, cm, closing, due_day)
     if due < today:
         return None  # já venceu/foi paga; nada pendente
     return cy, cm, due
@@ -1842,28 +1854,31 @@ async def build_card_closing_summary(
     """Sumário enviado quando a fatura do cartão fecha (cardClosingDay).
 
     Retorna o texto pronto (HTML do Telegram) ou None se:
-      - service account não configurado
-      - usuário sem firebase_uid
+      - service account não configurado (NotConfiguredError) / sem firebase_uid
       - sem closingDay no state.settings
       - hoje != closingDay
-    Não levanta exceção; loga e devolve None em qualquer falha de leitura.
+    Falha de LEITURA (Firestore fora) LEVANTA: engolida em None, era
+    indistinguível de "hoje não é fechamento" — Firestore fora no dia do
+    fechamento fechava a janela 9h-12h sem resumo E sem aviso, e o resumo
+    só voltava no mês seguinte. O caller avisa e re-tenta no próximo tick.
     """
+    if not getattr(user, "firebase_uid", None):
+        return None
     try:
-        if not getattr(user, "firebase_uid", None):
-            return None
         db = await _get_db(session)
         state = await _read_state(db, user.firebase_uid)
     except NotConfiguredError:
-        return None
-    except Exception:
-        logger.exception("card summary: failed to read state for user %s", getattr(user, "id", "?"))
         return None
 
     settings_d = state.get("settings") or {}
     closing = _get_card_closing_day(state)
     if closing is None:
         return None
-    if today.day != closing:
+    # Fechamento EFETIVO do mês: closing=31 num mês de 30 dias fecha no dia
+    # 30 (mesmo clamp do _open_invoice_range). Com `!= closing` cru, o resumo
+    # mensal simplesmente nunca disparava em abr/jun/set/nov/fev.
+    from calendar import monthrange
+    if today.day != min(closing, monthrange(today.year, today.month)[1]):
         return None
 
     target_y, target_m = today.year, today.month
@@ -1892,22 +1907,15 @@ async def build_card_closing_summary(
     cats = _effective_categories(state)
     cat_name_by_id = {c["id"]: c.get("name") or c["id"] for c in cats}
 
-    # Vencimento (cardDueDay no próximo mês, clamped)
-    from calendar import monthrange
+    # Vencimento pela MESMA régua do cabeçalho do extrato (_vencimento_da_
+    # fatura): primeira ocorrência do dueDay após o fechamento — mesmo mês
+    # quando dueDay > closing. Via _get_card_due_day, que aceita os aliases
+    # (dueDay, card_due_day…).
     due_label = ""
-    # Via _get_card_due_day, que aceita os aliases (dueDay, card_due_day…).
-    # Lendo só "cardDueDay" aqui, o aviso de fechamento omitia o vencimento
-    # que o /consultar_lancamentos mostrava — dois lugares discordando sobre
-    # o mesmo dado.
     due_day = _get_card_due_day(state)
     if due_day is not None:
-        if today.month == 12:
-            dy, dm = today.year + 1, 1
-        else:
-            dy, dm = today.year, today.month + 1
-        last_day = monthrange(dy, dm)[1]
-        due_d = min(due_day, last_day)
-        due_label = f" — vence em <b>{due_d:02d}/{dm:02d}</b>"
+        due_d = _vencimento_da_fatura(today.year, today.month, closing, due_day)
+        due_label = f" — vence em <b>{due_d.day:02d}/{due_d.month:02d}</b>"
 
     lines = [
         f"🧾 <b>Fatura do cartão fechou hoje</b> ({today.strftime('%d/%m')}){due_label}",

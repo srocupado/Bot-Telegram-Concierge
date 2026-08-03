@@ -599,7 +599,19 @@ async def run_card_closing_summary(
             try:
                 msg = await build_card_closing_summary(session, u, now_brt.date())
             except Exception:
+                # Firestore fora: sem saber se hoje é o fechamento, avisa 1x/dia
+                # (falha ≠ silêncio) e re-tenta nos próximos ticks da janela —
+                # antes virava None mudo e o resumo do MÊS podia sumir sem rastro.
                 logger.exception("card summary build failed for user %d", u.id)
+                if not await already_notified(session, u.id, "card_closing_fail", today_key):
+                    aviso = (
+                        "⚠️ Não consegui ler o financeiro pra checar o "
+                        "fechamento da fatura (Firestore indisponível). "
+                        "Re-tento até meio-dia; se hoje for o dia do fechamento "
+                        "e o resumo não sair, consulte o saldo pelo chat."
+                    )
+                    if await _send_html_with_fallback(bot, u.id, aviso):
+                        await mark_notified(session, u.id, "card_closing_fail", today_key)
                 continue
             if not msg:
                 continue
