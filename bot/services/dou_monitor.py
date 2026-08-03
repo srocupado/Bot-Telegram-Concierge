@@ -1460,18 +1460,14 @@ def texto_sem_mp(motivo: str | None, target: date) -> str:
     if motivo == "provisorio":
         return (f"⏳ O Diário Oficial de {dia} ainda pode sair (dia em aberto). "
                 "Re-checo sozinho e te aviso se vier MP.")
-    if motivo == "sem_mp_extra":
-        # O DOU JÁ saiu (edição normal), sem MP — mas o dia segue aberto e a
-        # edição extra ainda pode trazer MP. Não dizer "ainda pode sair" (o DOU
-        # já está no ar). A extra, quando há, SEMPRE sai depois das 18h (regra
-        # do dono) — então o texto diz QUANDO esperar, não um "ainda hoje" vago.
-        return (f"✅ Saiu o Diário Oficial de {dia}, sem MP nova. A edição extra "
-                "(quando há) só sai depois das 18h — se vier MP nela, eu te aviso.")
     if motivo == "incompleto":
         return (f"⚠️ Não consegui confirmar o DOU de {dia} agora (fonte "
                 "incompleta) — deixei pra re-checar; te aviso se vier MP.")
-    # sem_mp (ou motivo desconhecido): houve Diário (dia fechado), só não veio MP.
-    return f"✅ Saiu o Diário Oficial de {dia}, mas sem nenhuma MP nova."
+    # sem_mp e sem_mp_extra (houve Diário, 0 MP — dia fechado OU aberto): mensagem
+    # ENXUTA. Sem ✅ (confundia com "saiu MP") e sem framing de edição extra
+    # (exceção, nem sempre vem — regra do dono). Se a extra vier com MP, a
+    # checagem das 19h entrega na hora; não precisa prometer no texto.
+    return f"Nenhuma MP nova no Diário Oficial de {dia}."
 
 
 async def deliver_to_user(

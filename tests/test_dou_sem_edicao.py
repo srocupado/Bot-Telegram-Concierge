@@ -142,15 +142,16 @@ def test_texto_sem_mp_distingue_os_casos() -> None:
     d = date(2026, 8, 2)
     assert "Não houve edição" in texto_sem_mp("sem_edicao", d)
     assert "ainda pode sair" in texto_sem_mp("provisorio", d)
-    assert "sem nenhuma MP nova" in texto_sem_mp("sem_mp", d)
     assert "não consegui confirmar" in texto_sem_mp("incompleto", d).lower()
     assert "02/08/2026" in texto_sem_mp("sem_edicao", d)
-    # sem_mp_extra: DOU JÁ saiu (não pode dizer "ainda pode sair") mas segue de
-    # olho na extra.
-    extra = texto_sem_mp("sem_mp_extra", d)
-    assert "Saiu o Diário Oficial" in extra
-    assert "edição extra" in extra
-    assert "ainda pode sair" not in extra, "o DOU já saiu — não pode dizer isso"
+    # "houve DOU, 0 MP" (dia fechado 'sem_mp' OU aberto/extra 'sem_mp_extra'):
+    # mensagem enxuta, SEM ✅ (confundia com "saiu MP") e SEM falar de extra
+    # (exceção, nem sempre vem).
+    for motivo in ("sem_mp", "sem_mp_extra"):
+        msg = texto_sem_mp(motivo, d)
+        assert msg == "Nenhuma MP nova no Diário Oficial de 02/08/2026.", motivo
+        assert "✅" not in msg
+        assert "extra" not in msg.lower()
 
 
 # ──────────────── fila: resolve o dia sem edição com aviso ────────────────
@@ -232,4 +233,4 @@ def test_fila_sem_mp_extra_mantem_e_cala(reg, monkeypatch) -> None:
 def test_fila_sem_mp_tira_e_avisa(reg, monkeypatch) -> None:
     _rodar_fila(monkeypatch, "sem_mp")
     assert ("unmark", "nota_pendente", KEY) in reg["log"]
-    assert "sem nenhuma MP nova" in reg["enviado"][0]
+    assert "Nenhuma MP nova no Diário Oficial" in reg["enviado"][0]
