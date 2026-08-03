@@ -444,10 +444,9 @@ def _estado_em_andamento(key: str) -> str:
     return _ESTADO_CHECANDO if (not nums or nums == "all") else _ESTADO_GERANDO
 
 
-def _proxima_janela_depois(hora: int) -> int | None:
-    """Hora da próxima janela proativa DE HOJE após `hora`; None se acabou."""
-    horas = parse_proactive_hours(settings.proactive_hours)
-    return min((h for h in horas if h > hora), default=None)
+def _janelas_restantes(hora: int) -> list[int]:
+    """Horas das janelas proativas DE HOJE ainda por vir após `hora`."""
+    return sorted(h for h in parse_proactive_hours(settings.proactive_hours) if h > hora)
 
 
 def _checado_sem_mp_dia_aberto(key: str, agora: datetime | None = None) -> bool:
@@ -456,16 +455,15 @@ def _checado_sem_mp_dia_aberto(key: str, agora: datetime | None = None) -> bool:
     checagem OK registrada (restart/Inlabs fora), MP encontrada, dia já
     fechado, ou entrada com números (essa é nota em geração, não checagem).
 
-    Pedido do dono (03/08/2026, em duas rodadas): "checando agora; aviso o
+    Pedido do dono (03/08/2026, em rodadas): "checando agora; aviso o
     resultado" descrevia PROCESSO onde dava pra descrever ESTADO — e, apurado
-    o estado, repeti-lo em TODA janela é ruído: se o briefing já checou o dia,
-    a janela das 13h não tem nada novo a dizer. Quem consome este True decide:
-    ainda há janela hoje → a linha é OMITIDA (mudança de estado fala por si —
-    MP achada vira aviso próprio, falha vira o aviso de 2 estágios, e o
-    /mp_fila mostra o "já checado" a qualquer hora); última janela do dia →
-    a linha única do dia, com a ressalva da extra tardia (o dia só fecha às
-    6h — não se afirma "sem MP" seco; o veredito vem no briefing, que já
-    resolve a entrada com "Tirei da fila")."""
+    o estado, repeti-lo em TODA janela é ruído. Com True, a linha da FILA é
+    omitida (a entrada não é trabalho pendente, é espera): quem fala pelo dia
+    é o BATIMENTO em collect_mp — abertura no briefing, fechamento na última
+    janela com a ressalva da extra tardia (o dia só fecha às 6h; o veredito
+    vem no briefing, que resolve a entrada com "Tirei da fila"). Mudança de
+    estado fala por si: MP achada vira aviso próprio, falha vira o aviso de
+    2 estágios, e o /mp_fila mostra o "já checado" a qualquer hora."""
     from bot.services.dou_monitor import _dia_encerrado, ultima_checagem_ok
     d = _data_da_chave(key)
     _, _, nums = (key or "").partition(":")
@@ -675,6 +673,8 @@ class _Colheita:
     facts: list[ProactiveFact]
     completo: bool      # nenhuma seção FALHOU (erro de rede, ZIP inválido…)
     provisorio: bool    # 404 numa seção com o dia ainda aberto
+    sem_edicao: bool = False   # nenhuma fonte de Seção 1 na listagem do dia
+    mps_no_dia: int = 0        # MPs no DOU do dia (BRUTO, antes de dedup)
 
     @property
     def baixa(self) -> bool:
@@ -716,7 +716,8 @@ async def collect_mp(
                 f"📜 MP {mp['numero']}/{mp['ano']}: {ementa}",
                 date_iso=d.isoformat(),
             ))
-        return _Colheita(out, completo, provisorio)
+        return _Colheita(out, completo, provisorio,
+                         bool(getattr(mps, "sem_edicao", False)), len(mps))
 
     # ANTES de varrer: dias que o bot nunca olhou viram pendência (marca
     # d'água). Sem isso, o que ele perdeu enquanto esteve fora é invisível.
@@ -730,9 +731,12 @@ async def collect_mp(
 
     ok_dates: set[date] = set()
     inlabs_fora = False   # fetch RAISOU este run → Inlabs inacessível agora
+    colheita_hoje: _Colheita | None = None
     for d in dates:
         try:
             c = await _colher(d)
+            if d == hoje_:
+                colheita_hoje = c
             facts += c.facts
             if c.baixa:
                 ok_dates.add(d)
@@ -756,6 +760,47 @@ async def collect_mp(
     # dizer "gerando agora" seria mentira, já que a própria checagem acima
     # provou que o Inlabs está fora. Atributo transiente (não é coluna).
     user.dou_fora_agora = inlabs_fora
+
+    # BATIMENTO da checagem do dia (pedido do dono, 03/08/2026): confirmação
+    # POSITIVA de que o DOU de hoje foi checado — silêncio não serve como
+    # evidência (é indistinguível de "não checou"). Fala DUAS vezes por dia:
+    # no briefing (abre o dia) e na última janela (fecha o dia, com a ressalva
+    # da extra tardia — o dia só encerra às 6h); nas janelas do meio, silêncio
+    # (o dono pediu: apurado o estado, repetir é ruído). Só afirma o que foi
+    # apurado: fetch COMPLETO e 0 MP no dia (com MP, as linhas de MP são a
+    # evidência; com falha/incompleto, quem fala é o aviso de 2 estágios).
+    # Distingue "chequei, sem MP" de "chequei e a edição nem saiu" — às 7h o
+    # DOU costuma ainda não estar no Inlabs, e afirmar "sem MP" aí seria mais
+    # do que se sabe.
+    if colheita_hoje is not None and colheita_hoje.completo \
+            and colheita_hoje.mps_no_dia == 0:
+        hora_agora = datetime.now(BRT).hour
+        restantes = _janelas_restantes(hora_agora)
+        if conferir and restantes:
+            # Abertura do dia (briefing/força): diz o estado e quando re-checa.
+            quando = " e às ".join(f"{h}h" for h in restantes)
+            situacao = ("ainda sem edição publicada" if colheita_hoje.sem_edicao
+                        else "sem MP até o momento")
+            facts.append(ProactiveFact(
+                "mp", "mp_checagem", f"{hoje_.isoformat()}:abre",
+                f"📄 DOU de hoje: {situacao} — re-checo às {quando}.",
+                date_iso=None,
+            ))
+        elif not restantes:
+            # Fechamento do dia (última janela): a palavra final de hoje, sem
+            # afirmar veredito — extra tardia existe e o briefing resolve.
+            if colheita_hoje.sem_edicao:
+                texto = (f"📄 DOU de hoje: sem edição publicada até as "
+                         f"{hora_agora}h — se sair alguma, chega no briefing "
+                         "de amanhã.")
+            else:
+                texto = (f"📄 DOU de hoje: sem MP na checagem das "
+                         f"{hora_agora}h — extra tardia (se houver) chega no "
+                         "briefing de amanhã.")
+            facts.append(ProactiveFact(
+                "mp", "mp_checagem", f"{hoje_.isoformat()}:fecha", texto,
+                date_iso=None,
+            ))
 
     # Dia que falhou vira PENDÊNCIA persistente — gravada JÁ (não no pós-envio):
     # precisa sobreviver mesmo que o envio desta janela falhe. Provisório entra
@@ -905,17 +950,14 @@ async def collect_mp(
         apurado = (d.isoformat() not in em_manutencao and not inlabs_fora
                    and _checado_sem_mp_dia_aberto(r.key))
         if apurado:
-            agora_ = datetime.now(BRT)
-            if _proxima_janela_depois(agora_.hour) is not None:
-                # Dia já checado sem MP e AINDA vai ser re-checado hoje: nada a
-                # dizer nesta janela (pedido do dono — o briefing já contou; o
-                # aviso que importa é o da última janela, que pega a extra).
-                # Mudança de estado fala por si: MP achada vira aviso próprio,
-                # falha vira o aviso de 2 estágios, e o /mp_fila mostra o
-                # "já checado" a qualquer hora.
-                continue
-            estado = (f"sem MP na checagem das {agora_.hour}h; extra tardia "
-                      "(se houver) chega no briefing de amanhã")
+            # Dia já checado COMPLETO, sem MP, ainda aberto: a entrada não é
+            # trabalho pendente, é só espera — nada a dizer AQUI (pedido do
+            # dono: apurado o estado, repetir é ruído). Quem fala pelo dia é o
+            # BATIMENTO (collect_mp): abertura no briefing e fechamento na
+            # última janela. Mudança de estado fala por si: MP achada vira
+            # aviso próprio, falha vira o aviso de 2 estágios, e o /mp_fila
+            # mostra o "já checado" a qualquer hora.
+            continue
         elif d.isoformat() in em_manutencao:
             estado = ("<b>na fila de checagem</b> — o Inlabs está em manutenção; "
                       "checo e envio quando ele voltar (pode não ser hoje)")

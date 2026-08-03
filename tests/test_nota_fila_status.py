@@ -176,18 +176,18 @@ def test_texto_e_montado_num_lugar_so() -> None:
 
 
 
-# ─────────── estado APURADO: fala UMA vez, na última janela ───────────
+# ─────────── estado APURADO: a linha da fila cede a vez ao batimento ───────────
 #
-# Pedido do dono (03/08/2026, em duas rodadas): (1) com o dia já checado
-# COMPLETO, "checando agora; aviso o resultado" descrevia processo onde dava
-# pra descrever estado; (2) apurado o estado, repeti-lo em toda janela é
-# ruído — se o briefing já checou, a das 13h não tem nada novo a dizer.
-# Regra: dia checado sem MP e ainda aberto →
-# - há janela ainda hoje → linha OMITIDA (MP achada vira aviso próprio,
-#   falha vira o aviso de 2 estágios; /mp_fila mostra o "já checado");
-# - última janela do dia → "sem MP na checagem das Xh" + ressalva da extra
-#   tardia (o dia só fecha às 6h — não se afirma "sem MP" seco; o veredito
-#   vem no briefing, que resolve a entrada com "Tirei da fila").
+# Pedido do dono (03/08/2026, em rodadas): (1) com o dia já checado COMPLETO,
+# "checando agora; aviso o resultado" descrevia processo onde dava pra
+# descrever estado; (2) apurado o estado, repeti-lo em toda janela é ruído;
+# (3) no briefing ele QUER a confirmação positiva. Divisão de papéis:
+# - a linha da FILA fala só de trabalho PENDENTE (Inlabs fora, aguardando a
+#   vez, gerando) — dia checado sem MP e aberto é espera, não pendência: a
+#   linha é OMITIDA em toda janela;
+# - quem fala pelo dia é o BATIMENTO (ver test_briefing_checagem.py):
+#   abertura no briefing, fechamento na última janela com a ressalva da
+#   extra tardia.
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -240,36 +240,24 @@ def test_entrada_com_numeros_nao_afirma() -> None:
         f"{_D.isoformat()}:1382", _AS_13H) is False
 
 
-# ── a próxima janela (hora do texto vem da config, nunca fixa) ──
+# ── as janelas restantes (hora do texto vem da config, nunca fixa) ──
 
-def test_proxima_janela_depois() -> None:
-    """PROACTIVE_HOURS default (7,13,19): 10→13, 13→19, 19→acabou."""
-    assert proactive._proxima_janela_depois(10) == 13
-    assert proactive._proxima_janela_depois(13) == 19
-    assert proactive._proxima_janela_depois(19) is None
+def test_janelas_restantes() -> None:
+    """PROACTIVE_HOURS default (7,13,19): 7→[13,19], 13→[19], 19→acabou."""
+    assert proactive._janelas_restantes(7) == [13, 19]
+    assert proactive._janelas_restantes(13) == [19]
+    assert proactive._janelas_restantes(19) == []
 
 
 # ── o comportamento nas janelas ──
 
-def test_janela_intermediaria_omite_a_linha(monkeypatch) -> None:
-    """Briefing já checou o dia (sem MP): a janela das 13h não repete —
-    silêncio até a última janela."""
+def test_apurado_omite_a_linha_da_fila(monkeypatch) -> None:
+    """Dia checado sem MP e aberto: a linha da fila some em QUALQUER janela —
+    quem fala pelo dia é o batimento (abertura/fechamento)."""
     hoje = date.today()
     dou_monitor._ultima_ok[hoje] = (datetime.now(_BRT), 0)
-    monkeypatch.setattr(proactive, "_proxima_janela_depois", lambda _h: 19)
     linhas = _linhas(monkeypatch, [hoje])
-    assert linhas == [], "linha repetida em janela intermediária (ruído)"
-
-
-def test_ultima_janela_diz_sem_mp_com_ressalva(monkeypatch) -> None:
-    hoje = date.today()
-    dou_monitor._ultima_ok[hoje] = (datetime.now(_BRT), 0)
-    monkeypatch.setattr(proactive, "_proxima_janela_depois", lambda _h: None)
-    linhas = _linhas(monkeypatch, [hoje])
-    assert len(linhas) == 1
-    assert "sem MP na checagem das" in linhas[0]
-    assert "extra tardia (se houver) chega no briefing de amanhã" in linhas[0]
-    assert "checando agora" not in linhas[0]
+    assert linhas == [], "linha de espera renderizada como pendência (ruído)"
 
 
 def test_sem_apuracao_mantem_estados_de_processo(monkeypatch) -> None:
