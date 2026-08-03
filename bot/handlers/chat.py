@@ -140,6 +140,14 @@ async def deliver_llm_reply(
     # um texto pronto, usa ele em vez de "(sem resposta)".
     if not (reply or "").strip() and ctx.fallback_text:
         reply = ctx.fallback_text
+    # NUNCA gravar turno assistant VAZIO na memória: a API da Anthropic
+    # rejeita content vazio (400) — a conversa inteira passava a falhar até o
+    # TTL/(/reset). Pior: o persist descarta o assistant vazio mas gravava o
+    # par user, e após restart o hydrate devolvia dois `user` seguidos → 400
+    # "roles must alternate" PERMANENTE. O scheduled_actions já tinha esta
+    # guarda; o caminho ao vivo (chat/voz/foto/PDF) ficou sem.
+    if not (reply or "").strip():
+        reply = "(sem resposta)"
 
     memory.append(chat_id, "user", para_memoria)
     memory.append(chat_id, "assistant", reply)

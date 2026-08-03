@@ -127,9 +127,17 @@ async def hydrate(
     for r in rows:
         by_user.setdefault(r.user_id, []).append(r)
     for uid, items in by_user.items():
-        msgs: list[ChatMessage] = [
-            {"role": r.role, "content": r.content} for r in items
-        ]
+        # Turnos SEGUIDOS do mesmo role são fundidos: o chat_log pode carregar
+        # par órfão (user gravado, assistant vazio descartado pelo persist —
+        # bug corrigido em deliver_llm_reply) e dois `user` consecutivos
+        # derrubam a Anthropic com 400 "roles must alternate" em TODA chamada
+        # pós-restart — a memória re-hidratada virava veneno permanente.
+        msgs: list[ChatMessage] = []
+        for r in items:
+            if msgs and msgs[-1]["role"] == r.role:
+                msgs[-1]["content"] = f"{msgs[-1]['content']}\n{r.content}"
+            else:
+                msgs.append({"role": r.role, "content": r.content})
         last = items[-1].created_at
         if last.tzinfo is None:  # SQLite devolve naive
             last = last.replace(tzinfo=timezone.utc)
