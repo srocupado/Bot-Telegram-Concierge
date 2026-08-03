@@ -484,10 +484,20 @@ async def run_traffic_watch(
     weekday, hour = now_brt.weekday(), now_brt.hour
     cooldown_cut = datetime.now(timezone.utc) - timedelta(minutes=TRAFFIC_ALERT_COOLDOWN_MIN)
 
+    # A baseline é o HÁBITO (mesmas weekday+hour das semanas anteriores),
+    # nunca o dia corrente: amostras de hoje — inclusive a recém-medida —
+    # pertencem ao possível evento anômalo e não podem definir o "normal"
+    # contra o qual ele é comparado. Por isso o corte na meia-noite de hoje
+    # E a leitura ANTES do record_sample.
+    inicio_hoje_utc = datetime.combine(
+        now_brt.date(), time(0, 0), tzinfo=BRT,
+    ).astimezone(timezone.utc)
     for u in users:
         async with sessionmaker() as session:
+            base = await baseline_p50(
+                session, u.id, weekday, hour, antes_de=inicio_hoje_utc,
+            )
             await record_sample(session, u.id, weekday, hour, current_s)
-            base = await baseline_p50(session, u.id, weekday, hour)
         if base is None:
             continue
         if not should_alert(current_s, base):
