@@ -6,12 +6,12 @@ do agente dentro do TTL continua a mesma sessão (resume) — texto livre
 solto vai pro chat normal, sem captura. Não-owner: silêncio total (nem vê
 o recurso).
 
-A tarefa roda em background (asyncio.create_task) — o handler retorna logo
+A tarefa roda em background (jobs.spawn — referência forte + dedup; nunca
+create_task cru) — o handler retorna logo
 e o progresso vai numa ÚNICA mensagem de status editada (máx 1 edição/3s).
 """
 from __future__ import annotations
 
-import asyncio
 import html
 import logging
 import time
@@ -25,6 +25,7 @@ from aiogram.types import FSInputFile, Message
 from bot.config import settings
 from bot.db.models import User
 from bot.services.agent_config import agent_config
+from bot.services import jobs
 from bot.services.agent_runner import (
     AgentBusyError,
     AgentEvent,
@@ -33,6 +34,24 @@ from bot.services.agent_runner import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _spawn_agente(
+    bot: Bot, chat_id: int, prompt: str, sid: str | None, *, scheduled: bool = False,
+) -> bool:
+    """Dispara _run_and_report via jobs.spawn — NUNCA create_task cru.
+
+    O create_task cru era o footgun do weakref (ver jobs.py) na task MAIS
+    LONGA do bot (até 2h de agente): task coletada pelo GC sumia sem log nem
+    exceção, o lock do runner ficava preso pra sempre ("já existe uma tarefa
+    em andamento" até o próximo restart) e nem o /agente_parar salvava (não
+    havia task viva pra ler o abort). O jobs.spawn dá a referência forte e,
+    de brinde, dedup por chave — primeira barreira; o busy do runner segue
+    como a segunda. False = já há tarefa viva (o caller avisa)."""
+    return jobs.spawn(
+        f"agente:{chat_id}",
+        lambda: _run_and_report(bot, chat_id, prompt, sid, scheduled=scheduled),
+    )
 
 router = Router(name=__name__)
 
@@ -263,8 +282,7 @@ def try_continuation(message: Message, user: User, text: str) -> bool:
     sid = _continuation_sid_for_reply(message)
     if sid is None or runner.busy:
         return False
-    asyncio.create_task(_run_and_report(message.bot, message.chat.id, text, sid))
-    return True
+    return _spawn_agente(message.bot, message.chat.id, text, sid)
 
 
 # Gasto diário das execuções AGENDADAS do agente (teto opcional
@@ -294,7 +312,10 @@ def _cron_budget_exceeded(chat_id: int) -> bool:
         return False
     if not _cron_spend["notified"] and _bot is not None:
         _cron_spend["notified"] = True
-        asyncio.create_task(_bot.send_message(
+        bot_ = _bot
+        # jobs.spawn (não create_task cru): referência forte pro aviso não
+        # poder ser coletado antes de sair. 1x/dia, então a chave fixa serve.
+        jobs.spawn(f"agente:aviso-teto:{chat_id}", lambda: bot_.send_message(
             chat_id,
             f"⏰ ⚠️ Teto diário das tarefas agendadas do agente atingido "
             f"(US$ {_cron_spend['usd']:.2f} ≥ US$ {budget:.2f}). "
@@ -316,9 +337,8 @@ def start_background_task(prompt: str, chat_id: int, *, scheduled: bool = False)
         return "budget"
     if runner.busy:
         return "busy"
-    asyncio.create_task(
-        _run_and_report(_bot, chat_id, prompt, None, scheduled=scheduled)
-    )
+    if not _spawn_agente(_bot, chat_id, prompt, None, scheduled=scheduled):
+        return "busy"
     return "started"
 
 
@@ -389,7 +409,8 @@ async def cmd_agente(message: Message, command: CommandObject, user: User) -> No
     if runner.busy:
         await message.answer(_BUSY_MSG, parse_mode=None)
         return
-    asyncio.create_task(_run_and_report(message.bot, message.chat.id, prompt, None))
+    if not _spawn_agente(message.bot, message.chat.id, prompt, None):
+        await message.answer(_BUSY_MSG, parse_mode=None)
 
 
 @router.message(Command("agente_parar"))
@@ -535,6 +556,5 @@ async def agent_continuation(message: Message, user: User) -> None:
     if runner.busy:
         await message.answer(_BUSY_MSG, parse_mode=None)
         return
-    asyncio.create_task(
-        _run_and_report(message.bot, message.chat.id, message.text or "", sid)
-    )
+    if not _spawn_agente(message.bot, message.chat.id, message.text or "", sid):
+        await message.answer(_BUSY_MSG, parse_mode=None)

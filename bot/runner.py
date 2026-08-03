@@ -149,6 +149,13 @@ async def main() -> None:
         logger.info("starting polling")
         await dp.start_polling(bot, handle_signals=True)
     finally:
+        # Drena os jobs em background (nota do DOU, agente) ANTES de derrubar
+        # o loop: o fim do asyncio.run matava essas tasks sem aviso a cada
+        # deploy. 15s cabem no stop_grace_period do compose (30s) com folga
+        # pro fechamento do bot.session.
+        from bot.services import jobs
+        with contextlib.suppress(Exception):
+            await jobs.drenar(15.0)
         for t in (scheduler_task, watchdog_task):
             t.cancel()
             with contextlib.suppress(asyncio.CancelledError):

@@ -75,3 +75,28 @@ def spawn(chave: str, fabrica: Callable[[], Awaitable[None]]) -> bool:
     task.add_done_callback(_limpar)
     logger.info("job %s iniciado (%d ativo(s))", chave, len(jobs_ativos()))
     return True
+
+
+async def drenar(timeout: float) -> list[str]:
+    """Espera os jobs ativos terminarem por até `timeout`s; cancela (com log)
+    o que sobrar. Devolve as chaves canceladas.
+
+    Chamado no shutdown do runner: sem isto, o fim do `asyncio.run` matava as
+    tasks de jobs SEM aviso no deploy — nota do DOU e agente morriam no meio
+    e só as redes de segurança (outbox da nota, STATE_PATH do agente)
+    seguravam as pontas. Dar uns segundos pra terminarem evita acionar as
+    redes à toa; o que não der tempo é cancelado com registro, nunca sumido."""
+    ativos = {k: t for k, t in _jobs.items() if not t.done()}
+    if not ativos:
+        return []
+    logger.info("shutdown: aguardando %d job(s) por até %.0fs: %s",
+                len(ativos), timeout, ", ".join(ativos))
+    _done, pendentes = await asyncio.wait(set(ativos.values()), timeout=timeout)
+    cancelados = sorted(k for k, t in ativos.items() if t in pendentes)
+    for t in pendentes:
+        t.cancel()
+    if pendentes:
+        await asyncio.gather(*pendentes, return_exceptions=True)
+        logger.warning("shutdown: %d job(s) cancelado(s) sem terminar: %s",
+                       len(cancelados), ", ".join(cancelados))
+    return cancelados

@@ -4,6 +4,10 @@ services:
     container_name: concierge
     restart: unless-stopped
     env_file: .env
+    # Tempo entre SIGTERM e SIGKILL no deploy/restart. O default (10s) não
+    # dava pro runner drenar os jobs em background (nota do DOU, agente —
+    # jobs.drenar espera até 15s) antes de ser morto no meio.
+    stop_grace_period: 30s
     # Teto de RAM: protege o host (Orange Pi 4GB) de um pip install/execução
     # pesada disparada pelo agente — sem isso o OOM killer derruba o host.
     mem_limit: 2g
