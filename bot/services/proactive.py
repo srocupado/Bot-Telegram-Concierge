@@ -1133,10 +1133,14 @@ async def collect_clima(
         coords = settings.home_coords
     if not coords:
         # Falta de configuração é permanente: avisa UMA vez (dedup pelo kind)
-        # em vez de sumir pra sempre ou repetir todo dia.
+        # em vez de sumir pra sempre ou repetir todo dia. Marcado AQUI: o
+        # pós-envio do run pula a categoria 'clima' de propósito (a linha
+        # normal repete todo briefing), então o "1x" nunca era marcado e o
+        # aviso repetia diariamente.
         logger.warning("proactive: sem HOME_COORDS — briefing sai sem clima")
         if await already_notified(session, user.id, "clima_sem_coords", ""):
             return []
+        await mark_notified(session, user.id, "clima_sem_coords", "")
         return [ProactiveFact(
             "clima", "clima_sem_coords", "",
             "ℹ️ O briefing está saindo <b>sem previsão do tempo</b>: falta "
@@ -1188,13 +1192,33 @@ async def collect_moeda_viagem(user: User) -> list[ProactiveFact]:
     return [ProactiveFact("clima", "moeda_viagem", "", f"💱 {linha}")]
 
 
-async def collect_transito(user: User, now_brt: datetime) -> list[ProactiveFact]:
+async def collect_transito(
+    session: AsyncSession, user: User, now_brt: datetime,
+) -> list[ProactiveFact]:
     """Trânsito casa → trabalho pro briefing matinal (dias úteis). Reusa o
-    fetch do digest de trânsito. Sem dedup (leitura fresca a cada manhã)."""
+    fetch do digest de trânsito. Sem dedup (leitura fresca a cada manhã).
+
+    Falha e config faltando são DITAS, não engolidas (mesma correção que o
+    collect_clima já recebeu — o trânsito ficou de fora dela): briefing sem
+    a linha 🚗 era indistinguível de fim de semana, e o dono saía achando a
+    rota normal quando o Maps nem tinha sido consultado."""
     if now_brt.weekday() > 4:  # fim de semana: sem trânsito pro trabalho
         return []
     if not (settings.home_coords and settings.work_coords and settings.google_maps_api_key):
-        return []
+        # Config incompleta é permanente: avisa UMA vez. Marcado AQUI (não no
+        # pós-envio do run, que pula a categoria 'transito' de propósito —
+        # a linha normal repete todo briefing).
+        logger.warning("proactive: trânsito sem config — briefing sai sem a linha")
+        if await already_notified(session, user.id, "transito_sem_config", ""):
+            return []
+        await mark_notified(session, user.id, "transito_sem_config", "")
+        return [ProactiveFact(
+            "transito", "transito_sem_config", "",
+            "ℹ️ O briefing está saindo <b>sem a linha de trânsito</b>: faltam "
+            "<code>HOME_COORDS</code>/<code>WORK_COORDS</code>/"
+            "<code>GOOGLE_MAPS_API_KEY</code> no .env. Configurando, ela "
+            "volta sozinha.",
+        )]
     import httpx
     from bot.services.traffic import (
         USER_AGENT as TRAFFIC_USER_AGENT,
@@ -1216,9 +1240,17 @@ async def collect_transito(user: User, now_brt: datetime) -> list[ProactiveFact]
                 client, api_key, settings.home_coords, settings.work_coords,
                 waypoints, maps_url=settings.route_google_maps_url or "",
             )
-    except Exception:
+    except Exception as exc:
+        # Silêncio aqui vira falso negativo: briefing sem a linha 🚗 passa
+        # como "rota normal" quando na verdade não se checou. Mesma regra do
+        # clima/DOU — fonte externa que falha é DITA.
         logger.warning("proactive: trânsito casa→trabalho falhou", exc_info=True)
-        return []
+        return [ProactiveFact(
+            "transito", "transito_falhou", now_brt.date().isoformat(),
+            f"⚠️ Não consegui checar o <b>trânsito casa → trabalho</b> agora "
+            f"({type(exc).__name__}). NÃO assuma via livre — confira antes "
+            "de sair.",
+        )]
     txt = format_traffic_briefing(pref, alt)
     return [ProactiveFact("transito", "transito_trabalho", "", txt)]
 
@@ -1377,7 +1409,7 @@ async def run_for_user(
     facts: list[ProactiveFact] = []
     if briefing:
         facts += await collect_clima(session, user, now_brt)
-        facts += await collect_transito(user, now_brt)
+        facts += await collect_transito(session, user, now_brt)
         facts += await collect_moeda_viagem(user)
     facts += await collect_vencimentos(session, user, now_brt, force=force)
     # Tarefas abertas no briefing matinal e no resumo do fim do dia.

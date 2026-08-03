@@ -31,7 +31,11 @@ def _rodar(monkeypatch, *, coords, erro=None, ja_avisado=False):
     async def _already(*a, **kw):
         return ja_avisado
 
+    async def _mark(*a, **kw):
+        return None
+
     monkeypatch.setattr(proactive, "already_notified", _already)
+    monkeypatch.setattr(proactive, "mark_notified", _mark)
     monkeypatch.setattr(proactive.settings, "home_coords", coords)
     monkeypatch.setattr(proactive.settings, "timezone", "America/Sao_Paulo")
 
