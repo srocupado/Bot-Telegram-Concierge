@@ -49,6 +49,14 @@ logger = logging.getLogger(__name__)
 BRT = ZoneInfo("America/Sao_Paulo")
 CONGRESS_HOUR = 7
 
+# Cache da MENSAGEM pronta dos digests (chave = dia/semana). Com falha de
+# ENVIO, o dia não é marcado (correto: re-tentar entregar) — mas sem o cache
+# o tick seguinte refazia o FETCH inteiro (Google Maps / scrape do Congresso)
+# a cada 60s até meia-noite: ~900 chamadas pagas por dia de pane de envio,
+# sem ninguém saber. O fetch roda 1x; a re-tentativa reusa a mensagem.
+_traffic_digest_cache: dict = {"key": None, "message": None}
+_congress_digest_cache: dict = {"key": None, "message": None}
+
 # Minutos após a hora-alvo em que a janela do proativo ainda pode disparar.
 # Era 1 (2 min de janela) e um tick lento fazia a janela ser PERDIDA sem
 # catch-up. O dedup por run_key impede execução dupla, então alargar é seguro.
@@ -142,6 +150,22 @@ async def run_congress_digest(
     if not users:
         return
 
+    cache_key = monday_brt.date().isoformat()
+    if _congress_digest_cache["key"] == cache_key:
+        # Fetch da semana já feito num tick anterior (envio falhou): só
+        # re-tenta entregar, sem novo scrape.
+        message = _congress_digest_cache["message"]
+        for u in users:
+            sent = await _send_html_with_fallback(bot, u.id, message)
+            if sent:
+                async with sessionmaker() as session:
+                    fresh = await session.get(User, u.id)
+                    if fresh is not None:
+                        fresh.last_congress_digest_at = datetime.now(timezone.utc)
+                        await session.commit()
+                logger.info("congress digest (cache) enviado a %d", u.id)
+        return
+
     try:
         async with httpx.AsyncClient(
             timeout=30.0,
@@ -170,6 +194,7 @@ async def run_congress_digest(
         return
 
     message = format_week_message(items, now_brt.date())
+    _congress_digest_cache.update(key=cache_key, message=message)
     logger.info("congress digest: %d inscritos, %d MPs encontradas", len(users), len(items))
 
     for u in users:
@@ -218,6 +243,22 @@ async def run_traffic_digest(
     users = [u for u in candidates if _due(u)]
 
     if not users:
+        return
+
+    cache_key = now_brt.date().isoformat()
+    if _traffic_digest_cache["key"] == cache_key:
+        # Fetch do dia já feito num tick anterior (envio falhou): só re-tenta
+        # entregar, sem nova chamada ao Maps.
+        message = _traffic_digest_cache["message"]
+        for u in users:
+            sent = await _send_html_with_fallback(bot, u.id, message)
+            if sent:
+                async with sessionmaker() as session:
+                    fresh = await session.get(User, u.id)
+                    if fresh is not None:
+                        fresh.last_traffic_digest_at = datetime.now(timezone.utc)
+                        await session.commit()
+                logger.info("traffic digest (cache) enviado a %d", u.id)
         return
 
     api_key = settings.google_maps_api_key.get_secret_value()
@@ -283,6 +324,7 @@ async def run_traffic_digest(
             message = message[:idx] + f"\n\n{weather_line}" + message[idx:]
         else:
             message = f"{message}\n\n{weather_line}"
+    _traffic_digest_cache.update(key=cache_key, message=message)
     logger.info(
         "traffic digest: %d inscritos, %d min via %s%s",
         len(users),
