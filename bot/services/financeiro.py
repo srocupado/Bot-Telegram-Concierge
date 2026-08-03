@@ -1650,7 +1650,14 @@ async def consultar_lancamentos(
             # CABEÇALHO: fatura FECHADA a pagar no próximo vencimento (dia 1º).
             # CORPO: gastos da fatura EM ABERTO (a que está acumulando agora).
             start, end, _ = _open_invoice_range(state, today_d)
-            open_y, open_m = end.year, end.month  # bill-key da fatura aberta
+            # Chave da fatura ABERTA pela MESMA régua que aloca as compras
+            # (_bill_month_for_date), não pelo mês do fim do intervalo: com
+            # fechamento no dia 1º as duas contas divergem TODOS os dias do
+            # ano — o filtro caía na fatura anterior (compras do mês passado
+            # rotuladas como "em aberto", as do mês corrente omitidas, e o
+            # mesmo bill aparecendo como "fechada a pagar" E "aberta"). Pra
+            # fechamento 2..31 as contas coincidem (verificado nos 365 dias).
+            open_y, open_m = _bill_month_for_date(today_d, closing)
             open_items: list[tuple[dict, dict]] = []
             for it in all_card:
                 info = _entry_in_bill(it, open_y, open_m, closing)
