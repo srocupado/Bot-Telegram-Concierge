@@ -365,6 +365,72 @@ async def _mp_dias_pendentes(
     return sorted(out)
 
 
+async def baixa_checagem_manual(
+    session: AsyncSession, user: User, d: date,
+    entregues: int, falhas: list[str], motivo: str | None,
+) -> bool:
+    """Dá baixa nas pendências de `d` quando uma checagem MANUAL conclusiva
+    (/mp_dou_agora, dia inteiro) acabou de verificar o dia.
+
+    O comando roda o MESMO pipeline de fetch da retroativa; sem esta baixa, o
+    dia seguia na fila e a janela seguinte re-baixava os ZIPs do DOU só pra
+    confirmar o que o dono acabou de ver (pergunta do dono, 04/08/2026) — e
+    uma nota_pendente da mesma data era re-gerada em DUPLICATA (force=True).
+
+    Conclusiva = evidência positiva, mesma régua da retroativa (_Colheita.baixa):
+    - motivo 'sem_mp'/'sem_edicao': o deliver_to_user só os devolve com fetch
+      COMPLETO e dia FECHADO — houve DOU sem MP / não houve edição, definitivo;
+    - entregues>0 sem falha de nota, com o dia fechado E checagem completa
+      recente na memória do processo (só checagem completa entra em
+      _ultima_ok; o fetch desta entrega acabou de rodar ou veio do cache de
+      10 min, que também só guarda resultado completo).
+    Na dúvida (incompleto, dia aberto, nota que falhou), NADA muda — a
+    pendência fica, que é o lado seguro da premissa do projeto.
+
+    Retorna True se alguma pendência foi efetivamente baixada.
+    """
+    from bot.services.dou_monitor import _dia_encerrado, ultima_checagem_ok
+
+    if motivo in ("sem_mp", "sem_edicao"):
+        conclusiva = True
+    elif entregues > 0 and not falhas and _dia_encerrado(d):
+        ult = ultima_checagem_ok(d)
+        conclusiva = (ult is not None
+                      and datetime.now(BRT) - ult[0] <= timedelta(minutes=15))
+    else:
+        conclusiva = False
+    if not conclusiva:
+        return False
+
+    removidas = False
+    if await already_notified(session, user.id, "mp_pendente", d.isoformat()):
+        await unmark_notified(session, user.id, "mp_pendente", d.isoformat())
+        removidas = True
+    # nota_pendente do MESMO dia: a checagem completa acabou de fazer (ou
+    # provar desnecessário) exatamente o trabalho que a fila re-tentaria.
+    rows = list(await session.scalars(
+        select(ProactiveNotice).where(
+            ProactiveNotice.user_id == user.id,
+            ProactiveNotice.kind == "nota_pendente",
+        )
+    ))
+    for r in rows:
+        if r.key.partition(":")[0] == d.isoformat():
+            await unmark_notified(session, user.id, "nota_pendente", r.key)
+            removidas = True
+    # Marca d'água: só avança no passo CONTÍGUO. Pular dias (marca em 01/08 e
+    # baixa manual de 03/08) esconderia 02/08 da _cobrir_lacuna pra sempre —
+    # perda silenciosa, exatamente o que a marca existe pra impedir.
+    if (user.dou_ultimo_dia_ok is not None
+            and d == user.dou_ultimo_dia_ok + timedelta(days=1)):
+        user.dou_ultimo_dia_ok = d
+        await session.commit()
+    if removidas:
+        logger.info("proactive: baixa manual das pendências de %s "
+                    "(motivo=%s, entregues=%d)", d, motivo, entregues)
+    return removidas
+
+
 async def listar_fila_mp(
     session: AsyncSession, user_id: int, hoje: date,
 ) -> dict:

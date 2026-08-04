@@ -106,7 +106,7 @@ async def _rodar_nota(
         if user is None or not user.is_authorized:
             return
         try:
-            n, _falhas, motivo = await deliver_to_user(
+            n, falhas, motivo = await deliver_to_user(
                 bot, session, user, target, force=True, only_numeros=only_numeros,
             )
         except DouError as e:
@@ -127,11 +127,27 @@ async def _rodar_nota(
                 user.id, "⚠️ Erro ao gerar a nota técnica.", parse_mode=None,
             )
             return
+        # Baixa manual: checagem conclusiva de dia fechado tira o dia da fila
+        # retroativa (senão a próxima janela re-baixava o DOU só pra confirmar
+        # o que o dono acabou de ver). Subset (only_numeros) não dá baixa: o
+        # botão do proativo entrega PARTE do dia — a verificação segue na fila.
+        # Falha aqui não pode derrubar a entrega já feita: vira log e a
+        # pendência fica (lado seguro).
+        baixado = False
+        if only_numeros is None:
+            from bot.services.proactive import baixa_checagem_manual
+            try:
+                baixado = await baixa_checagem_manual(
+                    session, user, target, n, falhas, motivo,
+                )
+            except Exception:
+                logger.exception("baixa manual das pendências falhou (%s)", target)
         if n == 0:
             from bot.services.dou_monitor import texto_sem_mp
-            await bot.send_message(
-                user.id, texto_sem_mp(motivo, target), parse_mode="HTML",
-            )
+            texto = texto_sem_mp(motivo, target)
+            if baixado:
+                texto += " Dei baixa: o dia sai da fila de re-checagem."
+            await bot.send_message(user.id, texto, parse_mode="HTML")
 
 
 # A chave vive no serviço porque o proativo também dispara esse job: os dois
