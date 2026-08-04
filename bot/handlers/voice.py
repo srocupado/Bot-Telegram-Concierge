@@ -94,6 +94,67 @@ _STT_ERROR = "⚠️ Não consegui transcrever o áudio agora. Tenta de novo em 
 # travar o caminho quente (que baixa em ~1-2s).
 _DL_TIMEOUT = 60
 _DL_ATTEMPTS = 2
+# get_file é um POST pequeno na API (metadados), mas paga o handshake de
+# conexão nova — e o caminho Pi→DC do Telegram perde pacote intermitente
+# (medição 03/08/2026: get_file_s de 0.5 a 17.7s em SUCESSOS, seguindo a
+# escada de retransmissão TCP/TLS 1/3/7/15s; download_s sempre <1s). 30s
+# acomoda até o degrau dos 15s com folga; 20s cortava sucessos de 17.7s.
+_GETFILE_TIMEOUT = 30
+
+
+async def _get_file_direto(bot, file_id: str) -> str:
+    """getFile por uma conexão NOVA (httpx), FORA da sessão do aiogram.
+
+    Fallback-experimento (03/08/2026): o getFile pela sessão estourava 20s
+    repetidamente enquanto, segundos depois, get_me na MESMA sessão respondia
+    em 0.7s e uma conexão nova alcançava a API em 1.2s — só o par (sessão ×
+    getFile) travava. Este caminho direto mantém a voz funcionando E crava o
+    veredito no log. CUIDADO com o token: nunca logar str(e) de httpx aqui
+    (a URL com o token vai junto) — só type(e).__name__."""
+    import httpx
+
+    url = f"https://api.telegram.org/bot{bot.token}/getFile"
+    async with httpx.AsyncClient(timeout=15.0) as cli:
+        r = await cli.post(url, json={"file_id": file_id})
+    data = r.json()
+    if not data.get("ok"):
+        raise RuntimeError(f"resposta not-ok: {str(data)[:120]}")
+    return data["result"]["file_path"]
+
+
+async def _diagnostico_pos_timeout(bot) -> None:
+    """Sondas disparadas NO MOMENTO do timeout, pra fechar o diagnóstico que
+    ficou aberto em 03/08/2026 (get_file estourando 20s com o polling vivo):
+
+    - httpx numa conexão NOVA (fora do aiogram): responde? → a rede do Pi
+      alcança a api.telegram.org agora;
+    - get_me pela MESMA sessão do bot: responde? → a sessão/pool do aiogram
+      está saudável.
+
+    httpx-ok + get_me-FALHOU = sessão emperrada (conserto no bot);
+    httpx-FALHOU = rede/ISP do Pi (nada a consertar no código);
+    os dois ok = problema específico do getFile/arquivo no lado do Telegram."""
+    import time as _time
+
+    import httpx
+
+    t0 = _time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as cli:
+            r = await cli.get("https://api.telegram.org")
+        logger.warning("voice[sonda]: conexão NOVA (httpx): HTTP %d em %.1fs",
+                       r.status_code, _time.monotonic() - t0)
+    except Exception as e:
+        logger.warning("voice[sonda]: conexão NOVA (httpx) FALHOU em %.1fs: %s: %s",
+                       _time.monotonic() - t0, type(e).__name__, e)
+    t0 = _time.monotonic()
+    try:
+        await asyncio.wait_for(bot.get_me(), timeout=8.0)
+        logger.warning("voice[sonda]: get_me pela sessão do bot: ok em %.1fs",
+                       _time.monotonic() - t0)
+    except Exception as e:
+        logger.warning("voice[sonda]: get_me pela sessão do bot FALHOU em %.1fs: %s",
+                       _time.monotonic() - t0, type(e).__name__)
 
 # "cem" e "sem" são HOMÓFONOS em PT-BR (ambos /sẽj̃/) — nenhum STT distingue
 # pelo som, é decisão de contexto. Num comando do bot "sem reais" é quase
@@ -226,18 +287,73 @@ async def cmd_voice(message: Message, user: User, session: AsyncSession) -> None
 
     audio_bytes = b""
     for attempt in range(1, _DL_ATTEMPTS + 1):
+        # Download em DUAS metades instrumentadas (get_file = POST na API;
+        # download_file = GET do arquivo em si). O `bot.download(file_id)`
+        # monolítico estourava 60s sem dizer QUAL metade travou — três
+        # timeouts em 03/08/2026 ficaram sem diagnóstico por isso. Cada
+        # metade tem timeout e log próprios; a falha aponta o culpado.
+        import time as _time
+        fase = "get_file"
         try:
+            t0 = _time.monotonic()
+            file = await asyncio.wait_for(
+                message.bot.get_file(file_id), timeout=_GETFILE_TIMEOUT,
+            )
+            t_meta = _time.monotonic() - t0
+            fase = "download_file"
             buf = io.BytesIO()
+            t0 = _time.monotonic()
             await asyncio.wait_for(
-                message.bot.download(file_id, destination=buf), timeout=_DL_TIMEOUT,
+                # timeout interno do aiogram (default 30) alinhado ao nosso,
+                # senão ele estoura antes do wait_for e mascara a medição.
+                message.bot.download_file(file.file_path, destination=buf,
+                                          timeout=_DL_TIMEOUT),
+                timeout=_DL_TIMEOUT,
             )
             audio_bytes = buf.getvalue()
-            logger.info("voice downloaded", extra={"bytes": len(audio_bytes), "attempt": attempt})
+            logger.info(
+                "voice downloaded",
+                extra={"bytes": len(audio_bytes), "attempt": attempt,
+                       "get_file_s": round(t_meta, 1),
+                       "download_s": round(_time.monotonic() - t0, 1)},
+            )
             break
         except asyncio.TimeoutError:
-            logger.warning("voice download timed out (tentativa %d/%d)", attempt, _DL_ATTEMPTS)
+            logger.warning("voice download timed out na fase %s (tentativa %d/%d)",
+                           fase, attempt, _DL_ATTEMPTS)
+            await _diagnostico_pos_timeout(message.bot)
+            if fase == "get_file":
+                # Experimento-fallback: o MESMO getFile por conexão nova.
+                try:
+                    t0 = _time.monotonic()
+                    file_path = await _get_file_direto(message.bot, file_id)
+                    logger.warning(
+                        "voice[sonda]: getFile DIRETO (httpx) ok em %.1fs — "
+                        "veredito: o travamento é no par sessão-aiogram × getFile",
+                        _time.monotonic() - t0,
+                    )
+                    buf = io.BytesIO()
+                    t0 = _time.monotonic()
+                    await asyncio.wait_for(
+                        message.bot.download_file(file_path, destination=buf,
+                                                  timeout=_DL_TIMEOUT),
+                        timeout=_DL_TIMEOUT,
+                    )
+                    audio_bytes = buf.getvalue()
+                    logger.info(
+                        "voice downloaded (via getFile direto)",
+                        extra={"bytes": len(audio_bytes), "attempt": attempt,
+                               "download_s": round(_time.monotonic() - t0, 1)},
+                    )
+                    break
+                except Exception as e:
+                    # type(e).__name__ APENAS: str(e) de httpx carrega a URL
+                    # com o token do bot.
+                    logger.warning("voice[sonda]: getFile DIRETO também falhou (%s)",
+                                   type(e).__name__)
         except Exception:
-            logger.exception("voice download failed (tentativa %d/%d)", attempt, _DL_ATTEMPTS)
+            logger.exception("voice download failed na fase %s (tentativa %d/%d)",
+                             fase, attempt, _DL_ATTEMPTS)
         if attempt < _DL_ATTEMPTS:
             await asyncio.sleep(2)
     else:

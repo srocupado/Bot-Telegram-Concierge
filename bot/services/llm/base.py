@@ -1,11 +1,30 @@
 from __future__ import annotations
 
 import base64
+import json
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, TypedDict
 
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
+def resumo_tool_call(name: str, args: dict | None) -> str:
+    """Linha compacta 'tool(args)' pro log de cada tool que o modelo chama.
+
+    Motivo (04/08/2026): áudio pedindo previsão do tempo voltou com a fatura
+    INTEIRA do cartão na frente — alguma tool financeira rodou num turno de
+    clima e o log não tinha COMO dizer qual/por quê: nenhum provider logava
+    as tool calls. Sem isso, todo bug de roteamento do modelo é indiagnosticável
+    contra a fonte real (o log do Orange Pi).
+    """
+    try:
+        s = json.dumps(args or {}, ensure_ascii=False, default=str)
+    except Exception:
+        s = repr(args)
+    if len(s) > 300:
+        s = s[:300] + "…"
+    return f"{name}({s})"
 
 
 class ChatMessage(TypedDict):
@@ -58,10 +77,9 @@ class ToolContext:
     # geração que segue uma tool call às vezes vem sem texto no Gemini). Não
     # short-circuita — preserva teclados (ex.: botões Sim/Não da nota técnica).
     fallback_text: str | None = None
-    # Texto HTML já formatado que o handler de chat/voz envia verbatim
-    # (parse_mode=HTML), ignorando a resposta do LLM — evita paráfrase. Usado
-    # por consultar_congresso e consultar_transito (saída idêntica aos /comandos).
-    direct_html: str | None = None
+    # Partes do texto verbatim (ver property direct_html abaixo). O campo com
+    # underscore existe só pro dataclass; ninguém o usa direto.
+    _direct_parts: list = field(default_factory=list)
     # Quando uma tool seta isto True, o loop de tool use encerra logo após
     # executar a tool, sem mais uma chamada ao LLM (a resposta já está pronta
     # via ctx.direct_html/etc). Evita uma geração extra desperdiçada.
@@ -75,6 +93,25 @@ class ToolContext:
     # A tool já preencheu pending_routes; aqui o handler só precisa montar o
     # teclado e atrelar à mensagem.
     request_location: bool = False
+
+    # Texto HTML já formatado que o handler de chat/voz envia verbatim
+    # (parse_mode=HTML), ignorando a resposta do LLM — evita paráfrase.
+    #
+    # ACUMULA em vez de sobrescrever (auditoria 03/08/2026): com DUAS tools
+    # verbatim no mesmo turno ("comprei pão por 10 e gasolina por 200" → dois
+    # lançamentos legítimos), o slot único guardava só a ÚLTIMA confirmação —
+    # a primeira sumia, o dono achava que não gravou e re-lançava (duplicata).
+    # O setter anexa (idempotente pra re-set do mesmo texto); None limpa.
+    @property
+    def direct_html(self) -> str | None:
+        return "\n\n".join(self._direct_parts) if self._direct_parts else None
+
+    @direct_html.setter
+    def direct_html(self, valor: str | None) -> None:
+        if valor is None:
+            self._direct_parts.clear()
+        elif valor not in self._direct_parts[-1:]:
+            self._direct_parts.append(valor)
 
 
 ToolHandler = Callable[[dict, ToolContext], Awaitable[str]]

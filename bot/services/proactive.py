@@ -27,7 +27,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
-from bot.db.models import ProactiveNotice, Reminder, User, WorkoutLog
+from bot.db.models import DouSeenMP, ProactiveNotice, Reminder, User, WorkoutLog
 from bot.services import jobs
 from bot.services import shopping
 from bot.services import tasks as tasks_svc
@@ -155,6 +155,13 @@ async def collect_vencimentos(
 # expiração pra não insistir num dia problemático pra sempre.
 _MP_RETRO_MAX_POR_JANELA = 2
 _MP_RETRO_EXPIRA_DIAS = 14
+
+# Idade máxima de uma checagem COMPLETA do dia pra ela ainda "valer" como
+# contexto quando uma re-checagem falha: dentro dela, o aviso vira linha
+# informativa ("chequei às HH:MM, sem MP até então"); fora, alarme forte.
+# 6h = o maior vão entre janelas proativas (7→13→19): falhou a janela
+# seguinte inteira sem nenhuma checagem OK no meio → volta a gritar.
+_OK_RECENTE_H = 6
 
 # Fila de NOTA TÉCNICA pendente: MP detectada, usuário pediu a nota (botão) e o
 # Inlabs caiu na hora de gerar — o pedido fica na fila (kind nota_pendente,
@@ -358,6 +365,72 @@ async def _mp_dias_pendentes(
     return sorted(out)
 
 
+async def baixa_checagem_manual(
+    session: AsyncSession, user: User, d: date,
+    entregues: int, falhas: list[str], motivo: str | None,
+) -> bool:
+    """Dá baixa nas pendências de `d` quando uma checagem MANUAL conclusiva
+    (/mp_dou_agora, dia inteiro) acabou de verificar o dia.
+
+    O comando roda o MESMO pipeline de fetch da retroativa; sem esta baixa, o
+    dia seguia na fila e a janela seguinte re-baixava os ZIPs do DOU só pra
+    confirmar o que o dono acabou de ver (pergunta do dono, 04/08/2026) — e
+    uma nota_pendente da mesma data era re-gerada em DUPLICATA (force=True).
+
+    Conclusiva = evidência positiva, mesma régua da retroativa (_Colheita.baixa):
+    - motivo 'sem_mp'/'sem_edicao': o deliver_to_user só os devolve com fetch
+      COMPLETO e dia FECHADO — houve DOU sem MP / não houve edição, definitivo;
+    - entregues>0 sem falha de nota, com o dia fechado E checagem completa
+      recente na memória do processo (só checagem completa entra em
+      _ultima_ok; o fetch desta entrega acabou de rodar ou veio do cache de
+      10 min, que também só guarda resultado completo).
+    Na dúvida (incompleto, dia aberto, nota que falhou), NADA muda — a
+    pendência fica, que é o lado seguro da premissa do projeto.
+
+    Retorna True se alguma pendência foi efetivamente baixada.
+    """
+    from bot.services.dou_monitor import _dia_encerrado, ultima_checagem_ok
+
+    if motivo in ("sem_mp", "sem_edicao"):
+        conclusiva = True
+    elif entregues > 0 and not falhas and _dia_encerrado(d):
+        ult = ultima_checagem_ok(d)
+        conclusiva = (ult is not None
+                      and datetime.now(BRT) - ult[0] <= timedelta(minutes=15))
+    else:
+        conclusiva = False
+    if not conclusiva:
+        return False
+
+    removidas = False
+    if await already_notified(session, user.id, "mp_pendente", d.isoformat()):
+        await unmark_notified(session, user.id, "mp_pendente", d.isoformat())
+        removidas = True
+    # nota_pendente do MESMO dia: a checagem completa acabou de fazer (ou
+    # provar desnecessário) exatamente o trabalho que a fila re-tentaria.
+    rows = list(await session.scalars(
+        select(ProactiveNotice).where(
+            ProactiveNotice.user_id == user.id,
+            ProactiveNotice.kind == "nota_pendente",
+        )
+    ))
+    for r in rows:
+        if r.key.partition(":")[0] == d.isoformat():
+            await unmark_notified(session, user.id, "nota_pendente", r.key)
+            removidas = True
+    # Marca d'água: só avança no passo CONTÍGUO. Pular dias (marca em 01/08 e
+    # baixa manual de 03/08) esconderia 02/08 da _cobrir_lacuna pra sempre —
+    # perda silenciosa, exatamente o que a marca existe pra impedir.
+    if (user.dou_ultimo_dia_ok is not None
+            and d == user.dou_ultimo_dia_ok + timedelta(days=1)):
+        user.dou_ultimo_dia_ok = d
+        await session.commit()
+    if removidas:
+        logger.info("proactive: baixa manual das pendências de %s "
+                    "(motivo=%s, entregues=%d)", d, motivo, entregues)
+    return removidas
+
+
 async def listar_fila_mp(
     session: AsyncSession, user_id: int, hoje: date,
 ) -> dict:
@@ -368,6 +441,10 @@ async def listar_fila_mp(
       (nota_pendente "DATA:1382") — lista de (data, "1382"|"1382,1383");
     - 'dias': dias que o bot ainda vai VERIFICAR — a união dos mp_pendente com
       as entradas nota_pendente "all", deduplicadas por data — (data, restantes);
+    - 'ultima_ok': {data: (quando BRT, nº MPs)} da última checagem COMPLETA de
+      cada dia listado em 'dias' (memória do processo; ausente = nunca checado
+      OK desde o último restart). Dá contexto pro dono: "re-checo por mais N
+      dias" sozinho soava como se NADA tivesse sido visto daquele dia;
     - 'manutencao': True se há aviso ativo de Inlabs em manutenção (dou_manut).
 
     "all" entra em 'dias', não em 'notas': é CHECAGEM (ainda não confirmou MP),
@@ -409,7 +486,18 @@ async def listar_fila_mp(
             _add_dia(d, _MP_RETRO_EXPIRA_DIAS)
 
     notas.sort(key=lambda t: (t[0] or date.min, t[1]))
-    return {"notas": notas, "dias": sorted(dias.items()), "manutencao": manutencao}
+    from bot.services.dou_monitor import _dia_encerrado, ultima_checagem_ok
+    ultima_ok = {d: ok for d in dias if (ok := ultima_checagem_ok(d)) is not None}
+    # Dia ABERTO (fecha às 6h do dia seguinte) × dia preso por falha: o texto
+    # do /mp_fila é diferente — aberto resolve hoje/amanhã cedo (ainda há
+    # checagens HOJE, ver janelas_hoje); preso é que carrega o contador de
+    # desistência. Sem a distinção, o "re-checo por mais 14 dias" soava como
+    # prazo esperado pro dia de HOJE (pergunta do dono, 03/08/2026).
+    return {"notas": notas, "dias": sorted(dias.items()),
+            "abertos": [d for d in dias if not _dia_encerrado(d)],
+            "janelas_hoje": _janelas_restantes(
+                datetime.now(BRT).hour, datetime.now(BRT).minute),
+            "ultima_ok": ultima_ok, "manutencao": manutencao}
 
 
 _ESTADO_GERANDO = "<b>gerando agora</b>, chega em alguns minutos"
@@ -428,6 +516,54 @@ def _estado_em_andamento(key: str) -> str:
     de nota; dizer 'gerando a nota' prometeria MP que pode não existir."""
     _, _, nums = (key or "").partition(":")
     return _ESTADO_CHECANDO if (not nums or nums == "all") else _ESTADO_GERANDO
+
+
+def _fmt_hora_janela(h: int) -> str:
+    """'13h05' (PROACTIVE_MINUTE=5) ou '13h' (offset 0). O minuto aparece nos
+    textos porque as janelas saíram da hora redonda de propósito (fugir do
+    pico do Inlabs) — dizer 'às 13h' com disparo às 13h05 geraria a pergunta
+    'por que atrasou?'."""
+    m = settings.proactive_minute
+    return f"{h}h{m:02d}" if m else f"{h}h"
+
+
+def _janelas_restantes(hora: int, minuto: int | None = None) -> list[int]:
+    """Horas das janelas proativas DE HOJE ainda por vir após o instante.
+
+    Com `minuto`, a janela da hora CORRENTE ainda conta se o disparo
+    (PROACTIVE_MINUTE) não passou — sem isso, entre 13h00 e 13h04 o /mp_fila
+    dizia que a próxima checagem era só às 19h, com a das 13h05 a minutos de
+    distância. `minuto=None` mantém o comportamento conservador (hora
+    corrente já não conta)."""
+    inclui_atual = minuto is not None and minuto < settings.proactive_minute
+    return sorted(
+        h for h in parse_proactive_hours(settings.proactive_hours)
+        if h > hora or (h == hora and inclui_atual)
+    )
+
+
+def _checado_sem_mp_dia_aberto(key: str, agora: datetime | None = None) -> bool:
+    """True quando dá pra AFIRMAR o estado apurado de uma entrada 'all': o dia
+    foi checado COMPLETO, sem MP, e segue aberto. False quando não dá — sem
+    checagem OK registrada (restart/Inlabs fora), MP encontrada, dia já
+    fechado, ou entrada com números (essa é nota em geração, não checagem).
+
+    Pedido do dono (03/08/2026, em rodadas): "checando agora; aviso o
+    resultado" descrevia PROCESSO onde dava pra descrever ESTADO — e, apurado
+    o estado, repeti-lo em TODA janela é ruído. Com True, a linha da FILA é
+    omitida (a entrada não é trabalho pendente, é espera): quem fala pelo dia
+    é o BATIMENTO em collect_mp — abertura no briefing, fechamento na última
+    janela com a ressalva da extra tardia (o dia só fecha às 6h; o veredito
+    vem no briefing, que resolve a entrada com "Tirei da fila"). Mudança de
+    estado fala por si: MP achada vira aviso próprio, falha vira o aviso de
+    2 estágios, e o /mp_fila mostra o "já checado" a qualquer hora."""
+    from bot.services.dou_monitor import _dia_encerrado, ultima_checagem_ok
+    d = _data_da_chave(key)
+    _, _, nums = (key or "").partition(":")
+    if d is None or (nums and nums != "all"):
+        return False
+    ok = ultima_checagem_ok(d)
+    return ok is not None and ok[1] == 0 and not _dia_encerrado(d, agora)
 
 
 def _texto_fila(key: str, estado: str) -> str:
@@ -466,6 +602,13 @@ def _marcar_geradas_agora(facts: list[ProactiveFact], disparadas: list[date]) ->
     alvo = set(disparadas)
     for i, f in enumerate(facts):
         if f.kind == "nota_fila" and _data_da_chave(f.key) in alvo:
+            # Estado APURADO não é rebaixado: dia já checado sem MP e aberto →
+            # a linha (quando existe — só na última janela) já diz o que se
+            # sabe; trocá-la por "checando agora" (o job disparado resolve em
+            # milissegundos via cache e mantém na fila em silêncio) seria
+            # trocar informação por processo.
+            if _checado_sem_mp_dia_aberto(f.key):
+                continue
             facts[i] = replace(f, text=_texto_fila(f.key, _estado_em_andamento(f.key)))
 
 
@@ -623,6 +766,8 @@ class _Colheita:
     facts: list[ProactiveFact]
     completo: bool      # nenhuma seção FALHOU (erro de rede, ZIP inválido…)
     provisorio: bool    # 404 numa seção com o dia ainda aberto
+    sem_edicao: bool = False   # nenhuma fonte de Seção 1 na listagem do dia
+    mps_no_dia: int = 0        # MPs no DOU do dia (BRUTO, antes de dedup)
 
     @property
     def baixa(self) -> bool:
@@ -641,12 +786,20 @@ async def collect_mp(
     seen: set[str] = set()
     failed: list[date] = []
     provisorios: list[date] = []
+    # (numero, ano) já ENTREGUES com nota (dou_seen_mps) — carregado só
+    # quando aparece MP (lazy). É a mesma semântica da conferência com a
+    # Câmara: "o dono FICOU SABENDO?" = aviso do proativo OU nota entregue.
+    # Sem a união, toda MP entregue via /mp_dou_agora era RE-ANUNCIADA na
+    # janela seguinte com botão de gerar a nota de novo — duplicata
+    # sistemática, não caso de dúvida.
+    entregues: set | None = None
 
     async def _colher(d: date) -> _Colheita:
         """Colheita das MPs de um dia (dedup por número e por
         já-notificada). `completo=False` quando uma seção do DOU falhou: o que
         veio é entregue, mas o dia NÃO recebe baixa da pendência.
         Levanta exceção quando o fetch falha inteiro — o caller decide."""
+        nonlocal entregues
         mps = await fetch_mps(d)
         completo = not getattr(mps, "incompleto", False)
         provisorio = bool(getattr(mps, "provisorio", False))
@@ -658,13 +811,22 @@ async def collect_mp(
             seen.add(key)
             if not force and await already_notified(session, user.id, "mp", key):
                 continue
+            if not force:
+                if entregues is None:
+                    rows_seen = await session.scalars(
+                        select(DouSeenMP).where(DouSeenMP.user_id == user.id)
+                    )
+                    entregues = {(r.numero, r.ano) for r in rows_seen}
+                if (mp["numero"], mp["ano"]) in entregues:
+                    continue
             ementa = _clean_ementa(mp.get("ementa") or "")
             out.append(ProactiveFact(
                 "mp", "mp", key,
                 f"📜 MP {mp['numero']}/{mp['ano']}: {ementa}",
                 date_iso=d.isoformat(),
             ))
-        return _Colheita(out, completo, provisorio)
+        return _Colheita(out, completo, provisorio,
+                         bool(getattr(mps, "sem_edicao", False)), len(mps))
 
     # ANTES de varrer: dias que o bot nunca olhou viram pendência (marca
     # d'água). Sem isso, o que ele perdeu enquanto esteve fora é invisível.
@@ -678,9 +840,20 @@ async def collect_mp(
 
     ok_dates: set[date] = set()
     inlabs_fora = False   # fetch RAISOU este run → Inlabs inacessível agora
+    colheita_hoje: _Colheita | None = None
     for d in dates:
+        # CURTO-CIRCUITO: o primeiro fetch que falhou já provou que o Inlabs
+        # está fora AGORA — insistir nas datas seguintes só repete a cascata
+        # de timeouts (login 3x + retries = minutos por data) segurando o
+        # tick inteiro, com o mesmo desfecho. As datas puladas viram
+        # pendência igual às falhas (re-checadas quando ele voltar).
+        if inlabs_fora:
+            failed.append(d)
+            continue
         try:
             c = await _colher(d)
+            if d == hoje_:
+                colheita_hoje = c
             facts += c.facts
             if c.baixa:
                 ok_dates.add(d)
@@ -705,6 +878,48 @@ async def collect_mp(
     # provou que o Inlabs está fora. Atributo transiente (não é coluna).
     user.dou_fora_agora = inlabs_fora
 
+    # BATIMENTO da checagem do dia (pedido do dono, 03/08/2026): confirmação
+    # POSITIVA de que o DOU de hoje foi checado — silêncio não serve como
+    # evidência (é indistinguível de "não checou"). Fala DUAS vezes por dia:
+    # no briefing (abre o dia) e na última janela (fecha o dia, com a ressalva
+    # da extra tardia — o dia só encerra às 6h); nas janelas do meio, silêncio
+    # (o dono pediu: apurado o estado, repetir é ruído). Só afirma o que foi
+    # apurado: fetch COMPLETO e 0 MP no dia (com MP, as linhas de MP são a
+    # evidência; com falha/incompleto, quem fala é o aviso de 2 estágios).
+    # Distingue "chequei, sem MP" de "chequei e a edição nem saiu" — às 7h o
+    # DOU costuma ainda não estar no Inlabs, e afirmar "sem MP" aí seria mais
+    # do que se sabe.
+    if colheita_hoje is not None and colheita_hoje.completo \
+            and colheita_hoje.mps_no_dia == 0:
+        agora_ = datetime.now(BRT)
+        hora_agora = agora_.hour
+        restantes = _janelas_restantes(hora_agora, agora_.minute)
+        if conferir and restantes:
+            # Abertura do dia (briefing/força): diz o estado e quando re-checa.
+            quando = " e às ".join(_fmt_hora_janela(h) for h in restantes)
+            situacao = ("ainda sem edição publicada" if colheita_hoje.sem_edicao
+                        else "sem MP até o momento")
+            facts.append(ProactiveFact(
+                "mp", "mp_checagem", f"{hoje_.isoformat()}:abre",
+                f"📄 DOU de hoje: {situacao} — re-checo às {quando}.",
+                date_iso=None,
+            ))
+        elif not restantes:
+            # Fechamento do dia (última janela): a palavra final de hoje, sem
+            # afirmar veredito — extra tardia existe e o briefing resolve.
+            if colheita_hoje.sem_edicao:
+                texto = (f"📄 DOU de hoje: sem edição publicada até as "
+                         f"{_fmt_hora_janela(hora_agora)} — se sair alguma, "
+                         "chega no briefing de amanhã.")
+            else:
+                texto = (f"📄 DOU de hoje: sem MP na checagem das "
+                         f"{_fmt_hora_janela(hora_agora)} — extra tardia (se "
+                         "houver) chega no briefing de amanhã.")
+            facts.append(ProactiveFact(
+                "mp", "mp_checagem", f"{hoje_.isoformat()}:fecha", texto,
+                date_iso=None,
+            ))
+
     # Dia que falhou vira PENDÊNCIA persistente — gravada JÁ (não no pós-envio):
     # precisa sobreviver mesmo que o envio desta janela falhe. Provisório entra
     # na mesma fila: a diferença entre os dois é só o aviso, logo abaixo.
@@ -713,21 +928,55 @@ async def collect_mp(
             await mark_notified(session, user.id, "mp_pendente", d.isoformat())
 
     # CRÍTICO: se NÃO conseguiu checar o DOU, AVISA — senão o usuário vê o
-    # briefing sem MP e conclui (errado) que não houve MP publicada. Dedup por
-    # conjunto de datas falhas (kind 'mp_fail' é marcado após o envio), pra
-    # avisar 1x e não repetir a cada janela na mesma pane. date_iso=None mantém
-    # o aviso FORA do botão de nota técnica (não é uma MP de verdade).
+    # briefing sem MP e conclui (errado) que não houve MP publicada.
+    #
+    # DOIS ESTÁGIOS (03/08/2026): o alarme forte ("NÃO assuma que não houve
+    # MP") disparava minutos depois de o /mp_dou_agora ter checado o MESMO dia
+    # com sucesso e respondido "nenhuma MP" — as duas frases, lado a lado,
+    # minavam a confiança no monitor. Alarme que grita à toa treina o dono a
+    # ignorar, e isso perde MP tão bem quanto o silêncio. Agora:
+    # - houve checagem COMPLETA do dia há pouco (≤ _OK_RECENTE_H) → linha
+    #   INFORMATIVA com o contexto apurado ("chequei às HH:MM, sem MP até
+    #   então"), 1x por data;
+    # - sem checagem OK recente → alarme forte, como antes. A checagem OK
+    #   "envelhecendo" (> _OK_RECENTE_H) reescala pro forte sozinha.
+    # A falha nunca deixa de ser DITA (premissa: falha ≠ silêncio) — muda só o
+    # tom, conforme o que o bot consegue AFIRMAR. A pendência de re-checagem
+    # independe do aviso (já foi gravada acima). date_iso=None mantém os avisos
+    # FORA do botão de nota técnica (não são MP de verdade).
     if failed:
-        fkey = "fail:" + ",".join(sorted(d.isoformat() for d in failed))
-        if force or not await already_notified(session, user.id, "mp_fail", fkey):
-            datas = ", ".join(d.strftime("%d/%m") for d in failed)
+        from bot.services.dou_monitor import ultima_checagem_ok
+        agora_brt = datetime.now(BRT)
+        fortes: list[date] = []
+        for d in failed:
+            ok = ultima_checagem_ok(d)
+            if ok is None or (agora_brt - ok[0]) > timedelta(hours=_OK_RECENTE_H):
+                fortes.append(d)
+                continue
+            skey = f"failsoft:{d.isoformat()}"
+            if not force and await already_notified(session, user.id, "mp_fail", skey):
+                continue
+            quando, n_mps = ok
+            ate_entao = (f"{n_mps} MP(s) detectada(s) até então" if n_mps
+                         else "sem MP até então")
             facts.append(ProactiveFact(
-                "mp", "mp_fail", fkey,
-                f"⚠️ <b>Não consegui checar o DOU</b> de {datas} (Inlabs "
-                "instável). NÃO assuma que não houve MP — confira depois com "
-                "<code>/mp_dou_agora</code>.",
+                "mp", "mp_fail", skey,
+                f"ℹ️ DOU de {d.strftime('%d/%m')}: chequei às "
+                f"{quando.strftime('%H:%M')} ({ate_entao}); a re-checagem de "
+                "agora falhou — sigo re-checando sozinho e te aviso se vier MP.",
                 date_iso=None,
             ))
+        if fortes:
+            fkey = "fail:" + ",".join(sorted(d.isoformat() for d in fortes))
+            if force or not await already_notified(session, user.id, "mp_fail", fkey):
+                datas = ", ".join(d.strftime("%d/%m") for d in fortes)
+                facts.append(ProactiveFact(
+                    "mp", "mp_fail", fkey,
+                    f"⚠️ <b>Não consegui checar o DOU</b> de {datas} (Inlabs "
+                    "instável). NÃO assuma que não houve MP — confira depois com "
+                    "<code>/mp_dou_agora</code>.",
+                    date_iso=None,
+                ))
 
     # Checagem RETROATIVA dos dias pendentes de janelas anteriores. A pendência
     # só é limpa APÓS o envio (run() → mp_retro), então falha de envio não
@@ -750,10 +999,16 @@ async def collect_mp(
     resolvidos: list[date] = [d for d in pendentes if d in ok_dates]
     restantes = [d for d in pendentes if d not in dates][:_MP_RETRO_MAX_POR_JANELA]
     for d in restantes:
+        # Mesmo curto-circuito da varredura: Inlabs fora neste run → não paga
+        # a cascata de timeouts de novo; os dias seguem pendentes.
+        if inlabs_fora:
+            logger.info("proactive: Inlabs fora neste run — retroativa de %s adiada", d)
+            break
         try:
             c = await _colher(d)
         except Exception as exc:
             logger.warning("proactive: retroativa DOU %s ainda falhando: %s", d, exc)
+            inlabs_fora = True
             continue
         facts += c.facts
         if not c.baixa:
@@ -773,6 +1028,10 @@ async def collect_mp(
             f"✅ Checagem retroativa do DOU de {d.strftime('%d/%m')} concluída — {detalhe}.",
             date_iso=None,
         ))
+
+    # A retroativa pode ter descoberto o Inlabs fora DEPOIS da atribuição
+    # inicial — re-sincroniza o sinal que trava o disparo de jobs de nota.
+    user.dou_fora_agora = inlabs_fora
 
     # Marca d'água avança com o dia mais recente que recebeu baixa. É o que
     # permite detectar a lacuna na próxima volta — sem isso ela congelaria em
@@ -812,9 +1071,22 @@ async def collect_mp(
     )
     for pos, r in enumerate(fila_ordenada):
         d = _data_da_chave(r.key)
-        _, _, nums = r.key.partition(":")
-        alvo = "todas as MPs" if (not nums or nums == "all") else f"MP {nums.replace(',', ', ')}"
-        if d.isoformat() in em_manutencao:
+        # Estado APURADO primeiro (dia checado COMPLETO, sem MP, ainda aberto).
+        # Manutenção/Inlabs fora vencem — nesses a checagem desta janela NÃO
+        # aconteceu, e o registro seria de horas atrás (não vale afirmar
+        # "sem MP até o momento").
+        apurado = (d.isoformat() not in em_manutencao and not inlabs_fora
+                   and _checado_sem_mp_dia_aberto(r.key))
+        if apurado:
+            # Dia já checado COMPLETO, sem MP, ainda aberto: a entrada não é
+            # trabalho pendente, é só espera — nada a dizer AQUI (pedido do
+            # dono: apurado o estado, repetir é ruído). Quem fala pelo dia é o
+            # BATIMENTO (collect_mp): abertura no briefing e fechamento na
+            # última janela. Mudança de estado fala por si: MP achada vira
+            # aviso próprio, falha vira o aviso de 2 estágios, e o /mp_fila
+            # mostra o "já checado" a qualquer hora.
+            continue
+        elif d.isoformat() in em_manutencao:
             estado = ("<b>na fila de checagem</b> — o Inlabs está em manutenção; "
                       "checo e envio quando ele voltar (pode não ser hoje)")
         elif inlabs_fora:
@@ -949,10 +1221,14 @@ async def collect_clima(
         coords = settings.home_coords
     if not coords:
         # Falta de configuração é permanente: avisa UMA vez (dedup pelo kind)
-        # em vez de sumir pra sempre ou repetir todo dia.
+        # em vez de sumir pra sempre ou repetir todo dia. Marcado AQUI: o
+        # pós-envio do run pula a categoria 'clima' de propósito (a linha
+        # normal repete todo briefing), então o "1x" nunca era marcado e o
+        # aviso repetia diariamente.
         logger.warning("proactive: sem HOME_COORDS — briefing sai sem clima")
         if await already_notified(session, user.id, "clima_sem_coords", ""):
             return []
+        await mark_notified(session, user.id, "clima_sem_coords", "")
         return [ProactiveFact(
             "clima", "clima_sem_coords", "",
             "ℹ️ O briefing está saindo <b>sem previsão do tempo</b>: falta "
@@ -1004,13 +1280,33 @@ async def collect_moeda_viagem(user: User) -> list[ProactiveFact]:
     return [ProactiveFact("clima", "moeda_viagem", "", f"💱 {linha}")]
 
 
-async def collect_transito(user: User, now_brt: datetime) -> list[ProactiveFact]:
+async def collect_transito(
+    session: AsyncSession, user: User, now_brt: datetime,
+) -> list[ProactiveFact]:
     """Trânsito casa → trabalho pro briefing matinal (dias úteis). Reusa o
-    fetch do digest de trânsito. Sem dedup (leitura fresca a cada manhã)."""
+    fetch do digest de trânsito. Sem dedup (leitura fresca a cada manhã).
+
+    Falha e config faltando são DITAS, não engolidas (mesma correção que o
+    collect_clima já recebeu — o trânsito ficou de fora dela): briefing sem
+    a linha 🚗 era indistinguível de fim de semana, e o dono saía achando a
+    rota normal quando o Maps nem tinha sido consultado."""
     if now_brt.weekday() > 4:  # fim de semana: sem trânsito pro trabalho
         return []
     if not (settings.home_coords and settings.work_coords and settings.google_maps_api_key):
-        return []
+        # Config incompleta é permanente: avisa UMA vez. Marcado AQUI (não no
+        # pós-envio do run, que pula a categoria 'transito' de propósito —
+        # a linha normal repete todo briefing).
+        logger.warning("proactive: trânsito sem config — briefing sai sem a linha")
+        if await already_notified(session, user.id, "transito_sem_config", ""):
+            return []
+        await mark_notified(session, user.id, "transito_sem_config", "")
+        return [ProactiveFact(
+            "transito", "transito_sem_config", "",
+            "ℹ️ O briefing está saindo <b>sem a linha de trânsito</b>: faltam "
+            "<code>HOME_COORDS</code>/<code>WORK_COORDS</code>/"
+            "<code>GOOGLE_MAPS_API_KEY</code> no .env. Configurando, ela "
+            "volta sozinha.",
+        )]
     import httpx
     from bot.services.traffic import (
         USER_AGENT as TRAFFIC_USER_AGENT,
@@ -1032,9 +1328,17 @@ async def collect_transito(user: User, now_brt: datetime) -> list[ProactiveFact]
                 client, api_key, settings.home_coords, settings.work_coords,
                 waypoints, maps_url=settings.route_google_maps_url or "",
             )
-    except Exception:
+    except Exception as exc:
+        # Silêncio aqui vira falso negativo: briefing sem a linha 🚗 passa
+        # como "rota normal" quando na verdade não se checou. Mesma regra do
+        # clima/DOU — fonte externa que falha é DITA.
         logger.warning("proactive: trânsito casa→trabalho falhou", exc_info=True)
-        return []
+        return [ProactiveFact(
+            "transito", "transito_falhou", now_brt.date().isoformat(),
+            f"⚠️ Não consegui checar o <b>trânsito casa → trabalho</b> agora "
+            f"({type(exc).__name__}). NÃO assuma via livre — confira antes "
+            "de sair.",
+        )]
     txt = format_traffic_briefing(pref, alt)
     return [ProactiveFact("transito", "transito_trabalho", "", txt)]
 
@@ -1148,6 +1452,16 @@ async def _redigir(user: User, deterministic: str) -> str:
         return deterministic
 
 
+def run_key_da_janela(window: str, today: date, hour: int) -> str:
+    """Chave da trava de janela. BRIEFING é POR DIA (sem hora): com o
+    catch-up do scheduler (tentativas a cada hora até meio-dia quando o bot
+    perdeu as 7h), a chave com hora deixaria o mesmo briefing rodar de novo
+    a cada hora do catch-up. Janela regular continua por (dia, hora)."""
+    if window == "briefing":
+        return f"briefing:{today.isoformat()}"
+    return f"{window}:{today.isoformat()}:{hour}"
+
+
 async def run_for_user(
     bot, session: AsyncSession, user: User, now_brt: datetime, *,
     window: str, force: bool = False,
@@ -1156,14 +1470,22 @@ async def run_for_user(
     após envio OK. Retorna True se enviou."""
     briefing = window == "briefing"
     today = now_brt.date()
-    mp_dates = [today - timedelta(days=1), today] if briefing else [today]
+    # Datas do DOU SEMPRE em BRT: o Diário é de Brasília. `now_brt` aqui é o
+    # relógio LOCAL do usuário (viagem conta) — em Tóquio (UTC+9) o "hoje"
+    # local é o AMANHÃ de Brasília: as janelas checavam um dia sem edição,
+    # enfileiravam pendência-fantasma e a MP do dia corrente só aparecia no
+    # briefing seguinte. A JANELA dispara no fuso da viagem (correto); as
+    # DATAS consultadas, não.
+    hoje_dou = datetime.now(BRT).date()
+    mp_dates = [hoje_dou - timedelta(days=1), hoje_dou] if briefing else [hoje_dou]
 
-    # Trava de nível-janela: roda 1x por (janela, dia, hora). Sem isso, como o
-    # tick é de ~20s e a janela é minute<=1, rodaria ~5x — refazendo fetch de
-    # DOU/coletas à toa. Marca já na entrada (mesmo que dê "sem fatos") pra os
-    # ticks seguintes pularem. force (/proativo_agora) ignora a trava.
+    # Trava de nível-janela: roda 1x por janela (briefing: por dia; regular:
+    # por dia+hora — ver run_key_da_janela). Sem isso, como o tick é de ~20s
+    # e a janela é minute<=1, rodaria ~5x — refazendo fetch de DOU/coletas à
+    # toa. Marca já na entrada (mesmo que dê "sem fatos") pra os ticks
+    # seguintes pularem. force (/proativo_agora) ignora a trava.
     if not force:
-        run_key = f"{window}:{today.isoformat()}:{now_brt.hour}"
+        run_key = run_key_da_janela(window, today, now_brt.hour)
         if await already_notified(session, user.id, "proactive_run", run_key):
             return False
         await mark_notified(session, user.id, "proactive_run", run_key)
@@ -1175,7 +1497,7 @@ async def run_for_user(
     facts: list[ProactiveFact] = []
     if briefing:
         facts += await collect_clima(session, user, now_brt)
-        facts += await collect_transito(user, now_brt)
+        facts += await collect_transito(session, user, now_brt)
         facts += await collect_moeda_viagem(user)
     facts += await collect_vencimentos(session, user, now_brt, force=force)
     # Tarefas abertas no briefing matinal e no resumo do fim do dia.

@@ -278,7 +278,14 @@ async def fetch_traffic(
         resp = await client.get(DIRECTIONS_ENDPOINT, params=params)
         resp.raise_for_status()
     except httpx.HTTPError as e:
-        raise TrafficError(f"directions request failed: {e}") from e
+        # NUNCA embutir o str(e) cru: HTTPStatusError carrega a URL COMPLETA
+        # com &key=<API key>, e a mensagem do TrafficError vai pra log
+        # persistido e, pior, volta como tool result pro provedor de LLM
+        # (tools.py: f"erro: {e}"), que pode ecoá-la no chat. Mesmo padrão do
+        # geocoding.py, que já mascara.
+        raise TrafficError(
+            f"directions request failed: {str(e).replace(api_key, '***')}"
+        ) from e
 
     data = resp.json()
     status = data.get("status")

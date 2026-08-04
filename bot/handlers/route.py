@@ -186,7 +186,12 @@ async def on_location(
         from datetime import datetime as _dt
         from zoneinfo import ZoneInfo
         from bot.services.departure import parse_arrive_by, plan_departure
-        now = _dt.now(ZoneInfo(user.timezone))
+        from bot.services.viagem import effective_tz
+        # Fuso EFETIVO (viagem conta): com o fuso de casa fixo, "chegar às
+        # 9h" pedido em Tóquio era interpretado como 9h de BRASÍLIA (21h
+        # locais) e a recomendação inteira saía errada — o caminho gêmeo pela
+        # tool (ctx.tz) já usava o efetivo; só o do pin de GPS não.
+        now = _dt.now(ZoneInfo(effective_tz(user)))
         arrive_by = parse_arrive_by(pending.arrive_by_raw, now) if pending.arrive_by_raw else None
         if arrive_by is not None and arrive_by <= now:
             arrive_by = None  # alvo já passou → cai no modo 'sair em breve'

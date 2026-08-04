@@ -281,10 +281,13 @@ async def _autores_partidos(client: httpx.AsyncClient, prop_id: int,
                             deps: dict[int, dict]) -> list[tuple[str, str]]:
     """[(nome, partido)] dos autores de uma proposição. Partido vem do mapa de
     deputados (autor não-deputado fica com partido vazio)."""
-    try:
-        autores = await _get(client, f"/proposicoes/{prop_id}/autores")
-    except CamaraError:
-        return []
+    # SEM engolir CamaraError: com [] o projeto era DESCARTADO do filtro por
+    # partido/deputado em silêncio — um 504 no /autores do projeto certo
+    # virava "nenhum projeto do Podemos hoje" (falso negativo). Propagando, o
+    # caller converte em _falha_verbatim ("não consegui consultar"), que é a
+    # regra do projeto pra falha de fonte. Todas as outras chamadas desta
+    # cadeia já propagavam — só esta engolia.
+    autores = await _get(client, f"/proposicoes/{prop_id}/autores")
     out = []
     for a in autores:
         nome = a.get("nome") or "?"

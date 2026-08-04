@@ -106,7 +106,7 @@ async def _rodar_nota(
         if user is None or not user.is_authorized:
             return
         try:
-            n, _falhas, motivo = await deliver_to_user(
+            n, falhas, motivo = await deliver_to_user(
                 bot, session, user, target, force=True, only_numeros=only_numeros,
             )
         except DouError as e:
@@ -127,11 +127,27 @@ async def _rodar_nota(
                 user.id, "⚠️ Erro ao gerar a nota técnica.", parse_mode=None,
             )
             return
+        # Baixa manual: checagem conclusiva de dia fechado tira o dia da fila
+        # retroativa (senão a próxima janela re-baixava o DOU só pra confirmar
+        # o que o dono acabou de ver). Subset (only_numeros) não dá baixa: o
+        # botão do proativo entrega PARTE do dia — a verificação segue na fila.
+        # Falha aqui não pode derrubar a entrega já feita: vira log e a
+        # pendência fica (lado seguro).
+        baixado = False
+        if only_numeros is None:
+            from bot.services.proactive import baixa_checagem_manual
+            try:
+                baixado = await baixa_checagem_manual(
+                    session, user, target, n, falhas, motivo,
+                )
+            except Exception:
+                logger.exception("baixa manual das pendências falhou (%s)", target)
         if n == 0:
             from bot.services.dou_monitor import texto_sem_mp
-            await bot.send_message(
-                user.id, texto_sem_mp(motivo, target), parse_mode="HTML",
-            )
+            texto = texto_sem_mp(motivo, target)
+            if baixado:
+                texto += " Dei baixa: o dia sai da fila de re-checagem."
+            await bot.send_message(user.id, texto, parse_mode="HTML")
 
 
 # A chave vive no serviço porque o proativo também dispara esse job: os dois
@@ -340,11 +356,27 @@ async def cmd_dou_provider(
 async def cmd_on(message: Message, user: User, session: AsyncSession) -> None:
     if not user.is_authorized:
         return
+    from bot.services.proactive import _fmt_hora_janela, parse_proactive_hours
+
     user.dou_mp_subscribed = True
     await session.commit()
+    # Horas REAIS das janelas (o antigo "todo dia às 18h" vinha do
+    # DOU_MP_HOUR, config morta de antes do proativo — mentia pro dono).
+    horas = sorted(parse_proactive_hours(settings.proactive_hours))
+    janelas = ", ".join(_fmt_hora_janela(h) for h in horas)
+    aviso = ""
+    if not settings.proactive_enabled:
+        # Dependência SILENCIOSA: o monitor roda dentro do agente proativo.
+        # Assinar com ele desligado era prometer avisos que nunca viriam.
+        aviso = (
+            "\n\n⚠️ ATENÇÃO: o agente proativo está DESLIGADO "
+            "(PROACTIVE_ENABLED=false no .env) — é ele que roda este monitor. "
+            "Sem ligá-lo, as MPs NÃO chegam automaticamente."
+        )
     await message.answer(
-        f"✅ Monitor de MPs no DOU ativado. Você recebe as MPs novas "
-        f"todo dia às {settings.dou_mp_hour:02d}h (se houver). "
+        f"✅ Monitor de MPs no DOU ativado. As checagens rodam nas janelas "
+        f"do proativo ({janelas}), com abertura no briefing e fechamento do "
+        f"dia na última janela.{aviso}\n"
         "Use /mp_dou_agora pra checar agora.",
         parse_mode=None,
     )
@@ -397,10 +429,38 @@ def _fmt_fila_mp(fila: dict) -> str:
             quando = d.strftime("%d/%m/%Y") if d else "data ?"
             linhas.append(f"• {_fmt_alvo(nums)} de {quando}")
     if dias:
+        ultima_ok = fila.get("ultima_ok") or {}
+        abertos = set(fila.get("abertos") or ())
+        janelas = list(fila.get("janelas_hoje") or ())
         linhas.append("\n🔎 <b>Dias a verificar</b> (checo sozinho):")
         for d, restantes in dias:
-            linhas.append(f"• {d.strftime('%d/%m/%Y')} — re-checo por mais "
-                          f"{restantes} dia(s)")
+            # Dia ABERTO: o desfecho esperado é HOJE (janelas restantes; a
+            # extra das 19h pode resolver) ou no briefing de amanhã, quando o
+            # dia fecha (6h) — NÃO "14 dias". O teto de desistência só
+            # interessa (e só aparece) quando o dia está preso por falha.
+            if d in abertos:
+                if janelas:
+                    from bot.services.proactive import _fmt_hora_janela
+                    quando = " e às ".join(_fmt_hora_janela(h) for h in janelas)
+                    estado = (f"re-checo hoje às {quando}; o desfecho sai "
+                              "até o briefing de amanhã")
+                else:
+                    estado = ("fecho no briefing de amanhã (o dia encerra "
+                              "de madrugada)")
+            else:
+                estado = ("re-checando a cada janela; desisto (com aviso) "
+                          f"em {restantes} dia(s)")
+            linha = f"• {d.strftime('%d/%m/%Y')} — {estado}"
+            # Contexto da última checagem COMPLETA (quando houver): sem ele,
+            # a linha logo após um "nenhuma MP" soava contraditória — como
+            # se NADA daquele dia tivesse sido visto.
+            ok = ultima_ok.get(d)
+            if ok:
+                quando_ok, n_mps = ok
+                ate_entao = (f"{n_mps} MP(s) até então" if n_mps
+                             else "sem MP até então")
+                linha += f" · já checado {quando_ok.strftime('%d/%m %H:%M')} ({ate_entao})"
+            linhas.append(linha)
     linhas.append("\nProcesso sozinho e te aviso o resultado — sem precisar "
                   "pedir de novo. Pra forçar uma data: "
                   "<code>/mp_dou_agora DD/MM/AAAA</code>.")

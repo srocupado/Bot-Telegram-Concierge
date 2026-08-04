@@ -126,8 +126,32 @@ async def main() -> None:
     memoria.attach(SessionLocal)
     await memoria.hydrate(SessionLocal, memory)
 
+    # Sessão do bot FORÇADA a IPv4. Medido no Orange Pi (03/08/2026, de dentro
+    # do container): connect v6 à api.telegram.org = ENETUNREACH; v4 = 0.2s.
+    # O v6 morto é descartado rápido no caso "unreachable", mas é um caminho
+    # quebrado tentado em conexão nova — e o aiogram cacheia o DNS (AAAA
+    # incluso) por 1h (ttl_dns_cache=3600). Há modos de falha v6 piores que
+    # o unreachable (blackhole que pendura até o timeout); com family=AF_INET
+    # a classe inteira sai da equação. `_connector_init` é privado do
+    # AiohttpSession — aceitável com a versão pinada (aiogram==3.20.0.post0);
+    # o teste de regressão quebra se o atributo mudar de forma.
+    import socket as _socket
+    from aiogram.client.session.aiohttp import AiohttpSession
+    bot_session = AiohttpSession()
+    bot_session._connector_init["family"] = _socket.AF_INET
+    # Keepalive LONGO (default do aiohttp: 15s). Medição de 03/08/2026 no
+    # Orange Pi: o caminho até o DC do Telegram perde pacote de forma
+    # intermitente e o custo cai TODO no handshake de conexão nova
+    # (get_file_s medidos: 0.5→17.7s, na escada de retransmissão 1/3/7/15s),
+    # enquanto conexões já abertas transferem em <1s. Reusar conexões por
+    # mais tempo reduz drasticamente quantos handshakes se paga — burst de
+    # áudios/comandos vira UM handshake. Trade-off: reuso de conexão que o
+    # servidor fechou pode dar um ServerDisconnected ocasional (o retry das
+    # camadas acima cobre).
+    bot_session._connector_init["keepalive_timeout"] = 55.0
     bot = Bot(
         settings.bot_token,
+        session=bot_session,
         default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN),
     )
     dp = _build_dispatcher()
@@ -149,6 +173,13 @@ async def main() -> None:
         logger.info("starting polling")
         await dp.start_polling(bot, handle_signals=True)
     finally:
+        # Drena os jobs em background (nota do DOU, agente) ANTES de derrubar
+        # o loop: o fim do asyncio.run matava essas tasks sem aviso a cada
+        # deploy. 15s cabem no stop_grace_period do compose (30s) com folga
+        # pro fechamento do bot.session.
+        from bot.services import jobs
+        with contextlib.suppress(Exception):
+            await jobs.drenar(15.0)
         for t in (scheduler_task, watchdog_task):
             t.cancel()
             with contextlib.suppress(asyncio.CancelledError):

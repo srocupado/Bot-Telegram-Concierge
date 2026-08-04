@@ -108,6 +108,8 @@ def test_fmt_fila_vazia_com_manutencao() -> None:
 
 
 def test_fmt_fila_com_notas_e_dias() -> None:
+    """Dia FECHADO preso por falha: é o único que carrega o contador de
+    desistência — e sempre com o aviso de que desistir avisa."""
     fila = {
         "notas": [(date(2026, 8, 1), "1382")],
         "dias": [(date(2026, 7, 30), 11), (date(2026, 7, 29), 10)],
@@ -115,8 +117,8 @@ def test_fmt_fila_com_notas_e_dias() -> None:
     }
     out = _fmt_fila_mp(fila)
     assert "MP 1382 de 01/08/2026" in out
-    assert "30/07/2026 — re-checo por mais 11 dia(s)" in out
-    assert "29/07/2026 — re-checo por mais 10 dia(s)" in out
+    assert "30/07/2026 — re-checando a cada janela; desisto (com aviso) em 11 dia(s)" in out
+    assert "29/07/2026 — re-checando a cada janela; desisto (com aviso) em 10 dia(s)" in out
     assert "Inlabs em manutenção" in out
     assert "/mp_dou_agora" in out
 
@@ -128,4 +130,28 @@ def test_fmt_fila_sem_manutencao_nao_fala_em_inlabs() -> None:
     out = _fmt_fila_mp(fila)
     assert "Inlabs" not in out, "afirmou Inlabs sem causa apurada"
     assert "voltar" not in out
-    assert "02/08/2026 — re-checo por mais 14 dia(s)" in out
+    assert "02/08/2026 — re-checando a cada janela; desisto (com aviso) em 14 dia(s)" in out
+
+
+def test_fmt_fila_dia_aberto_diz_o_desfecho_de_hoje() -> None:
+    """Dia ABERTO com janelas restantes: o desfecho esperado é HOJE (a extra
+    das 19h pode resolver) ou o briefing — NUNCA 'por mais 14 dias', que
+    soava como prazo esperado (pergunta do dono, 03/08/2026)."""
+    d = date(2026, 8, 3)
+    fila = {"notas": [], "dias": [(d, 14)], "abertos": [d],
+            "janelas_hoje": [13, 19], "manutencao": False}
+    out = _fmt_fila_mp(fila)
+    assert ("03/08/2026 — re-checo hoje às 13h05 e às 19h05; o desfecho sai "
+            "até o briefing de amanhã") in out
+    assert "14 dia(s)" not in out
+
+
+def test_fmt_fila_dia_aberto_sem_janelas_fecha_no_briefing() -> None:
+    """Depois das 19h (sem janelas restantes): o que falta é o fechamento
+    do dia (6h) — o briefing resolve."""
+    d = date(2026, 8, 3)
+    fila = {"notas": [], "dias": [(d, 14)], "abertos": [d],
+            "janelas_hoje": [], "manutencao": False}
+    out = _fmt_fila_mp(fila)
+    assert "03/08/2026 — fecho no briefing de amanhã (o dia encerra de madrugada)" in out
+    assert "14 dia(s)" not in out

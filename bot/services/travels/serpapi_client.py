@@ -108,6 +108,13 @@ class SerpAPIClient:
             "currency": currency,
             "hl": "pt-br",
             "gl": "br",
+            # MEDIDO no SerpAPI real (03/08/2026, curls no Orange Pi): sem
+            # `location`, query específica ("DJI Avata 2 Fly More Combo")
+            # voltava "Google hasn't returned any results" — e a MESMA query
+            # com location=Brazil, 37 ofertas. hl/gl sozinhos não bastam pro
+            # matching do engine google_shopping, e o buscar_preco caía num
+            # fallback web inútil (páginas de e-commerce exigem login).
+            "location": "Brazil",
         }
         return await self._get(params)
 

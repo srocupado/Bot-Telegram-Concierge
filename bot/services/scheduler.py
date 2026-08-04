@@ -22,6 +22,7 @@ from bot.services.congress import (
 )
 from bot.services.reminders import due_reminders, mark_sent, next_due_from
 from bot.services.scheduled_actions import run_action
+from bot.services.viagem import effective_tz
 from bot.services.traffic import (
     USER_AGENT as TRAFFIC_USER_AGENT,
     TrafficError,
@@ -48,10 +49,55 @@ logger = logging.getLogger(__name__)
 BRT = ZoneInfo("America/Sao_Paulo")
 CONGRESS_HOUR = 7
 
+# Cache da MENSAGEM pronta dos digests (chave = dia/semana). Com falha de
+# ENVIO, o dia não é marcado (correto: re-tentar entregar) — mas sem o cache
+# o tick seguinte refazia o FETCH inteiro (Google Maps / scrape do Congresso)
+# a cada 60s até meia-noite: ~900 chamadas pagas por dia de pane de envio,
+# sem ninguém saber. O fetch roda 1x; a re-tentativa reusa a mensagem.
+_traffic_digest_cache: dict = {"key": None, "message": None}
+_congress_digest_cache: dict = {"key": None, "message": None}
+
 # Minutos após a hora-alvo em que a janela do proativo ainda pode disparar.
 # Era 1 (2 min de janela) e um tick lento fazia a janela ser PERDIDA sem
 # catch-up. O dedup por run_key impede execução dupla, então alargar é seguro.
 _PROACTIVE_CATCHUP_MIN = 20
+
+# Até que hora local o BRIEFING perdido ainda é recuperado. Restart às 08:53
+# (deploy, queda de luz no Orange Pi) perdia o briefing do dia INTEIRO — junto
+# com a conferência diária com a Câmara e a re-checagem de ontem, que só rodam
+# nele. Mesmo padrão do run_card_closing_summary (janela 9h→12h): a janela
+# larga é segura porque o dedup (run_key do briefing, POR DIA) garante 1
+# execução. A tentativa é no início de cada hora (minuto ≤ catch-up), o que
+# preserva o gate barato de minutos do run_proactive.
+_BRIEFING_CATCHUP_ATE_H = 12
+
+
+def janela_proativa(
+    now_local: datetime, hours: set[int], briefing_hour: int,
+    minuto_alvo: int = 0,
+) -> str | None:
+    """Qual janela (se alguma) vale pra este instante LOCAL do usuário.
+
+    'briefing' na hora do briefing OU — catch-up — no início de qualquer hora
+    seguinte até _BRIEFING_CATCHUP_ATE_H (o run_key por dia derruba as
+    tentativas repetidas quando o briefing já rodou). Hora REGULAR configurada
+    tem precedência sobre o catch-up: sem isso, um PROACTIVE_HOURS com janela
+    entre 8h e 11h (ex.: "7,10,13") teria a janela das 10h ENGOLIDA pelo
+    catch-up em todo dia em que o briefing já tivesse saído às 7h — o briefing
+    atrasado se recupera na hora seguinte.
+
+    `minuto_alvo` desloca o disparo pra dentro da hora (PROACTIVE_MINUTE:
+    7h05 em vez de 7h00) — fora do pico da hora redonda do Inlabs. A janela
+    de catch-up anda junto ([alvo, alvo+catchup])."""
+    if not (minuto_alvo <= now_local.minute <= minuto_alvo + _PROACTIVE_CATCHUP_MIN):
+        return None
+    if now_local.hour == briefing_hour:
+        return "briefing"
+    if now_local.hour in hours:
+        return "regular"
+    if briefing_hour < now_local.hour < _BRIEFING_CATCHUP_ATE_H:
+        return "briefing"
+    return None
 
 
 async def _send_html_with_fallback(bot: Bot, chat_id: int, text: str) -> bool:
@@ -111,6 +157,22 @@ async def run_congress_digest(
     if not users:
         return
 
+    cache_key = monday_brt.date().isoformat()
+    if _congress_digest_cache["key"] == cache_key:
+        # Fetch da semana já feito num tick anterior (envio falhou): só
+        # re-tenta entregar, sem novo scrape.
+        message = _congress_digest_cache["message"]
+        for u in users:
+            sent = await _send_html_with_fallback(bot, u.id, message)
+            if sent:
+                async with sessionmaker() as session:
+                    fresh = await session.get(User, u.id)
+                    if fresh is not None:
+                        fresh.last_congress_digest_at = datetime.now(timezone.utc)
+                        await session.commit()
+                logger.info("congress digest (cache) enviado a %d", u.id)
+        return
+
     try:
         async with httpx.AsyncClient(
             timeout=30.0,
@@ -139,6 +201,7 @@ async def run_congress_digest(
         return
 
     message = format_week_message(items, now_brt.date())
+    _congress_digest_cache.update(key=cache_key, message=message)
     logger.info("congress digest: %d inscritos, %d MPs encontradas", len(users), len(items))
 
     for u in users:
@@ -187,6 +250,22 @@ async def run_traffic_digest(
     users = [u for u in candidates if _due(u)]
 
     if not users:
+        return
+
+    cache_key = now_brt.date().isoformat()
+    if _traffic_digest_cache["key"] == cache_key:
+        # Fetch do dia já feito num tick anterior (envio falhou): só re-tenta
+        # entregar, sem nova chamada ao Maps.
+        message = _traffic_digest_cache["message"]
+        for u in users:
+            sent = await _send_html_with_fallback(bot, u.id, message)
+            if sent:
+                async with sessionmaker() as session:
+                    fresh = await session.get(User, u.id)
+                    if fresh is not None:
+                        fresh.last_traffic_digest_at = datetime.now(timezone.utc)
+                        await session.commit()
+                logger.info("traffic digest (cache) enviado a %d", u.id)
         return
 
     api_key = settings.google_maps_api_key.get_secret_value()
@@ -252,6 +331,7 @@ async def run_traffic_digest(
             message = message[:idx] + f"\n\n{weather_line}" + message[idx:]
         else:
             message = f"{message}\n\n{weather_line}"
+    _traffic_digest_cache.update(key=cache_key, message=message)
     logger.info(
         "traffic digest: %d inscritos, %d min via %s%s",
         len(users),
@@ -271,81 +351,114 @@ async def run_traffic_digest(
             logger.info("traffic digest enviado a %d", u.id)
 
 
+async def _entregar_lembrete(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    bot: Bot,
+    user_id: int,
+    rem_id: int,
+) -> None:
+    """Entrega UM lembrete, em sessão própria.
+
+    Sessão por lembrete de propósito: quando tudo rodava numa sessão única, o
+    `rollback()` do tratamento de erro EXPIRAVA todos os objetos ORM do lote
+    (rollback expira independente de expire_on_commit) — o acesso seguinte a
+    qualquer atributo estourava MissingGreenlet e uma única falha de envio
+    (chat bloqueado, rede) derrubava em silêncio os lembretes restantes de
+    TODOS os usuários daquele tick."""
+    async with sessionmaker() as session:
+        user = await session.get(User, user_id)
+        rem = await session.get(Reminder, rem_id)
+        if user is None or rem is None or rem.sent:
+            return  # consumido por outro caminho (botão done/snooze) no meio tempo
+        if rem.command_kind:
+            dispatched = await run_action(
+                bot, session, user, rem.command_kind, rem.command_args
+            )
+            if not dispatched:
+                # Ex.: agente ocupado — mantém pendente e tenta
+                # de novo no próximo tick, sem reagendar.
+                return
+        else:
+            # Lembretes recorrentes não mostram botões snooze/done
+            # (a próxima ocorrência já vem; snooze não faz sentido).
+            kb = None
+            if not rem.recurrence:
+                kb = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="💤 +15min", callback_data=f"snz:15:{rem.id}"),
+                    InlineKeyboardButton(text="💤 +1h", callback_data=f"snz:60:{rem.id}"),
+                    InlineKeyboardButton(text="✅ feito", callback_data=f"done:{rem.id}"),
+                ]])
+            prefix = "🔁 *Recorrente*" if rem.recurrence else "🔔 *Lembrete*"
+            # Fallback pra texto puro: o TEXTO DO USUÁRIO entra cru
+            # no Markdown — um '_' ou '[' desbalanceado ("pagar
+            # João_Silva [urgente") fazia o envio falhar, o lembrete
+            # continuava pendente e o tick retentava A CADA 60s pra
+            # sempre, sem nunca entregar e sem avisar ninguém.
+            try:
+                await bot.send_message(
+                    user.id,
+                    f"{prefix}: {rem.text}",
+                    parse_mode="Markdown",
+                    reply_markup=kb,
+                )
+            except TelegramBadRequest:
+                logger.warning(
+                    "reminder %d: markdown inválido no texto; enviando puro",
+                    rem.id,
+                )
+                await bot.send_message(
+                    user.id,
+                    f"{prefix.replace('*', '')}: {rem.text}",
+                    parse_mode=None,
+                    reply_markup=kb,
+                )
+        if rem.recurrence:
+            # Reagenda: mesmo HH:MM, próximo dia conforme rrule (cron:
+            # avaliado no tz EFETIVO do usuário — viagem conta). Mantém row.
+            # `effective_tz` importado NO MÓDULO: a regressão de 31/07 usava o
+            # nome sem import (só run_proactive tinha, local) — o NameError
+            # estourava DEPOIS do envio, o rollback mantinha sent=False e o
+            # recorrente era reenviado a cada 60s pra sempre.
+            rem.due_at = next_due_from(rem.recurrence, rem.due_at, effective_tz(user))
+            rem.sent = False
+            rem.sent_at = None
+            await session.commit()
+        else:
+            await mark_sent(session, rem)
+        logger.info(
+            "reminder sent",
+            extra={
+                "user_id": user.id,
+                "reminder_id": rem.id,
+                "kind": rem.command_kind or "text",
+            },
+        )
+
+
 async def run_reminders(
     sessionmaker: async_sessionmaker[AsyncSession],
     bot: Bot,
 ) -> None:
     now_utc = datetime.now(timezone.utc)
+    # Fase 1 (sessão curta): só coleta os IDs vencidos. Fase 2: cada lembrete
+    # é entregue em sessão PRÓPRIA (_entregar_lembrete) — falha de um não
+    # contamina os demais nem os usuários seguintes.
+    pares: list[tuple[int, int]] = []
     async with sessionmaker() as session:
-        # Tirar todos os lembretes vencidos para todos os usuários autorizados.
-        stmt = select(User).where(User.is_authorized.is_(True))
-        users = list((await session.scalars(stmt)).all())
-        for user in users:
-            items: list[Reminder] = await due_reminders(session, user.id, now_utc)
-            for rem in items:
-                try:
-                    if rem.command_kind:
-                        dispatched = await run_action(
-                            bot, session, user, rem.command_kind, rem.command_args
-                        )
-                        if not dispatched:
-                            # Ex.: agente ocupado — mantém pendente e tenta
-                            # de novo no próximo tick, sem reagendar.
-                            continue
-                    else:
-                        # Lembretes recorrentes não mostram botões snooze/done
-                        # (a próxima ocorrência já vem; snooze não faz sentido).
-                        kb = None
-                        if not rem.recurrence:
-                            kb = InlineKeyboardMarkup(inline_keyboard=[[
-                                InlineKeyboardButton(text="💤 +15min", callback_data=f"snz:15:{rem.id}"),
-                                InlineKeyboardButton(text="💤 +1h", callback_data=f"snz:60:{rem.id}"),
-                                InlineKeyboardButton(text="✅ feito", callback_data=f"done:{rem.id}"),
-                            ]])
-                        prefix = "🔁 *Recorrente*" if rem.recurrence else "🔔 *Lembrete*"
-                        # Fallback pra texto puro: o TEXTO DO USUÁRIO entra cru
-                        # no Markdown — um '_' ou '[' desbalanceado ("pagar
-                        # João_Silva [urgente") fazia o envio falhar, o lembrete
-                        # continuava pendente e o tick retentava A CADA 60s pra
-                        # sempre, sem nunca entregar e sem avisar ninguém.
-                        try:
-                            await bot.send_message(
-                                user.id,
-                                f"{prefix}: {rem.text}",
-                                parse_mode="Markdown",
-                                reply_markup=kb,
-                            )
-                        except TelegramBadRequest:
-                            logger.warning(
-                                "reminder %d: markdown inválido no texto; enviando puro",
-                                rem.id,
-                            )
-                            await bot.send_message(
-                                user.id,
-                                f"{prefix.replace('*', '')}: {rem.text}",
-                                parse_mode=None,
-                                reply_markup=kb,
-                            )
-                    if rem.recurrence:
-                        # Reagenda: mesmo HH:MM, próximo dia conforme rrule
-                        # (cron: avaliado no tz do usuário). Mantém row.
-                        rem.due_at = next_due_from(rem.recurrence, rem.due_at, effective_tz(user))
-                        rem.sent = False
-                        rem.sent_at = None
-                        await session.commit()
-                    else:
-                        await mark_sent(session, rem)
-                    logger.info(
-                        "reminder sent",
-                        extra={
-                            "user_id": user.id,
-                            "reminder_id": rem.id,
-                            "kind": rem.command_kind or "text",
-                        },
-                    )
-                except Exception:
-                    logger.exception("reminder send failed", extra={"reminder_id": rem.id})
-                    await session.rollback()
+        user_ids = list((await session.scalars(
+            select(User.id).where(User.is_authorized.is_(True))
+        )).all())
+        for uid in user_ids:
+            items: list[Reminder] = await due_reminders(session, uid, now_utc)
+            pares += [(uid, rem.id) for rem in items]
+    for uid, rem_id in pares:
+        try:
+            await _entregar_lembrete(sessionmaker, bot, uid, rem_id)
+        except Exception:
+            # IDs planos no log (não atributos ORM): objeto expirado aqui já
+            # derrubou o lote inteiro uma vez.
+            logger.exception("reminder send failed",
+                             extra={"user_id": uid, "reminder_id": rem_id})
 
 
 TRAFFIC_WATCH_INTERVAL_MIN = 10
@@ -420,10 +533,20 @@ async def run_traffic_watch(
     weekday, hour = now_brt.weekday(), now_brt.hour
     cooldown_cut = datetime.now(timezone.utc) - timedelta(minutes=TRAFFIC_ALERT_COOLDOWN_MIN)
 
+    # A baseline é o HÁBITO (mesmas weekday+hour das semanas anteriores),
+    # nunca o dia corrente: amostras de hoje — inclusive a recém-medida —
+    # pertencem ao possível evento anômalo e não podem definir o "normal"
+    # contra o qual ele é comparado. Por isso o corte na meia-noite de hoje
+    # E a leitura ANTES do record_sample.
+    inicio_hoje_utc = datetime.combine(
+        now_brt.date(), time(0, 0), tzinfo=BRT,
+    ).astimezone(timezone.utc)
     for u in users:
         async with sessionmaker() as session:
+            base = await baseline_p50(
+                session, u.id, weekday, hour, antes_de=inicio_hoje_utc,
+            )
             await record_sample(session, u.id, weekday, hour, current_s)
-            base = await baseline_p50(session, u.id, weekday, hour)
         if base is None:
             continue
         if not should_alert(current_s, base):
@@ -525,7 +648,19 @@ async def run_card_closing_summary(
             try:
                 msg = await build_card_closing_summary(session, u, now_brt.date())
             except Exception:
+                # Firestore fora: sem saber se hoje é o fechamento, avisa 1x/dia
+                # (falha ≠ silêncio) e re-tenta nos próximos ticks da janela —
+                # antes virava None mudo e o resumo do MÊS podia sumir sem rastro.
                 logger.exception("card summary build failed for user %d", u.id)
+                if not await already_notified(session, u.id, "card_closing_fail", today_key):
+                    aviso = (
+                        "⚠️ Não consegui ler o financeiro pra checar o "
+                        "fechamento da fatura (Firestore indisponível). "
+                        "Re-tento até meio-dia; se hoje for o dia do fechamento "
+                        "e o resumo não sair, consulte o saldo pelo chat."
+                    )
+                    if await _send_html_with_fallback(bot, u.id, aviso):
+                        await mark_notified(session, u.id, "card_closing_fail", today_key)
                 continue
             if not msg:
                 continue
@@ -555,8 +690,10 @@ async def run_proactive(
     # Gate barato ANTES de tocar o banco: só há janela possível quando algum
     # fuso plausível está dentro da JANELA DE CATCH-UP de uma hora-alvo. Como
     # fusos são múltiplos de 15min, checa os 4 offsets de quarto de hora.
+    alvo = settings.proactive_minute
     plausivel = any(
-        ((now_utc.minute + q * 15) % 60) <= _PROACTIVE_CATCHUP_MIN for q in range(4)
+        alvo <= ((now_utc.minute + q * 15) % 60) <= alvo + _PROACTIVE_CATCHUP_MIN
+        for q in range(4)
     )
     if not plausivel:
         return
@@ -579,11 +716,16 @@ async def run_proactive(
         # Janela de CATCH-UP (não 2 min): o tick é sequencial e pode carregar
         # I/O de minutos (nota técnica: web search 55s + LLM até 240s), então
         # a passagem exata pelos 2 primeiros minutos podia simplesmente não
-        # acontecer e a janela evaporava sem catch-up. O run_key (janela+dia+
-        # hora local) segue garantindo 1 execução só.
-        if now_local.hour not in hours or now_local.minute > _PROACTIVE_CATCHUP_MIN:
+        # acontecer e a janela evaporava sem catch-up. O run_key segue
+        # garantindo 1 execução só (briefing: por dia; regular: por hora).
+        # Briefing perdido (bot fora do ar às 7h) é recuperado no início de
+        # cada hora até _BRIEFING_CATCHUP_ATE_H — ver janela_proativa.
+        window = janela_proativa(
+            now_local, hours, settings.proactive_briefing_hour,
+            settings.proactive_minute,
+        )
+        if window is None:
             continue
-        window = "briefing" if now_local.hour == settings.proactive_briefing_hour else "regular"
         async with sessionmaker() as session:
             try:
                 fresh = await session.get(User, u.id)

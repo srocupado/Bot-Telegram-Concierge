@@ -44,7 +44,38 @@ _SUCCESS_CLAIMS = (
     # typo "gravd" (cue morto) e só "gravado" — "Despesa gravada!" alucinada
     # passava pela blindagem.
     "inseri", "salvo", "salvei", "gravad", "gravei",
+    # Fraseados sem os radicais acima que passavam intactos (auditoria
+    # 03/08/2026): "Pronto! Já está no seu financeiro."
+    "pronto", "no seu financeiro", "na sua fatura", "efetuad", "concluíd",
+    "concluid", "incluí", "incluid",
 )
+
+# RADICAIS: casam por prefixo de palavra (\bregistr → registrado/registrei…).
+# O resto casa palavra/frase INTEIRA — matching por substring furava nas duas
+# direções (auditoria 03/08/2026): "cade" ⊂ "CADEira" e "qual" ⊂ "QUALidade"
+# desarmavam o guard ("comprei uma cadeira por 300" + confirmação alucinada
+# passava — exatamente o que a camada existe pra impedir), e "feito" ⊂
+# "PerFEITO" bloqueava pergunta de esclarecimento legítima.
+_QUERY_STEMS = frozenset({"procur", "consult", "verifica", "confere", "checa",
+                          "apaga", "cancela", "remove", "estorna", "deleta",
+                          "corrige", "mostra", "lista"})
+_CLAIM_STEMS = frozenset({"lançad", "lancad", "registrad", "anotad",
+                          "adicionad", "gravad", "inseri", "efetuad",
+                          "concluíd", "concluid", "incluí", "incluid"})
+
+
+def _cue_re(cues: tuple[str, ...], stems: frozenset[str]) -> re.Pattern:
+    partes = []
+    for c in cues:
+        p = r"\b" + re.escape(c)
+        if c not in stems:
+            p += r"\b"
+        partes.append(p)
+    return re.compile("|".join(partes), re.IGNORECASE)
+
+
+_QUERY_RE = _cue_re(_QUERY_CUES, _QUERY_STEMS)
+_CLAIM_RE = _cue_re(_SUCCESS_CLAIMS, _CLAIM_STEMS)
 
 _VALUE_RE = re.compile(r"(r\$\s*)?\d", re.IGNORECASE)
 
@@ -54,7 +85,7 @@ def is_financial_logging_intent(text: str) -> bool:
     t = (text or "").lower()
     if not t.strip():
         return False
-    if any(q in t for q in _QUERY_CUES):
+    if _QUERY_RE.search(t):
         return False
     if not any(c in t for c in _LOG_CUES):
         return False
@@ -63,8 +94,7 @@ def is_financial_logging_intent(text: str) -> bool:
 
 
 def _reply_claims_success(reply: str) -> bool:
-    r = (reply or "").lower()
-    return any(c in r for c in _SUCCESS_CLAIMS)
+    return bool(_CLAIM_RE.search((reply or "").lower()))
 
 
 GUARD_MESSAGE = (

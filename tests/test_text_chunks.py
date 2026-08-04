@@ -52,3 +52,51 @@ def test_modo_plain_nao_costura_nada() -> None:
     """Saída do agente vai com parse_mode=None: tag costurada viraria lixo."""
     blocos = chunk_text("<b>" + "x" * 9000 + "</b>")
     assert "".join(blocos).count("<b>") == 1
+
+
+# ─────────── regressões da auditoria de 03/08/2026 ───────────
+
+from bot.utils.text import _len16
+
+
+def _sem_tag_partida(bloco: str) -> bool:
+    """Nenhum '<' sem '>' no fim, nem resto de tag no início."""
+    import re
+    return (re.search(r"<[^>]*$", bloco) is None
+            and re.match(r"^[^<]*>", bloco) is None)
+
+
+def test_link_longo_nao_estoura_o_teto_na_costura() -> None:
+    """Repro do bug: blockquote+link com href de 300+ chars. A reserva fixa
+    de 80 não cobria a REABERTURA da tag com atributo — saía bloco de 4327
+    chars, o Telegram recusava e o fallback reenviava o MESMO bloco grande:
+    briefing/digest sumiam inteiros."""
+    url = "https://www.in.gov.br/web/dou/-/medida-provisoria-" + "a" * 300
+    texto = (f'<blockquote expandable><b><i><a href="{url}">'
+             + "palavra " * 1200 + "</a></i></b></blockquote>")
+    blocos = chunk_text(texto, mode="html")
+    assert all(_len16(b) <= 4000 for b in blocos), [_len16(b) for b in blocos]
+    assert all(not _tags_abertas(b) for b in blocos)
+
+
+def test_corte_com_espaco_nao_entra_na_tag_com_atributo() -> None:
+    """O rfind(' ') rodava DEPOIS da proteção de tag e voltava o corte pra
+    DENTRO de '<a href=...>': o bloco terminava em '…<a' e o seguinte começava
+    ' href="…">' — Telegram recusava e o texto puro mostrava o href cru."""
+    url = "https://www.in.gov.br/web/dou/-/" + "b" * 200
+    linha = ("x" * 3980 + " fim do parágrafo "
+             + f'<a href="{url}">texto do link</a>' + " y" * 400)
+    blocos = chunk_text(linha, mode="html")
+    for b in blocos:
+        assert _sem_tag_partida(b), f"tag partida entre blocos: …{b[-40:]!r}"
+        assert not _tags_abertas(b)
+
+
+def test_teto_e_medido_em_utf16() -> None:
+    """O Telegram conta 4096 em unidades UTF-16: emoji fora do BMP vale 2.
+    Um texto de 3500 emojis tem len()=3500 mas 7000 unidades — tinha que
+    ser quebrado, e cada bloco tem que caber no teto em UTF-16."""
+    texto = "📄" * 3500
+    blocos = chunk_text(texto, limit=4000, mode="html")
+    assert len(blocos) > 1, "não quebrou um texto de 7000 unidades UTF-16"
+    assert all(_len16(b) <= 4000 for b in blocos)

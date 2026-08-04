@@ -58,7 +58,12 @@ SHELL_QUIET_PREFIX = "@silencioso"
 async def _send_html_with_fallback(bot: Bot, chat_id: int, text: str) -> None:
     """HTML com fallback pra texto puro, QUEBRANDO em blocos: sem o chunk, a
     saída de uma tarefa agendada acima de 4096 chars falhava nas duas
-    tentativas e o usuário não recebia nada (nem sabia que rodou)."""
+    tentativas e o usuário não recebia nada (nem sabia que rodou).
+
+    A SEGUNDA tentativa também é protegida: sem o try, a exceção subia por
+    run_action até o run_reminders, o Reminder não era consumido e a ação
+    agendada re-rodava (com fetch pago ao Maps/scrape) a cada tick de 60s,
+    pra sempre — a versão do scheduler.py já era protegida; esta não."""
     from bot.utils import chunk_text
 
     for bloco in chunk_text(text, mode="html") or [""]:
@@ -68,9 +73,12 @@ async def _send_html_with_fallback(bot: Bot, chat_id: int, text: str) -> None:
             )
         except Exception:
             logger.exception("HTML send failed for chat %d; retrying as plain", chat_id)
-            await bot.send_message(
-                chat_id, bloco, parse_mode=None, disable_web_page_preview=True,
-            )
+            try:
+                await bot.send_message(
+                    chat_id, bloco, parse_mode=None, disable_web_page_preview=True,
+                )
+            except Exception:
+                logger.exception("plain send also failed for chat %d (bloco perdido)", chat_id)
 
 
 async def _run_transito(bot: Bot, chat_id: int, destino: str) -> None:
@@ -162,7 +170,10 @@ async def _run_chat(
             user=user, session=session, tz=effective_tz(user), user_text=prompt,
         )
         reply = await provider.chat_with_tools(
-            inject_context(history, user.timezone, summary), tools=TOOLS, ctx=ctx,
+            # tz efetivo TAMBÉM aqui: o ctx acima já usava; o inject_context
+            # ficou com o fuso de casa — em viagem, "que horas são"/datas
+            # relativas do prompt agendado divergiam do resto do turno.
+            inject_context(history, effective_tz(user), summary), tools=TOOLS, ctx=ctx,
             system=_build_system_prompt(),
             max_tokens=800,
         )

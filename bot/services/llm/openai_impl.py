@@ -14,6 +14,7 @@ from bot.services.llm.base import (
     LLMProvider,
     Tool,
     ToolContext,
+    resumo_tool_call,
 )
 
 logger = logging.getLogger(__name__)
@@ -176,6 +177,10 @@ class OpenAIProvider(LLMProvider):
                     fn_args = json.loads(tc.function.arguments or "{}")
                 except json.JSONDecodeError:
                     fn_args = {}
+                # Toda tool call fica no log — sem isto, "por que o bot me
+                # respondeu ISSO?" não tem resposta na fonte real (ver
+                # resumo_tool_call em llm/base.py).
+                logger.info("openai tool call: %s", resumo_tool_call(fn_name, fn_args))
                 tool = tool_by_name.get(fn_name)
                 if tool is None:
                     result = f"erro: tool '{fn_name}' não existe"
