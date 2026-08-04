@@ -48,7 +48,7 @@ def _sem_dedup(monkeypatch) -> None:
     monkeypatch.setattr(proactive, "unmark_notified", _none)
     # Janela fixada (ver test_dou_404): o batimento de fechamento pós-19h
     # BRT adicionava um fato e os asserts de lista exata quebravam à noite.
-    monkeypatch.setattr(proactive, "_janelas_restantes", lambda _h: [19])
+    monkeypatch.setattr(proactive, "_janelas_restantes", lambda *_a: [19])
 
 
 def _cenario(monkeypatch, resultado):

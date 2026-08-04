@@ -141,7 +141,7 @@ def test_fmt_fila_dia_aberto_diz_o_desfecho_de_hoje() -> None:
     fila = {"notas": [], "dias": [(d, 14)], "abertos": [d],
             "janelas_hoje": [13, 19], "manutencao": False}
     out = _fmt_fila_mp(fila)
-    assert ("03/08/2026 — re-checo hoje às 13h e às 19h; o desfecho sai "
+    assert ("03/08/2026 — re-checo hoje às 13h05 e às 19h05; o desfecho sai "
             "até o briefing de amanhã") in out
     assert "14 dia(s)" not in out
 

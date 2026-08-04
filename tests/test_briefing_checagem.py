@@ -70,7 +70,7 @@ def _facts(monkeypatch, resultado, *, conferir=True, restantes=(13, 19)):
     monkeypatch.setattr(proactive, "mark_notified", _none)
     monkeypatch.setattr(proactive, "unmark_notified", _none)
     monkeypatch.setattr(proactive, "_conferir_camara", _sem_conferencia)
-    monkeypatch.setattr(proactive, "_janelas_restantes", lambda _h: list(restantes))
+    monkeypatch.setattr(proactive, "_janelas_restantes", lambda *_a: list(restantes))
 
     user = SimpleNamespace(id=7, dou_mp_subscribed=True,
                            dou_ultimo_dia_ok=hoje - timedelta(days=1))
@@ -91,14 +91,14 @@ def test_abertura_sem_edicao_publicada(monkeypatch) -> None:
     bat = _batimentos(_facts(monkeypatch, ml))
     assert len(bat) == 1
     assert bat[0].text == ("📄 DOU de hoje: ainda sem edição publicada — "
-                           "re-checo às 13h e às 19h.")
+                           "re-checo às 13h05 e às 19h05.")
 
 
 def test_abertura_edicao_sem_mp(monkeypatch) -> None:
     bat = _batimentos(_facts(monkeypatch, MPList()))
     assert len(bat) == 1
     assert bat[0].text == ("📄 DOU de hoje: sem MP até o momento — "
-                           "re-checo às 13h e às 19h.")
+                           "re-checo às 13h05 e às 19h05.")
     assert bat[0].key.endswith(":abre")
 
 

@@ -70,7 +70,7 @@ def _colher_com(monkeypatch, resultado, marcadas: list[tuple[str, str]]):
     # Janela FIXADA (meio do dia): sem isso o teste dependia da HORA REAL —
     # após as 19h BRT o batimento de fechamento emite um fato extra e o
     # assert de lista exata quebrava só à noite.
-    monkeypatch.setattr(proactive, "_janelas_restantes", lambda _h: [19])
+    monkeypatch.setattr(proactive, "_janelas_restantes", lambda *_a: [19])
     monkeypatch.setattr(proactive, "already_notified", _false)
     monkeypatch.setattr(proactive, "mark_notified", _mark)
     monkeypatch.setattr(proactive, "unmark_notified", _none)

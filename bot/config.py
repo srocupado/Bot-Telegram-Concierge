@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     # INDEPENDENTE do proactive_enabled. Vazio = desligado.
     owner_birthday: str = Field("24/08", alias="OWNER_BIRTHDAY")
     proactive_hours: str = Field("7,13,19", alias="PROACTIVE_HOURS")
+    # Minuto do disparo dentro de cada hora-janela (7h05, 13h05, 19h05…).
+    # Fora da hora redonda de propósito: hipótese do dono (04/08/2026) de que
+    # o Inlabs degrada nos minutos :00 — pico de bots/rotinas do mundo inteiro
+    # batendo junto. Custa zero e tira o bot da multidão.
+    proactive_minute: int = Field(5, alias="PROACTIVE_MINUTE")
     proactive_briefing_hour: int = Field(7, alias="PROACTIVE_BRIEFING_HOUR")
     proactive_lookahead_hours: int = Field(48, alias="PROACTIVE_LOOKAHEAD_HOURS")
     proactive_workout_idle_days: int = Field(4, alias="PROACTIVE_WORKOUT_IDLE_DAYS")

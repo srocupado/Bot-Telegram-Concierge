@@ -72,7 +72,10 @@ _PROACTIVE_CATCHUP_MIN = 20
 _BRIEFING_CATCHUP_ATE_H = 12
 
 
-def janela_proativa(now_local: datetime, hours: set[int], briefing_hour: int) -> str | None:
+def janela_proativa(
+    now_local: datetime, hours: set[int], briefing_hour: int,
+    minuto_alvo: int = 0,
+) -> str | None:
     """Qual janela (se alguma) vale pra este instante LOCAL do usuário.
 
     'briefing' na hora do briefing OU — catch-up — no início de qualquer hora
@@ -81,8 +84,12 @@ def janela_proativa(now_local: datetime, hours: set[int], briefing_hour: int) ->
     tem precedência sobre o catch-up: sem isso, um PROACTIVE_HOURS com janela
     entre 8h e 11h (ex.: "7,10,13") teria a janela das 10h ENGOLIDA pelo
     catch-up em todo dia em que o briefing já tivesse saído às 7h — o briefing
-    atrasado se recupera na hora seguinte."""
-    if now_local.minute > _PROACTIVE_CATCHUP_MIN:
+    atrasado se recupera na hora seguinte.
+
+    `minuto_alvo` desloca o disparo pra dentro da hora (PROACTIVE_MINUTE:
+    7h05 em vez de 7h00) — fora do pico da hora redonda do Inlabs. A janela
+    de catch-up anda junto ([alvo, alvo+catchup])."""
+    if not (minuto_alvo <= now_local.minute <= minuto_alvo + _PROACTIVE_CATCHUP_MIN):
         return None
     if now_local.hour == briefing_hour:
         return "briefing"
@@ -683,8 +690,10 @@ async def run_proactive(
     # Gate barato ANTES de tocar o banco: só há janela possível quando algum
     # fuso plausível está dentro da JANELA DE CATCH-UP de uma hora-alvo. Como
     # fusos são múltiplos de 15min, checa os 4 offsets de quarto de hora.
+    alvo = settings.proactive_minute
     plausivel = any(
-        ((now_utc.minute + q * 15) % 60) <= _PROACTIVE_CATCHUP_MIN for q in range(4)
+        alvo <= ((now_utc.minute + q * 15) % 60) <= alvo + _PROACTIVE_CATCHUP_MIN
+        for q in range(4)
     )
     if not plausivel:
         return
@@ -711,7 +720,10 @@ async def run_proactive(
         # garantindo 1 execução só (briefing: por dia; regular: por hora).
         # Briefing perdido (bot fora do ar às 7h) é recuperado no início de
         # cada hora até _BRIEFING_CATCHUP_ATE_H — ver janela_proativa.
-        window = janela_proativa(now_local, hours, settings.proactive_briefing_hour)
+        window = janela_proativa(
+            now_local, hours, settings.proactive_briefing_hour,
+            settings.proactive_minute,
+        )
         if window is None:
             continue
         async with sessionmaker() as session:

@@ -495,7 +495,8 @@ async def listar_fila_mp(
     # prazo esperado pro dia de HOJE (pergunta do dono, 03/08/2026).
     return {"notas": notas, "dias": sorted(dias.items()),
             "abertos": [d for d in dias if not _dia_encerrado(d)],
-            "janelas_hoje": _janelas_restantes(datetime.now(BRT).hour),
+            "janelas_hoje": _janelas_restantes(
+                datetime.now(BRT).hour, datetime.now(BRT).minute),
             "ultima_ok": ultima_ok, "manutencao": manutencao}
 
 
@@ -517,9 +518,28 @@ def _estado_em_andamento(key: str) -> str:
     return _ESTADO_CHECANDO if (not nums or nums == "all") else _ESTADO_GERANDO
 
 
-def _janelas_restantes(hora: int) -> list[int]:
-    """Horas das janelas proativas DE HOJE ainda por vir após `hora`."""
-    return sorted(h for h in parse_proactive_hours(settings.proactive_hours) if h > hora)
+def _fmt_hora_janela(h: int) -> str:
+    """'13h05' (PROACTIVE_MINUTE=5) ou '13h' (offset 0). O minuto aparece nos
+    textos porque as janelas saíram da hora redonda de propósito (fugir do
+    pico do Inlabs) — dizer 'às 13h' com disparo às 13h05 geraria a pergunta
+    'por que atrasou?'."""
+    m = settings.proactive_minute
+    return f"{h}h{m:02d}" if m else f"{h}h"
+
+
+def _janelas_restantes(hora: int, minuto: int | None = None) -> list[int]:
+    """Horas das janelas proativas DE HOJE ainda por vir após o instante.
+
+    Com `minuto`, a janela da hora CORRENTE ainda conta se o disparo
+    (PROACTIVE_MINUTE) não passou — sem isso, entre 13h00 e 13h04 o /mp_fila
+    dizia que a próxima checagem era só às 19h, com a das 13h05 a minutos de
+    distância. `minuto=None` mantém o comportamento conservador (hora
+    corrente já não conta)."""
+    inclui_atual = minuto is not None and minuto < settings.proactive_minute
+    return sorted(
+        h for h in parse_proactive_hours(settings.proactive_hours)
+        if h > hora or (h == hora and inclui_atual)
+    )
 
 
 def _checado_sem_mp_dia_aberto(key: str, agora: datetime | None = None) -> bool:
@@ -871,11 +891,12 @@ async def collect_mp(
     # do que se sabe.
     if colheita_hoje is not None and colheita_hoje.completo \
             and colheita_hoje.mps_no_dia == 0:
-        hora_agora = datetime.now(BRT).hour
-        restantes = _janelas_restantes(hora_agora)
+        agora_ = datetime.now(BRT)
+        hora_agora = agora_.hour
+        restantes = _janelas_restantes(hora_agora, agora_.minute)
         if conferir and restantes:
             # Abertura do dia (briefing/força): diz o estado e quando re-checa.
-            quando = " e às ".join(f"{h}h" for h in restantes)
+            quando = " e às ".join(_fmt_hora_janela(h) for h in restantes)
             situacao = ("ainda sem edição publicada" if colheita_hoje.sem_edicao
                         else "sem MP até o momento")
             facts.append(ProactiveFact(
@@ -888,12 +909,12 @@ async def collect_mp(
             # afirmar veredito — extra tardia existe e o briefing resolve.
             if colheita_hoje.sem_edicao:
                 texto = (f"📄 DOU de hoje: sem edição publicada até as "
-                         f"{hora_agora}h — se sair alguma, chega no briefing "
-                         "de amanhã.")
+                         f"{_fmt_hora_janela(hora_agora)} — se sair alguma, "
+                         "chega no briefing de amanhã.")
             else:
                 texto = (f"📄 DOU de hoje: sem MP na checagem das "
-                         f"{hora_agora}h — extra tardia (se houver) chega no "
-                         "briefing de amanhã.")
+                         f"{_fmt_hora_janela(hora_agora)} — extra tardia (se "
+                         "houver) chega no briefing de amanhã.")
             facts.append(ProactiveFact(
                 "mp", "mp_checagem", f"{hoje_.isoformat()}:fecha", texto,
                 date_iso=None,

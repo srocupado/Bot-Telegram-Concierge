@@ -356,14 +356,14 @@ async def cmd_dou_provider(
 async def cmd_on(message: Message, user: User, session: AsyncSession) -> None:
     if not user.is_authorized:
         return
-    from bot.services.proactive import parse_proactive_hours
+    from bot.services.proactive import _fmt_hora_janela, parse_proactive_hours
 
     user.dou_mp_subscribed = True
     await session.commit()
     # Horas REAIS das janelas (o antigo "todo dia às 18h" vinha do
     # DOU_MP_HOUR, config morta de antes do proativo — mentia pro dono).
     horas = sorted(parse_proactive_hours(settings.proactive_hours))
-    janelas = ", ".join(f"{h}h" for h in horas)
+    janelas = ", ".join(_fmt_hora_janela(h) for h in horas)
     aviso = ""
     if not settings.proactive_enabled:
         # Dependência SILENCIOSA: o monitor roda dentro do agente proativo.
@@ -440,7 +440,8 @@ def _fmt_fila_mp(fila: dict) -> str:
             # interessa (e só aparece) quando o dia está preso por falha.
             if d in abertos:
                 if janelas:
-                    quando = " e às ".join(f"{h}h" for h in janelas)
+                    from bot.services.proactive import _fmt_hora_janela
+                    quando = " e às ".join(_fmt_hora_janela(h) for h in janelas)
                     estado = (f"re-checo hoje às {quando}; o desfecho sai "
                               "até o briefing de amanhã")
                 else:
