@@ -1205,7 +1205,7 @@ async def collect_tarefas(
 async def collect_clima(
     session: AsyncSession, user: User, now_brt: datetime,
 ) -> list[ProactiveFact]:
-    """Previsão do tempo do dia (Open-Meteo) pro briefing matinal. Em MODO
+    """Previsão do tempo do dia (Google Weather → Open-Meteo) pro briefing. Em MODO
     VIAGEM ativo, usa as coords/fuso do DESTINO (com rótulo); senão HOME_COORDS.
     Roda todo dia; sem dedup (leitura fresca); falha não derruba o briefing.
 
