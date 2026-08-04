@@ -139,6 +139,16 @@ async def main() -> None:
     from aiogram.client.session.aiohttp import AiohttpSession
     bot_session = AiohttpSession()
     bot_session._connector_init["family"] = _socket.AF_INET
+    # Keepalive LONGO (default do aiohttp: 15s). Medição de 03/08/2026 no
+    # Orange Pi: o caminho até o DC do Telegram perde pacote de forma
+    # intermitente e o custo cai TODO no handshake de conexão nova
+    # (get_file_s medidos: 0.5→17.7s, na escada de retransmissão 1/3/7/15s),
+    # enquanto conexões já abertas transferem em <1s. Reusar conexões por
+    # mais tempo reduz drasticamente quantos handshakes se paga — burst de
+    # áudios/comandos vira UM handshake. Trade-off: reuso de conexão que o
+    # servidor fechou pode dar um ServerDisconnected ocasional (o retry das
+    # camadas acima cobre).
+    bot_session._connector_init["keepalive_timeout"] = 55.0
     bot = Bot(
         settings.bot_token,
         session=bot_session,

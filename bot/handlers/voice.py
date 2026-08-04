@@ -94,9 +94,12 @@ _STT_ERROR = "⚠️ Não consegui transcrever o áudio agora. Tenta de novo em 
 # travar o caminho quente (que baixa em ~1-2s).
 _DL_TIMEOUT = 60
 _DL_ATTEMPTS = 2
-# get_file é um POST pequeno na API (metadados) — não tem por que levar mais
-# que isso; o tempo folgado fica pro download do arquivo em si.
-_GETFILE_TIMEOUT = 20
+# get_file é um POST pequeno na API (metadados), mas paga o handshake de
+# conexão nova — e o caminho Pi→DC do Telegram perde pacote intermitente
+# (medição 03/08/2026: get_file_s de 0.5 a 17.7s em SUCESSOS, seguindo a
+# escada de retransmissão TCP/TLS 1/3/7/15s; download_s sempre <1s). 30s
+# acomoda até o degrau dos 15s com folga; 20s cortava sucessos de 17.7s.
+_GETFILE_TIMEOUT = 30
 
 
 async def _get_file_direto(bot, file_id: str) -> str:

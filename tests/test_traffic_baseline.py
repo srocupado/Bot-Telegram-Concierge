@@ -39,6 +39,15 @@ def _amostra(quando: datetime, minutos: int) -> TrafficSample:
                          sampled_at=quando, duration_seconds=minutos * 60)
 
 
+def _meio_dia_hoje() -> datetime:
+    """"Agora" FIXO ao meio-dia UTC de hoje. Com datetime.now() cru, o teste
+    rodando perto da meia-noite UTC fazia "agora - 20min" cair no dia
+    ANTERIOR — a amostra do engarrafamento passava pelo corte `antes_de` e
+    contaminava o baseline (falhou de verdade em 04/08/2026 ~00h UTC)."""
+    return datetime.combine(datetime.now(timezone.utc).date(), time(12, 0),
+                            tzinfo=timezone.utc)
+
+
 async def _seed(engine, sm, amostras):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -54,7 +63,7 @@ def test_dia_corrente_fora_da_mediana_engarrafamento_alerta() -> None:
     congestionamento sobe 48→55. Com o corte, baseline=hábito e 55 alerta;
     sem o corte (comportamento antigo), a mediana incluía o próprio evento
     e nunca alertava."""
-    agora = datetime.now(timezone.utc)
+    agora = _meio_dia_hoje()
     hoje_0h = datetime.combine(agora.date(), time(0, 0), tzinfo=timezone.utc)
     semana_passada = agora - timedelta(days=7)
 
@@ -85,7 +94,7 @@ def test_janela_de_28_dias_enxerga_as_semanas_anteriores() -> None:
     """Com a janela antiga (7 dias) + corte do dia corrente, NUNCA haveria
     baseline (o mesmo weekday só existe hoje e há exatos 7 dias). As
     amostras de 2 e 3 semanas atrás têm que contar."""
-    agora = datetime.now(timezone.utc)
+    agora = _meio_dia_hoje()
     hoje_0h = datetime.combine(agora.date(), time(0, 0), tzinfo=timezone.utc)
     amostras = []
     for semanas in (2, 3):
@@ -109,7 +118,7 @@ def test_janela_de_28_dias_enxerga_as_semanas_anteriores() -> None:
 def test_sem_historico_suficiente_nao_ha_baseline() -> None:
     """Menos de MIN_SAMPLES no histórico (excluído o hoje) → None: melhor
     não alertar que alertar contra base inventada."""
-    agora = datetime.now(timezone.utc)
+    agora = _meio_dia_hoje()
     hoje_0h = datetime.combine(agora.date(), time(0, 0), tzinfo=timezone.utc)
     amostras = [_amostra(agora - timedelta(days=7, minutes=10 * i), 30)
                 for i in range(2)]
