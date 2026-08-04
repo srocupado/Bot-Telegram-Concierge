@@ -1092,10 +1092,11 @@ async def collect_mp(
         elif inlabs_fora:
             # A checagem DESTE run não alcançou o Inlabs: a nota não gera agora.
             # NÃO dizer "gerando"/"assim que responder" — soa iminente e o dono
-            # esquece. Enquadra como FILA: fica esperando o Inlabs, sem promessa
-            # de prazo. Causa não afirmada como manutenção (não foi declarada).
-            estado = ("<b>na fila de checagem</b> — o Inlabs está fora agora; "
-                      "checo e envio quando ele voltar (pode não ser hoje)")
+            # esquece. "instável" (não "fora"): quase sempre é RECUSA DE SESSÃO
+            # transitória, não o site caído — o dono vê o Inlabs de pé no
+            # navegador e "fora" soa como bug. Sem promessa de prazo.
+            estado = ("<b>na fila de checagem</b> — o Inlabs está instável agora "
+                      "(recusando a sessão); checo e envio assim que estabilizar")
         elif jobs.job_em_andamento(chave_job_nota(user.id, d)):
             estado = _estado_em_andamento(r.key)
         elif pos >= _NOTA_MAX_POR_JANELA:
