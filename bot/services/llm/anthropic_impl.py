@@ -13,6 +13,7 @@ from bot.services.llm.base import (
     LLMProvider,
     Tool,
     ToolContext,
+    resumo_tool_call,
 )
 
 logger = logging.getLogger(__name__)
@@ -186,6 +187,11 @@ class AnthropicProvider(LLMProvider):
             for block in resp.content:
                 if getattr(block, "type", None) != "tool_use":
                     continue
+                # Toda tool call fica no log — sem isto, "por que o bot me
+                # respondeu ISSO?" não tem resposta na fonte real (ver
+                # resumo_tool_call em llm/base.py).
+                logger.info("anthropic tool call: %s",
+                            resumo_tool_call(block.name, block.input or {}))
                 tool = tool_by_name.get(block.name)
                 if tool is None:
                     result = f"erro: tool '{block.name}' não existe"

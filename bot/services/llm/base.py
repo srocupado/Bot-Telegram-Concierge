@@ -1,11 +1,30 @@
 from __future__ import annotations
 
 import base64
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, TypedDict
 
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
+def resumo_tool_call(name: str, args: dict | None) -> str:
+    """Linha compacta 'tool(args)' pro log de cada tool que o modelo chama.
+
+    Motivo (04/08/2026): áudio pedindo previsão do tempo voltou com a fatura
+    INTEIRA do cartão na frente — alguma tool financeira rodou num turno de
+    clima e o log não tinha COMO dizer qual/por quê: nenhum provider logava
+    as tool calls. Sem isso, todo bug de roteamento do modelo é indiagnosticável
+    contra a fonte real (o log do Orange Pi).
+    """
+    try:
+        s = json.dumps(args or {}, ensure_ascii=False, default=str)
+    except Exception:
+        s = repr(args)
+    if len(s) > 300:
+        s = s[:300] + "…"
+    return f"{name}({s})"
 
 
 class ChatMessage(TypedDict):
