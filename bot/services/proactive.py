@@ -1403,7 +1403,11 @@ async def collect_carteira(
 # ──────────────────────── orquestrador ────────────────────────
 
 _CAT_HEADER = {
-    "clima": "🌦️ <b>Clima hoje</b>",
+    # Sem cabeçalho: o bloco do clima já abre com "🌦️ Previsão — próximos
+    # dias" e o par "Clima hoje" + "Previsão" era redundante (dono,
+    # 05/08/2026). As outras entradas da categoria (falha, moeda da viagem)
+    # se apresentam sozinhas (⚠️/💱).
+    "clima": None,
     "transito": "🚗 <b>Trânsito casa → trabalho</b>",
     "venc": "⏳ <b>Chegando</b>",
     "tarefas": "📋 <b>Tarefas abertas</b>",
@@ -1421,7 +1425,9 @@ def _compose(facts: list[ProactiveFact], *, briefing: bool) -> str:
         lines = [f.text for f in facts if f.category == cat]
         if not lines:
             continue
-        blocks.append(_CAT_HEADER[cat] + "\n" + "\n".join(lines))
+        header = _CAT_HEADER[cat]
+        corpo = "\n".join(lines)
+        blocks.append(f"{header}\n{corpo}" if header else corpo)
     return "\n\n".join(blocks)
 
 
