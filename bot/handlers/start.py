@@ -69,9 +69,15 @@ HELP_TEXT = (
     "• <i>\"que horas passa o filme X no Iguatemi Brasília?\"</i> / "
     "<i>\"programação do Pier 21 amanhã\"</i> → sessões oficiais (2D/3D, "
     "dublado/legendado), qualquer data.\n\n"
-    "<b>Clima</b>:\n"
+    "<b>Clima</b> (Google Weather, com Open-Meteo de reserva):\n"
     "• <i>\"qual a previsão pra hoje?\"</i> / <i>\"vai chover essa semana?\"</i> "
-    "→ previsão do tempo (hoje ou próximos 7 dias, dia a dia).\n\n"
+    "→ previsão do tempo (hoje ou próximos 7 dias, dia a dia).\n"
+    "• <b>Alerta de chuva</b> automático: quando a chance de chuva na PRÓXIMA "
+    "hora cruza 60%, o bot avisa sozinho (6h–23h; um aviso por chuva, sem "
+    "repetição enquanto ela dura).\n"
+    "• No <b>briefing da manhã</b>: previsão dos 7 dias + aviso "
+    "<i>\"Esquentando\"</i> quando a máxima da semana sobe 2°C ou mais sobre "
+    "a de hoje.\n\n"
     "<b>Cotações</b> (ao vivo):\n"
     "• <i>\"quanto está o dólar?\"</i>, <i>\"cotação da PETR4\"</i>, "
     "<i>\"quanto tá o HGLG11 / bitcoin?\"</i> → preço atual de moeda, ação, "
@@ -296,6 +302,8 @@ _HELP_KEYWORDS: dict[str, str] = {
     "sessao": "cinema", "sessoes": "cinema", "programacao": "cinema",
     # clima (consultar_clima)
     "chuva": "clima", "chover": "clima", "previsao": "clima",
+    "guarda-chuva": "clima", "calor": "clima", "esquentando": "clima",
+    "esquentar": "clima", "temperatura": "clima",
     # cotações (consultar_cotacao)
     "cotacao": "cotacoes", "cotacoes": "cotacoes", "dolar": "cotacoes",
     "euro": "cotacoes", "bitcoin": "cotacoes", "cripto": "cotacoes",

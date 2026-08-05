@@ -19,6 +19,7 @@ FORECAST_ENDPOINT = "https://api.open-meteo.com/v1/forecast"
 # resposta). Reusa a GOOGLE_MAPS_API_KEY do trânsito; sem chave, tudo segue
 # 100% Open-Meteo como antes. Free tier: 10k chamadas/mês (o bot usa <500).
 GOOGLE_FORECAST_ENDPOINT = "https://weather.googleapis.com/v1/forecast/days:lookup"
+GOOGLE_HOURLY_ENDPOINT = "https://weather.googleapis.com/v1/forecast/hours:lookup"
 # O forecast/days aceita no máximo 10 dias; pedido maior vai direto ao
 # Open-Meteo (que cobre 16) — melhor a série inteira de uma fonte só do que
 # emendar duas previsões diferentes no meio da lista.
@@ -293,6 +294,114 @@ async def fetch_forecast(
 
 
 _DIAS_SEMANA = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"]
+
+
+def tendencia_calor(days: list[DayWeather], delta_min_c: float = 2.0) -> str | None:
+    """Linha de aviso quando a semana vem ESQUENTANDO: a máxima de algum dia
+    futuro supera a de hoje em ≥ delta_min_c (pedido do dono, 04/08/2026:
+    +2°C na semana). None quando não há tendência — semana estável fica em
+    silêncio, aviso que dispara sempre vira ruído que se ignora."""
+    if len(days) < 2:
+        return None
+    hoje = days[0]
+    pico = max(days[1:], key=lambda d: d.temp_max_c)
+    if pico.temp_max_c - hoje.temp_max_c < delta_min_c:
+        return None
+    dt = date.fromisoformat(pico.date_iso)
+    return (f"🌡️ Esquentando: hoje máxima de {round(hoje.temp_max_c)}°, "
+            f"subindo até {round(pico.temp_max_c)}° na {_DIAS_SEMANA[dt.weekday()]} "
+            f"{dt.strftime('%d/%m')}.")
+
+
+@dataclass(frozen=True)
+class RainNowcast:
+    prob_pct: int
+    condition_label: str
+    fonte: str = FONTE_OM
+
+
+def chuva_transicao(prob_pct: int, alerta_ativo: bool, limiar_pct: int) -> str | None:
+    """Máquina de estados do alerta de chuva: 'disparar' no cruzamento do
+    limiar, 'rearmar' quando a chuva passou, None no resto — inclusive chuva
+    contínua já avisada (1 alerta por evento, nunca metralhadora). O rearme
+    tem histerese de 20 pontos: probabilidade oscilando em volta do limiar
+    (58→62→57→63…) não pode redisparar a cada oscilação."""
+    if not alerta_ativo and prob_pct >= limiar_pct:
+        return "disparar"
+    if alerta_ativo and prob_pct <= max(0, limiar_pct - 20):
+        return "rearmar"
+    return None
+
+
+async def fetch_rain_next_hour(client: httpx.AsyncClient, coords: str) -> RainNowcast:
+    """Probabilidade de chuva na PRÓXIMA hora — mesma cascata do forecast
+    (Google horário → Open-Meteo horário). Olha as 2 primeiras horas e pega o
+    MÁXIMO: a "hora corrente" devolvida pode estar quase no fim, e chuva às
+    XX:55 é tão 'próxima hora' quanto às XX+1:10."""
+    try:
+        lat_s, lng_s = coords.split(",", 1)
+        lat = float(lat_s.strip())
+        lng = float(lng_s.strip())
+    except (ValueError, AttributeError) as e:
+        raise WeatherError(f"invalid coords '{coords}': {e}") from e
+
+    fonte_om = FONTE_OM
+    key = _google_api_key()
+    if key:
+        try:
+            params = {
+                "key": key,
+                "location.latitude": lat,
+                "location.longitude": lng,
+                "hours": 2,
+                "pageSize": 2,
+                "languageCode": "pt-BR",
+                "unitsSystem": "METRIC",
+            }
+            try:
+                resp = await client.get(GOOGLE_HOURLY_ENDPOINT, params=params)
+                resp.raise_for_status()
+            except httpx.HTTPError as e:
+                raise WeatherError(f"google hourly request failed: {e}") from e
+            melhor: tuple[int, str] | None = None
+            for h in (resp.json().get("forecastHours") or [])[:2]:
+                p = int(((h.get("precipitation") or {}).get("probability") or {})
+                        .get("percent") or 0)
+                cond = h.get("weatherCondition") or {}
+                desc = ((cond.get("description") or {}).get("text") or "").strip().lower()
+                if melhor is None or p > melhor[0]:
+                    melhor = (p, desc or "condição indefinida")
+            if melhor is None:
+                raise WeatherError("google hourly: resposta vazia")
+            return RainNowcast(melhor[0], melhor[1], FONTE_GOOGLE)
+        except WeatherError as e:
+            logger.warning("chuva: Google horário falhou (%s) — usando Open-Meteo", e)
+            fonte_om = FONTE_OM_FALLBACK
+
+    params = {
+        "latitude": lat,
+        "longitude": lng,
+        "hourly": "precipitation_probability,weather_code",
+        "forecast_hours": 2,
+        "timezone": "auto",
+    }
+    try:
+        resp = await client.get(FORECAST_ENDPOINT, params=params)
+        resp.raise_for_status()
+    except httpx.HTTPError as e:
+        raise WeatherError(f"open-meteo hourly request failed: {e}") from e
+    hourly = resp.json().get("hourly") or {}
+    probs = hourly.get("precipitation_probability") or []
+    codes = hourly.get("weather_code") or []
+    melhor = None
+    for i, p in enumerate(probs[:2]):
+        p = int(p or 0)
+        if melhor is None or p > melhor[0]:
+            code = int(codes[i]) if i < len(codes) and codes[i] is not None else -1
+            melhor = (p, _interpret_wmo(code)[1])
+    if melhor is None:
+        raise WeatherError("open-meteo hourly: sem dados")
+    return RainNowcast(melhor[0], melhor[1], fonte_om)
 
 
 def format_week_forecast(days: list[DayWeather], hoje_iso: str | None = None) -> str:

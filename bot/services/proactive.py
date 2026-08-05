@@ -1236,10 +1236,13 @@ async def collect_clima(
             "Configurando, a linha do clima volta sozinha.",
         )]
     import httpx
-    from bot.services.weather import fetch_today_weather, format_weather_line
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    from bot.services import weather as _weather
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            w = await fetch_today_weather(client, coords, tz=tz)
+            # 7 dias no briefing (pedido do dono, 04/08/2026) — antes era só a
+            # linha de hoje e a semana exigia perguntar.
+            dias = await _weather.fetch_forecast(client, coords, tz=tz, days=7)
     except Exception as exc:
         # Silêncio aqui vira falso negativo: briefing sem linha de clima passa
         # como "dia sem nada digno de nota" quando na verdade não se checou.
@@ -1251,10 +1254,17 @@ async def collect_clima(
             f"({type(exc).__name__}). NÃO assuma tempo firme — confira antes "
             "de sair.",
         )]
-    linha = format_weather_line(w)
+    hoje_iso = datetime.now(_ZoneInfo(tz)).date().isoformat()
+    bloco = "🌦️ Previsão — próximos dias\n" + _weather.format_week_forecast(dias, hoje_iso)
     if label:
-        linha = f"✈️ {label.strip()}: {linha}"
-    return [ProactiveFact("clima", "clima_hoje", "", linha)]
+        bloco = f"✈️ {label.strip()}:\n{bloco}"
+    facts = [ProactiveFact("clima", "clima_hoje", "", bloco)]
+    # Tendência de calor (+2°C na semana, régua do dono): só fala quando HÁ
+    # tendência — semana estável fica em silêncio.
+    linha_calor = _weather.tendencia_calor(dias, settings.heat_trend_delta_c)
+    if linha_calor:
+        facts.append(ProactiveFact("clima", "clima_tendencia", "", linha_calor))
+    return facts
 
 
 async def collect_moeda_viagem(user: User) -> list[ProactiveFact]:

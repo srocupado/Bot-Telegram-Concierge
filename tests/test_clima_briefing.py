@@ -43,21 +43,28 @@ def _rodar(monkeypatch, *, coords, erro=None, ja_avisado=False):
     monkeypatch.setattr(viagem, "effective_coords", lambda _u: None)
     monkeypatch.setattr(viagem, "effective_tz", lambda _u: "America/Sao_Paulo")
 
-    async def _fetch(_client, _coords, tz=None):
+    async def _fetch(_client, _coords, tz=None, days=7):
         if erro:
             raise erro
-        return {"tmin": 18, "tmax": 29, "chuva": 0}
+        # Semana estável (máximas iguais): não dispara o "Esquentando" — a
+        # tendência tem teste próprio (test_rain_heat.py).
+        return [
+            weather.DayWeather("2026-08-05", 18, 29, 0, 0, "🌤️", "limpo"),
+            weather.DayWeather("2026-08-06", 18, 29, 0, 0, "🌤️", "limpo"),
+        ]
 
-    monkeypatch.setattr(weather, "fetch_today_weather", _fetch)
-    monkeypatch.setattr(weather, "format_weather_line", lambda _w: "🌤 18°/29°")
+    monkeypatch.setattr(weather, "fetch_forecast", _fetch)
 
     agora = datetime.now(proactive.BRT)
     return asyncio.run(proactive.collect_clima(_FakeSession(), _user(), agora))
 
 
-def test_previsao_ok_vira_linha_normal(monkeypatch) -> None:
+def test_previsao_ok_vira_bloco_da_semana(monkeypatch) -> None:
     facts = _rodar(monkeypatch, coords="-15.79,-47.88")
     assert [f.kind for f in facts] == ["clima_hoje"]
+    # Briefing mostra a SEMANA (pedido do dono, 04/08/2026), não só hoje.
+    assert "Previsão — próximos dias" in facts[0].text
+    assert "05/08" in facts[0].text and "06/08" in facts[0].text
 
 
 def test_falha_da_api_e_dita(monkeypatch) -> None:

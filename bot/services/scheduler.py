@@ -38,6 +38,8 @@ from bot.services.traffic_baseline import (
 )
 from bot.services.weather import (
     WeatherError,
+    chuva_transicao,
+    fetch_rain_next_hour,
     fetch_today_weather,
     format_weather_line,
 )
@@ -481,6 +483,121 @@ def _in_watch_window(now_brt: datetime, u: User) -> bool:
     return start <= now_brt <= end
 
 
+RAIN_WATCH_INTERVAL_MIN = 20
+# Falhas consecutivas do vigia de chuva (memória de processo). Falha de fonte
+# não pode ser silêncio (regra do projeto), mas avisar a cada 20min seria pior
+# que o problema: só depois de ~2h sem NENHUMA checagem boa sai UM aviso/dia.
+_rain_fail_streak = 0
+_RAIN_FAIL_AVISO_APOS = 6
+
+
+async def run_rain_watch(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    bot: Bot,
+) -> None:
+    """Alerta de chuva na PRÓXIMA hora (pedido do dono, 04/08/2026).
+
+    A cada 20min dentro do horário configurado (default 6h–23h locais),
+    consulta o nowcast (Google horário → Open-Meteo) e avisa quando a
+    probabilidade cruza o limiar (default 60%). UM alerta por evento de
+    chuva: o estado 'ativo' persiste em ProactiveNotice (sobrevive a
+    restart) e só rearma quando a probabilidade cai com folga (histerese em
+    chuva_transicao). Em viagem, vigia as coords do destino."""
+    global _rain_fail_streak
+    if not (settings.rain_alert_enabled and settings.proactive_enabled):
+        return
+    now_brt = datetime.now(BRT)
+    if now_brt.minute % RAIN_WATCH_INTERVAL_MIN > 1:
+        return
+
+    from bot.services.proactive import (
+        already_notified, mark_notified, unmark_notified,
+    )
+    from bot.services.viagem import effective_coords
+
+    async with sessionmaker() as session:
+        users = list((await session.scalars(select(User).where(
+            User.is_authorized.is_(True),
+            User.proactive_enabled.is_(True),
+        ))).all())
+        if not users:
+            return
+
+        houve_sucesso = False
+        houve_falha = False
+        cache: dict[str, object] = {}   # coords → nowcast (casal = 1 chamada)
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for u in users:
+                hora_local = datetime.now(ZoneInfo(effective_tz(u))).hour
+                if not (settings.rain_alert_start_hour <= hora_local
+                        < settings.rain_alert_end_hour):
+                    continue
+                em_viagem = effective_coords(u)
+                coords = em_viagem or settings.home_coords
+                if not coords:
+                    continue   # sem coords o briefing já cobra o HOME_COORDS
+                try:
+                    if coords not in cache:
+                        cache[coords] = await fetch_rain_next_hour(client, coords)
+                except WeatherError as e:
+                    houve_falha = True
+                    logger.warning("rain watch: nowcast falhou (%s)", e)
+                    continue
+                nowcast = cache[coords]
+                houve_sucesso = True
+
+                ativo = await already_notified(session, u.id, "chuva_alerta_ativo", "")
+                acao = chuva_transicao(
+                    nowcast.prob_pct, ativo, settings.rain_alert_threshold_pct,
+                )
+                if acao == "disparar":
+                    onde = f" em {u.viagem_destino}" if em_viagem else ""
+                    origem = ("" if nowcast.fonte == "google"
+                              else " · fonte: Open-Meteo")
+                    try:
+                        await bot.send_message(
+                            u.id,
+                            f"🌧️ Chuva provável na próxima hora{onde}: "
+                            f"{nowcast.prob_pct}% de chance "
+                            f"({nowcast.condition_label}){origem}.",
+                            parse_mode=None,
+                        )
+                    except Exception:
+                        # Sem entrega, sem marca: o próximo ciclo re-tenta —
+                        # marcar aqui perderia o alerta em silêncio.
+                        logger.exception("rain watch: envio falhou (user %s)", u.id)
+                        continue
+                    await mark_notified(session, u.id, "chuva_alerta_ativo", "")
+                    logger.info("rain watch: alerta enviado (user %s, %d%%)",
+                                u.id, nowcast.prob_pct)
+                elif acao == "rearmar":
+                    await unmark_notified(session, u.id, "chuva_alerta_ativo", "")
+                    logger.info("rain watch: chuva passou, alerta rearmado (user %s)",
+                                u.id)
+
+        if houve_sucesso:
+            _rain_fail_streak = 0
+        elif houve_falha:
+            _rain_fail_streak += 1
+        if _rain_fail_streak >= _RAIN_FAIL_AVISO_APOS:
+            key = now_brt.date().isoformat()
+            for u in users:
+                if await already_notified(session, u.id, "chuva_watch_fail", key):
+                    continue
+                try:
+                    await bot.send_message(
+                        u.id,
+                        "⚠️ O vigia de chuva está há ~2h sem conseguir checar a "
+                        "previsão (Google e Open-Meteo falhando). Sigo tentando "
+                        "a cada 20min — enquanto isso, não assuma tempo firme.",
+                        parse_mode=None,
+                    )
+                except Exception:
+                    logger.exception("rain watch: aviso de falha não entregue")
+                    continue
+                await mark_notified(session, u.id, "chuva_watch_fail", key)
+
+
 async def run_traffic_watch(
     sessionmaker: async_sessionmaker[AsyncSession],
     bot: Bot,
@@ -862,6 +979,11 @@ async def tick(
         await run_traffic_watch(sessionmaker, bot)
     except Exception:
         logger.exception("traffic watch crashed")
+
+    try:
+        await run_rain_watch(sessionmaker, bot)
+    except Exception:
+        logger.exception("rain watch crashed")
 
     try:
         await run_reminders(sessionmaker, bot)

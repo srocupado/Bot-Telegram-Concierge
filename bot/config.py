@@ -84,6 +84,15 @@ class Settings(BaseSettings):
     # batendo junto. Custa zero e tira o bot da multidão.
     proactive_minute: int = Field(5, alias="PROACTIVE_MINUTE")
     proactive_briefing_hour: int = Field(7, alias="PROACTIVE_BRIEFING_HOUR")
+    # Alerta de chuva na próxima hora (pedido do dono, 04/08/2026): vigia a
+    # cada 20min dentro do horário; 1 alerta por evento de chuva (histerese).
+    rain_alert_enabled: bool = Field(True, alias="RAIN_ALERT_ENABLED")
+    rain_alert_threshold_pct: int = Field(60, alias="RAIN_ALERT_THRESHOLD_PCT")
+    rain_alert_start_hour: int = Field(6, alias="RAIN_ALERT_START_HOUR")
+    rain_alert_end_hour: int = Field(23, alias="RAIN_ALERT_END_HOUR")
+    # Aviso "Esquentando" no briefing quando a máxima da semana supera a de
+    # hoje neste tanto (dono: +2°C na semana).
+    heat_trend_delta_c: float = Field(2.0, alias="HEAT_TREND_DELTA_C")
     proactive_lookahead_hours: int = Field(48, alias="PROACTIVE_LOOKAHEAD_HOURS")
     proactive_workout_idle_days: int = Field(4, alias="PROACTIVE_WORKOUT_IDLE_DAYS")
     proactive_finance_idle_days: int = Field(7, alias="PROACTIVE_FINANCE_IDLE_DAYS")
