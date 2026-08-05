@@ -907,13 +907,17 @@ async def collect_mp(
         elif not restantes:
             # Fechamento do dia (última janela): a palavra final de hoje, sem
             # afirmar veredito — extra tardia existe e o briefing resolve.
+            # Hora REAL do relógio, não a da janela: rodada forçada
+            # (/proativo_agora) às 21h43 dizia "checagem das 21h05" — minuto
+            # da config colado numa checagem que não aconteceu ali.
+            hora_txt = f"{agora_.hour}h{agora_.minute:02d}"
             if colheita_hoje.sem_edicao:
                 texto = (f"📄 DOU de hoje: sem edição publicada até as "
-                         f"{_fmt_hora_janela(hora_agora)} — se sair alguma, "
+                         f"{hora_txt} — se sair alguma, "
                          "chega no briefing de amanhã.")
             else:
                 texto = (f"📄 DOU de hoje: sem MP na checagem das "
-                         f"{_fmt_hora_janela(hora_agora)} — extra tardia (se "
+                         f"{hora_txt} — extra tardia (se "
                          "houver) chega no briefing de amanhã.")
             facts.append(ProactiveFact(
                 "mp", "mp_checagem", f"{hoje_.isoformat()}:fecha", texto,
@@ -1260,10 +1264,12 @@ async def collect_clima(
         bloco = f"✈️ {label.strip()}:\n{bloco}"
     facts = [ProactiveFact("clima", "clima_hoje", "", bloco)]
     # Tendência de calor (+2°C na semana, régua do dono): só fala quando HÁ
-    # tendência — semana estável fica em silêncio.
+    # tendência — semana estável fica em silêncio. O \n inicial separa a
+    # linha do bloco dos 7 dias (pedido do dono, 05/08/2026: coladas, a
+    # tendência se perdia no meio da lista).
     linha_calor = _weather.tendencia_calor(dias, settings.heat_trend_delta_c)
     if linha_calor:
-        facts.append(ProactiveFact("clima", "clima_tendencia", "", linha_calor))
+        facts.append(ProactiveFact("clima", "clima_tendencia", "", "\n" + linha_calor))
     return facts
 
 
