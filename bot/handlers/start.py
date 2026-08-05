@@ -90,6 +90,7 @@ HELP_TEXT = (
     "• <code>/lembretes</code> — lista lembretes pendentes\n"
     "• <code>/apagar_lembrete &lt;id&gt;</code> — apaga um lembrete pendente\n"
     "• <code>/agendar_comando &lt;tipo&gt; [args] &lt;quando&gt;</code> — agenda uma ação (transito/congresso/clima/chat) pra rodar no horário\n"
+    "• Agendar um <b>comando literal</b>: <i>\"agenda o /mp_dou_agora pra hoje às 10h\"</i> — texto agendado que começa com <code>/</code> executa o comando de verdade no horário (sem passar pela IA)\n"
     "• Recorrência por chat: <i>\"todo dia útil 7h…\"</i>, <i>\"a cada 2 horas…\"</i> (aceita padrão cron)\n\n"
     "<b>LLM</b>:\n"
     "• <code>/ping</code> — testa o LLM atual (mostra provider e modelo)\n"
@@ -263,6 +264,8 @@ _HELP_SECTIONS: list[tuple[str, str]] = _parse_help_sections(HELP_TEXT)
 # palavra-chave (sem acento) → fragmento do TÍTULO da seção a casar.
 _HELP_KEYWORDS: dict[str, str] = {
     "lembrete": "lembrete", "lembrar": "lembrete", "lembretes": "lembrete",
+    "agendar": "lembrete", "agendo": "lembrete", "agenda": "lembrete",
+    "agendado": "lembrete", "agendamento": "lembrete",
     "tarefa": "lembrete", "tarefas": "lembrete", "reminder": "lembrete", "afazer": "lembrete",
     "compra": "compras", "compras": "compras", "lista": "compras",
     "mercado": "compras", "comprar": "compras", "supermercado": "compras",

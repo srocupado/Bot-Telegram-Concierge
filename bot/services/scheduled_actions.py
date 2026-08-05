@@ -7,7 +7,7 @@ direto pra conversa. Reutiliza serviços existentes — não toca em
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -145,6 +145,51 @@ async def _run_clima(bot: Bot, chat_id: int, coords: str | None) -> None:
         await bot.send_message(chat_id, "⚠️ Não consegui consultar o clima agora.")
         return
     await bot.send_message(chat_id, f"⏰ (agendado)\n{format_weather_line(w)}")
+
+
+async def _run_comando(
+    bot: Bot, chat_id: int, user: User, session: AsyncSession, texto: str,
+) -> None:
+    """Executa um COMANDO literal agendado (prompt tipo 'chat' começando
+    com '/'), SEM LLM no meio (pedido do dono, 05/08/2026).
+
+    Antes o texto ia pro modelo, que PODIA rotear pra tool certa — variância
+    exatamente onde se quer determinismo ('agenda o /mp_dou_agora' tem um
+    significado só). Reusa o registro da voz (_DISPATCH/_invocar): um mapa
+    único de comandos executáveis fora de um update real; comando novo
+    adicionado lá vale automaticamente aqui.
+
+    A Message sintética carrega chat/from_user reais e .as_(bot) — os
+    handlers respondem por message.answer() como se fosse um update normal.
+    """
+    from aiogram.types import Chat
+    from aiogram.types import Message as TgMessage
+    from aiogram.types import User as TgUser
+    from bot.handlers.voice import _DISPATCH, _invocar
+
+    partes = texto.strip().split(maxsplit=1)
+    nome = partes[0].lstrip("/").split("@")[0].lower()
+    args = partes[1] if len(partes) > 1 else ""
+    handler = _DISPATCH.get(nome)
+    if handler is None:
+        # Comando inexistente não pode falhar em silêncio às 10h da manhã —
+        # o dono agendou contando com a execução.
+        await bot.send_message(
+            chat_id,
+            f"⚠️ O comando agendado /{nome} não existe (ou não roda em modo "
+            "agendado). Confira o nome em /help e reagende.",
+            parse_mode=None,
+        )
+        return
+    await bot.send_message(chat_id, f"⏰ (agendado) {texto}", parse_mode=None)
+    msg = TgMessage(
+        message_id=0,
+        date=datetime.now(timezone.utc),
+        chat=Chat(id=chat_id, type="private"),
+        from_user=TgUser(id=user.id, is_bot=False, first_name="agendado"),
+        text=texto,
+    ).as_(bot)
+    await _invocar(nome, handler, msg, args, user, session)
 
 
 async def _run_chat(
@@ -332,7 +377,13 @@ async def run_action(
     elif kind == "clima":
         await _run_clima(bot, user.id, args)
     elif kind == "chat":
-        await _run_chat(bot, user.id, user, session, args or "")
+        texto = (args or "").strip()
+        if texto.startswith("/"):
+            # Barra inicial = comando LITERAL: executa o handler real, sem
+            # passar pelo LLM (determinismo; ver _run_comando).
+            await _run_comando(bot, user.id, user, session, texto)
+        else:
+            await _run_chat(bot, user.id, user, session, texto)
     elif kind == "agente":
         return await _run_agente(bot, user.id, args or "")
     elif kind == "shell":
