@@ -217,6 +217,7 @@ async def _entregar_nota_pendente(
             # de "gerando agora"/"próxima janela", que soam otimistas demais.
             logger.warning("nota pendente %s: Inlabs em MANUTENÇÃO (%s)", key, e)
             await _marca_manut(session, True)
+            await _tentar_nota_via_portal(bot, session, user, d, numeros, key)
             return
         except DouError as e:
             # Inlabs fora sem declarar manutenção (instabilidade genérica): não
@@ -224,6 +225,7 @@ async def _entregar_nota_pendente(
             # última tentativa não foi manutenção.
             logger.warning("nota pendente %s: Inlabs ainda fora (%s)", key, e)
             await _marca_manut(session, False)
+            await _tentar_nota_via_portal(bot, session, user, d, numeros, key)
             return
         except Exception:
             logger.exception("nota pendente %s: falha inesperada", key)
@@ -266,6 +268,67 @@ async def _entregar_nota_pendente(
             return
         await unmark_notified(session, user_id, "nota_pendente", key)
         logger.info("nota pendente %s entregue", key)
+
+
+async def _tentar_nota_via_portal(
+    bot, session: AsyncSession, user: User, d: date,
+    numeros: list[str] | None, key: str,
+) -> bool:
+    """Inlabs fora → tenta gerar as notas da fila com o TEXTO DO PORTAL
+    público (pedido do dono, 06/08/2026: 'não conseguimos pegar o texto do
+    portal?'). Sucesso = notas entregues (com origem dita) e entrada fora da
+    fila. Qualquer dúvida = False e a fila fica intacta (o Inlabs resolve).
+
+    Só atende entradas com NÚMEROS conhecidos (as que o próprio ramo do
+    portal enfileira). Entrada 'all' é CHECAGEM do dia — resolvê-la pelo
+    portal daria baixa sem a confirmação do Inlabs (edição extra em PDF puro
+    só existe lá), violando a premissa."""
+    if not settings.dou_portal_fallback or not numeros:
+        return False
+    from bot.services import dou_portal
+    from bot.services.dou_monitor import _SEM_NOTA, gerar_e_enviar_nota, mark_seen
+    try:
+        dia = await dou_portal.checar_dia_portal(d)
+    except Exception as exc:
+        logger.warning("nota pendente %s: portal também indisponível (%s)", key, exc)
+        return False
+    alvo = set(numeros)
+    mps = [mp for mp in dia.mps if mp.numero in alvo]
+    if {mp.numero for mp in mps} != alvo:
+        logger.info("nota pendente %s: portal não tem todas as MPs da fila", key)
+        return False
+    dicts = [dou_portal.mp_dict_para_nota(mp, d) for mp in mps]
+    if any(dc is None for dc in dicts):
+        logger.info("nota pendente %s: texto do portal reprovado na sanidade "
+                    "— seguindo na fila do Inlabs", key)
+        return False
+    for dc in dicts:
+        try:
+            async with _SEM_NOTA:
+                await gerar_e_enviar_nota(
+                    bot, user, dc,
+                    caption_extra=("📄 Texto obtido do portal oficial do DOU "
+                                   "(Inlabs fora no momento)."),
+                )
+        except Exception:
+            # Fila intacta: a próxima janela re-tenta (Inlabs OU portal).
+            logger.exception("nota pendente %s: geração via portal falhou (MP %s)",
+                             key, dc["numero"])
+            return False
+        rows = await session.scalars(
+            select(DouSeenMP).where(DouSeenMP.user_id == user.id,
+                                    DouSeenMP.numero == dc["numero"],
+                                    DouSeenMP.ano == dc["ano"]))
+        if not list(rows):
+            await mark_seen(session, user.id, dc)
+    await unmark_notified(session, user.id, "nota_pendente", key)
+    await _send(bot, user.id, (
+        f"✅ Nota(s) de {d.strftime('%d/%m')} entregue(s) com o texto do "
+        "PORTAL oficial do DOU — o Inlabs estava fora. Ele confirma o dia "
+        "quando voltar."
+    ))
+    logger.info("nota pendente %s entregue via PORTAL", key)
+    return True
 
 
 async def _processar_notas_pendentes(
@@ -907,11 +970,18 @@ async def collect_mp(
                     if (mp.numero, mp.ano) in entregues:
                         continue
                 descricao = _clean_ementa(mp.ementa or mp.titulo)
+                # Com o texto integral aprovado na sanidade, a nota é gerada
+                # JÁ com o texto do portal (job desta janela); sem ele, espera
+                # o Inlabs — e o aviso diz qual dos dois vai acontecer.
+                destino_nota = (
+                    "a nota técnica vem em seguida (texto do portal)"
+                    if mp.texto else
+                    "a nota técnica entra na fila e sai quando ele voltar"
+                )
                 facts.append(ProactiveFact(
                     "mp", "mp", key,
                     f"📜 MP {mp.numero}/{mp.ano}: {descricao} — detectada pelo "
-                    "PORTAL do DOU (Inlabs fora agora); a nota técnica entra na "
-                    "fila e sai quando ele voltar.",
+                    f"PORTAL do DOU (Inlabs fora agora); {destino_nota}.",
                     date_iso=d.isoformat(),
                 ))
             if numeros:
@@ -1615,10 +1685,14 @@ async def run_for_user(
     # status `nota_fila`, que mantinha `facts` não-vazio — acoplamento, não
     # desenho: silenciar aquela linha um dia mataria a re-tentativa EM
     # SILÊNCIO, com o bot tendo prometido "te envio automaticamente".
-    # Não dispara nota quando a checagem DESTE run não alcançou o Inlabs: o job
-    # buscaria o mesmo Inlabs fora e falharia, e "gerando agora" seria mentira.
-    # A linha de status já diz "aguardando o Inlabs voltar" (ver collect_mp).
-    if user.dou_mp_subscribed and not getattr(user, "dou_fora_agora", False):
+    # Com o Inlabs fora, o job só vale a pena se o fallback do PORTAL puder
+    # atendê-lo (o job tenta Inlabs e cai no portal — ver
+    # _tentar_nota_via_portal). Sem o fallback, disparar seria só pagar a
+    # cascata de timeouts pra nada — aí a fila espera o Inlabs voltar, e a
+    # linha de status já diz isso.
+    inlabs_ok_ou_portal = (not getattr(user, "dou_fora_agora", False)
+                           or settings.dou_portal_fallback)
+    if user.dou_mp_subscribed and inlabs_ok_ou_portal:
         try:
             disparadas = await _processar_notas_pendentes(bot, session, user)
         except Exception:

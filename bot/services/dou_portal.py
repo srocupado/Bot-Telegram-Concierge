@@ -59,10 +59,15 @@ class PortalError(Exception):
 @dataclass(frozen=True)
 class PortalMP:
     numero: str
-    ano: str
-    titulo: str
+    ano: int          # int como nos dicts do Inlabs — str quebrava o dedup
+    titulo: str       # contra DouSeenMP.ano (int) em silêncio
     ementa: str | None
     url: str
+    # Texto INTEGRAL do ato, montado da página da matéria (identifica +
+    # parágrafos + assinatura). None quando o corpo não passou na régua de
+    # sanidade — nota técnica com texto suspeito é pior que esperar o Inlabs.
+    texto: str | None = None
+    data_publicacao: str | None = None   # ISO; None = usar o dia consultado
 
 
 @dataclass(frozen=True)
@@ -85,6 +90,18 @@ _MP_TITULO_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _EMENTA_RE = re.compile(r'<p class="ementa"[^>]*>(.*?)</p>', re.DOTALL)
+_IDENTIFICA_RE = re.compile(r'<p class="identifica"[^>]*>(.*?)</p>', re.DOTALL)
+# Corpo do ato na página da matéria (medido na MP 1.381: 112 parágrafos).
+# ATENÇÃO ao [^>]*: o <p> vem com atributos além da class — o match exato
+# '<p class="dou-paragraph">' devolvia 0 e quase condenou a fonte na sondagem.
+_PARAGRAFO_RE = re.compile(r'<p class="dou-paragraph"[^>]*>(.*?)</p>', re.DOTALL)
+_ASSINA_RE = re.compile(r'<p class="assina(?:Pr)?"[^>]*>(.*?)</p>', re.DOTALL)
+
+# Régua de sanidade do texto: MP real tem no mínimo preâmbulo + artigos.
+# Reprovou → texto=None e a nota espera o Inlabs (análise jurídica em cima
+# de texto truncado é pior que atraso).
+_MIN_PARAGRAFOS = 3
+_MIN_CHARS_TEXTO = 200
 
 
 def _fmt_data(d: date) -> str:
@@ -117,19 +134,73 @@ async def _buscar(client: httpx.AsyncClient, q: str, d: date, secao: str = "todo
         raise PortalError(f"JSON do portal ilegível: {e}") from e
 
 
-async def _ementa_da_materia(client: httpx.AsyncClient, url_title: str) -> str | None:
-    """Best-effort: ementa ausente não bloqueia a detecção (o aviso sai com o
-    título oficial no lugar)."""
+def _limpo(trecho: str) -> str:
+    import html as _html
+    return _html.unescape(_TAGS_RE.sub("", trecho)).strip()
+
+
+async def _materia(client: httpx.AsyncClient, url_title: str) -> tuple[str | None, str | None]:
+    """(ementa, texto_integral) da página da matéria — best-effort: falha aqui
+    não bloqueia a DETECÇÃO (o aviso sai com o título; a nota espera o
+    Inlabs). O texto só é devolvido quando passa na régua de sanidade."""
     if not url_title:
-        return None
+        return None, None
     try:
         resp = await client.get(MATERIA_URL.format(url_title=url_title))
         resp.raise_for_status()
     except httpx.HTTPError:
         logger.warning("portal: página da matéria indisponível (%s)", url_title)
+        return None, None
+    html = resp.text
+    m = _EMENTA_RE.search(html)
+    ementa = _limpo(m.group(1)) if m else None
+
+    ident = _IDENTIFICA_RE.search(html)
+    pars = [p for p in (_limpo(x) for x in _PARAGRAFO_RE.findall(html)) if p]
+    assinaturas = [a for a in (_limpo(x) for x in _ASSINA_RE.findall(html)) if a]
+    texto = None
+    if ident and len(pars) >= _MIN_PARAGRAFOS and sum(len(p) for p in pars) >= _MIN_CHARS_TEXTO:
+        blocos = [_limpo(ident.group(1))]
+        if ementa:
+            blocos.append(ementa)
+        blocos.append("\n".join(pars))
+        if assinaturas:
+            blocos.append("\n".join(assinaturas))
+        texto = "\n\n".join(blocos)
+    else:
+        logger.warning(
+            "portal: corpo da matéria reprovado na sanidade (%s: identifica=%s "
+            "parágrafos=%d) — nota vai esperar o Inlabs",
+            url_title, bool(ident), len(pars),
+        )
+    return ementa, texto
+
+
+def _data_iso(pub_date_br: str | None) -> str | None:
+    """'31/07/2026' → '2026-07-31'; lixo → None (caller usa o dia consultado)."""
+    try:
+        from datetime import datetime as _dt
+        return _dt.strptime((pub_date_br or "").strip(), "%d/%m/%Y").date().isoformat()
+    except ValueError:
         return None
-    m = _EMENTA_RE.search(resp.text)
-    return _TAGS_RE.sub("", m.group(1)).strip() if m else None
+
+
+def mp_dict_para_nota(mp: PortalMP, d: date) -> dict | None:
+    """Converte a matéria do portal pro MESMO formato de MP que o pipeline da
+    nota consome do Inlabs (generate_nota_tecnica/build_docx/dedup). None
+    quando o texto não passou na sanidade — o caller mantém a fila."""
+    if not mp.texto:
+        return None
+    from bot.services.dou_monitor import PLANALTO_BASE, _planalto_period
+    period = _planalto_period(mp.ano)
+    return {
+        "numero": mp.numero,
+        "ano": mp.ano,
+        "ementa": mp.ementa or mp.titulo,
+        "data_publicacao": mp.data_publicacao or d.isoformat(),
+        "url_planalto": f"{PLANALTO_BASE}/ccivil_03/_ato{period}/{mp.ano}/mpv/mpv{mp.numero}.htm",
+        "texto_integral": mp.texto,
+    }
 
 
 async def checar_dia_portal(d: date) -> PortalDia:
@@ -159,16 +230,18 @@ async def checar_dia_portal(d: date) -> PortalDia:
             if not m:
                 # MP detectada sem identidade parseável não pode sumir calada.
                 raise PortalError(f"título de MP não parseável: {titulo!r}")
-            numero, ano = m.group(1), m.group(2)
+            numero, ano = m.group(1), int(m.group(2))
             if (numero, ano) in vistos:
                 continue
             vistos.add((numero, ano))
-            ementa = None
+            ementa = texto = None
             if len(mps) < _MAX_EMENTAS:
-                ementa = await _ementa_da_materia(client, it.get("urlTitle") or "")
+                ementa, texto = await _materia(client, it.get("urlTitle") or "")
             mps.append(PortalMP(
                 numero=numero, ano=ano, titulo=titulo, ementa=ementa,
                 url=MATERIA_URL.format(url_title=it.get("urlTitle") or ""),
+                texto=texto,
+                data_publicacao=_data_iso(it.get("pubDate")),
             ))
         if mps:
             logger.info("portal DOU: %d MP(s) em %s", len(mps), d.isoformat())

@@ -36,12 +36,27 @@ def _item_mp(numero="1.381", ano="2026", url_title="mp-x-1"):
                   f"Nº {numero}, DE 30 DE JULHO DE {ano}"),
         "artType": "Medida Provisória",
         "pubName": "DO1",
+        "pubDate": "31/07/2026",
         "urlTitle": url_title,
     }
 
 
-_MATERIA = ('<html><p class="identifica">MP</p>'
-            '<p class="ementa">Abre crédito <b>extraordinário</b>.</p></html>')
+_MATERIA = (
+    '<html>'
+    '<p class="identifica"><strong>MEDIDA PROVISÓRIA Nº 1.381, DE 30 DE JULHO DE 2026</strong></p>'
+    '<p class="ementa">Abre crédito <b>extraordinário</b>.</p>'
+    '<p class="dou-paragraph" align="x">O PRESIDENTE DA REPÚBLICA, no uso da atribuição que lhe confere o art. 62 da Constituição, adota a seguinte Medida Provisória, com força de lei:</p>'
+    '<p class="dou-paragraph">Art. 1º Fica aberto crédito extraordinário no valor de R$ 3 bi.</p>'
+    '<p class="dou-paragraph">Art. 2º Esta Medida Provisória entra em vigor na data de sua publicação.</p>'
+    '<p class="assinaPr">LUIZ INÁCIO LULA DA SILVA</p>'
+    '<p class="assina">Fernando Haddad</p>'
+    '</html>'
+)
+
+# Corpo raso (1 parágrafo): reprovado na régua de sanidade → texto None.
+_MATERIA_RASA = ('<html><p class="identifica">MP X</p>'
+                 '<p class="ementa">Ementa.</p>'
+                 '<p class="dou-paragraph">Só um parágrafo.</p></html>')
 
 
 def _rotas(busca_por_q: dict, materia_html: str = _MATERIA):
@@ -73,10 +88,46 @@ def test_acha_mp_com_ementa_e_filtra_por_arttype() -> None:
     dia = asyncio.run(_main())
     assert len(dia.mps) == 1
     mp = dia.mps[0]
-    assert (mp.numero, mp.ano) == ("1.381", "2026")
+    assert (mp.numero, mp.ano) == ("1.381", 2026), (
+        "ano INT como nos dicts do Inlabs — str quebrava o dedup de DouSeenMP"
+    )
     assert mp.ementa == "Abre crédito extraordinário."
     assert "MEDIDA PROVISÓRIA Nº 1.381" in mp.titulo, "título sai LIMPO de tags"
+    assert mp.data_publicacao == "2026-07-31"
+    # Texto INTEGRAL montado da matéria: identifica + parágrafos + assinatura.
+    assert mp.texto is not None
+    assert "MEDIDA PROVISÓRIA Nº 1.381" in mp.texto
+    assert "Art. 1º" in mp.texto and "Art. 2º" in mp.texto
+    assert "LULA" in mp.texto
     assert dia.edicao_confirmada is True
+
+
+def test_corpo_raso_reprova_na_sanidade_mas_nao_bloqueia_deteccao() -> None:
+    async def _main():
+        with respx.mock:
+            _rotas({"MEDIDA": [_item_mp()]}, materia_html=_MATERIA_RASA)
+            return await dou_portal.checar_dia_portal(D)
+
+    dia = asyncio.run(_main())
+    assert len(dia.mps) == 1, "detecção sai mesmo sem texto aprovado"
+    assert dia.mps[0].texto is None, "texto suspeito NÃO alimenta a nota"
+    assert dia.mps[0].ementa == "Ementa."
+
+
+def test_mp_dict_para_nota_tem_o_formato_do_inlabs() -> None:
+    mp = dou_portal.PortalMP("1.381", 2026, "MEDIDA PROVISÓRIA Nº 1.381",
+                             "Abre crédito.", "https://x",
+                             texto="TEXTO INTEGRAL...", data_publicacao="2026-07-31")
+    dc = dou_portal.mp_dict_para_nota(mp, D)
+    assert dc["numero"] == "1.381" and dc["ano"] == 2026
+    assert dc["texto_integral"] == "TEXTO INTEGRAL..."
+    assert dc["data_publicacao"] == "2026-07-31"
+    assert "mpv1.381.htm" in dc["url_planalto"]
+
+    sem_texto = dou_portal.PortalMP("1.381", 2026, "t", "e", "u")
+    assert dou_portal.mp_dict_para_nota(sem_texto, D) is None, (
+        "sem texto aprovado não há dict — a nota espera o Inlabs"
+    )
 
 
 def test_sem_mp_confirma_edicao_pela_sonda() -> None:
@@ -200,15 +251,19 @@ def _rodar_collect(monkeypatch, portal_result):
 
 
 def test_inlabs_fora_mp_do_portal_e_avisada_com_nota_na_fila(monkeypatch) -> None:
-    mp = dou_portal.PortalMP("1.382", "2026",
+    mp = dou_portal.PortalMP("1.382", 2026,
                              "MEDIDA PROVISÓRIA Nº 1.382, DE 5 DE AGOSTO DE 2026",
-                             "Dispõe sobre teste.", "https://x")
+                             "Dispõe sobre teste.", "https://x",
+                             texto="TEXTO INTEGRAL aprovado na sanidade")
     hoje, facts, marks = _rodar_collect(monkeypatch, dou_portal.PortalDia([mp], True))
 
     mps = [f for f in facts if f.kind == "mp"]
     assert len(mps) == 1
     assert mps[0].key == "1.382/2026"
     assert "PORTAL" in mps[0].text and "Dispõe sobre teste" in mps[0].text
+    assert "texto do portal" in mps[0].text, (
+        "com texto aprovado o aviso promete a nota EM SEGUIDA, não fila"
+    )
     # Aviso informativo no lugar do alarme "não consegui checar".
     fails = [f for f in facts if f.kind == "mp_fail"]
     assert len(fails) == 1 and fails[0].key.startswith("portal:")
@@ -235,6 +290,104 @@ def test_portal_tambem_fora_mantem_alarme_forte(monkeypatch) -> None:
     fails = [f for f in facts if f.kind == "mp_fail"]
     assert len(fails) == 1 and fails[0].key.startswith("fail:")
     assert "NÃO assuma" in fails[0].text
+
+
+# ──────────────── nota gerada com o texto do portal (fila) ────────────────
+
+def _harness_nota_portal(monkeypatch, portal_result, numeros=("1.382",)):
+    """Roda _tentar_nota_via_portal com tudo capturado."""
+    from bot.services import dou_monitor as dm
+    eventos = {"notas": [], "unmarks": [], "sends": [], "seen": []}
+
+    async def _portal(_d):
+        if isinstance(portal_result, Exception):
+            raise portal_result
+        return portal_result
+
+    async def _nota(bot, user, mp, caption_extra=None):
+        eventos["notas"].append((mp["numero"], caption_extra))
+
+    async def _unmark(_s, _uid, kind, key):
+        eventos["unmarks"].append((kind, key))
+
+    async def _send(_bot, _uid, texto, **kw):
+        eventos["sends"].append(texto)
+        return True
+
+    async def _seen(_s, _uid, mp):
+        eventos["seen"].append((mp["numero"], mp["ano"]))
+
+    monkeypatch.setattr(dou_portal, "checar_dia_portal", _portal)
+    monkeypatch.setattr(dm, "gerar_e_enviar_nota", _nota)
+    monkeypatch.setattr(dm, "mark_seen", _seen)
+    monkeypatch.setattr(proactive, "unmark_notified", _unmark)
+    monkeypatch.setattr(proactive, "_send", _send)
+    monkeypatch.setattr(proactive.settings, "dou_portal_fallback", True)
+
+    user = SimpleNamespace(id=99, dou_mp_provider=None, dou_mp_model=None)
+    ok = asyncio.run(proactive._tentar_nota_via_portal(
+        bot=None, session=_FakeSession(), user=user, d=D,
+        numeros=list(numeros) if numeros is not None else None,
+        key=f"{D.isoformat()}:{','.join(numeros)}" if numeros else f"{D.isoformat()}:all",
+    ))
+    return ok, eventos
+
+
+def _mp_completa(numero="1.382"):
+    return dou_portal.PortalMP(
+        numero, 2026, f"MEDIDA PROVISÓRIA Nº {numero}", "Ementa.", "https://x",
+        texto="TEXTO INTEGRAL aprovado", data_publicacao="2026-07-31",
+    )
+
+
+def test_nota_da_fila_sai_com_texto_do_portal(monkeypatch) -> None:
+    ok, ev = _harness_nota_portal(
+        monkeypatch, dou_portal.PortalDia([_mp_completa()], True))
+    assert ok is True
+    assert len(ev["notas"]) == 1
+    numero, caption = ev["notas"][0]
+    assert numero == "1.382"
+    assert "portal oficial" in caption, "origem do texto é DITA na entrega"
+    assert ev["seen"] == [("1.382", 2026)], "entregue = visto (conferência da Câmara)"
+    assert ev["unmarks"] == [("nota_pendente", f"{D.isoformat()}:1.382")]
+    assert any("PORTAL" in s for s in ev["sends"])
+
+
+def test_entrada_all_nunca_e_resolvida_pelo_portal(monkeypatch) -> None:
+    """'all' é CHECAGEM do dia — resolvê-la sem o Inlabs daria baixa sem a
+    confirmação final (extra em PDF puro só existe lá)."""
+    chamado = {"portal": False}
+
+    async def _portal(_d):
+        chamado["portal"] = True
+        return dou_portal.PortalDia([_mp_completa()], True)
+
+    monkeypatch.setattr(dou_portal, "checar_dia_portal", _portal)
+    monkeypatch.setattr(proactive.settings, "dou_portal_fallback", True)
+    ok = asyncio.run(proactive._tentar_nota_via_portal(
+        bot=None, session=_FakeSession(),
+        user=SimpleNamespace(id=99), d=D, numeros=None, key=f"{D.isoformat()}:all"))
+    assert ok is False and chamado["portal"] is False
+
+
+def test_texto_reprovado_mantem_a_fila(monkeypatch) -> None:
+    sem_texto = dou_portal.PortalMP("1.382", 2026, "t", "e", "u")
+    ok, ev = _harness_nota_portal(
+        monkeypatch, dou_portal.PortalDia([sem_texto], True))
+    assert ok is False
+    assert ev["notas"] == [] and ev["unmarks"] == [], "fila intacta na dúvida"
+
+
+def test_mp_da_fila_ausente_do_portal_mantem_a_fila(monkeypatch) -> None:
+    ok, ev = _harness_nota_portal(
+        monkeypatch, dou_portal.PortalDia([_mp_completa("1.399")], True))
+    assert ok is False and ev["unmarks"] == []
+
+
+def test_portal_indisponivel_mantem_a_fila(monkeypatch) -> None:
+    ok, ev = _harness_nota_portal(
+        monkeypatch, dou_portal.PortalError("WAF"))
+    assert ok is False and ev["unmarks"] == []
 
 
 def test_help_documenta_a_fonte_reserva() -> None:

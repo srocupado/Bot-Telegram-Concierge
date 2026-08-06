@@ -1574,6 +1574,36 @@ def texto_sem_mp(motivo: str | None, target: date) -> str:
     return f"Nenhuma MP nova no Diário Oficial de {dia}."
 
 
+async def gerar_e_enviar_nota(bot, user, mp: dict, *, caption_extra: str | None = None) -> None:
+    """Pipeline de UMA nota (pesquisa + redação + DOCX + envio). Levanta em
+    falha — o caller decide fila/aviso. CHAME SOB O _SEM_NOTA (a função não o
+    adquire de propósito: o deliver_to_user já o segura no laço dele, e
+    semáforo de asyncio não é reentrante).
+
+    `caption_extra` marca origem alternativa (ex.: texto vindo do portal
+    público com o Inlabs fora) — origem dita, regra do projeto."""
+    from aiogram.types import BufferedInputFile
+    logger.info("dou: gerando nota técnica MP %s/%s…", mp["numero"], mp["ano"])
+    with _fase(f"nota MP {mp['numero']} (pesquisa+redação)"):
+        nota = await generate_nota_tecnica(
+            mp,
+            provider=getattr(user, "dou_mp_provider", None),
+            model=getattr(user, "dou_mp_model", None),
+        )
+    with _fase(f"docx MP {mp['numero']}"):
+        docx_bytes = await asyncio.to_thread(build_docx, mp, nota)
+    partes = []
+    if caption_extra:
+        partes.append(caption_extra)
+    if not nota:
+        partes.append("⚠️ Nota gerada sem análise da IA (texto base).")
+    await bot.send_document(
+        user.id,
+        BufferedInputFile(docx_bytes, filename=docx_filename(mp)),
+        caption="\n".join(partes) or None,
+    )
+
+
 async def deliver_to_user(
     bot, session: AsyncSession, user, target_date: date, *, force: bool = False,
     only_numeros: list[str] | None = None,
@@ -1675,20 +1705,7 @@ async def deliver_to_user(
 
     async def _gerar_e_enviar(mp: dict) -> None:
         """Pipeline de UMA nota. Sempre chamada sob o _SEM_NOTA."""
-        logger.info("dou: gerando nota técnica MP %s/%s…", mp["numero"], mp["ano"])
-        with _fase(f"nota MP {mp['numero']} (pesquisa+redação)"):
-            nota = await generate_nota_tecnica(
-                mp,
-                provider=getattr(user, "dou_mp_provider", None),
-                model=getattr(user, "dou_mp_model", None),
-            )
-        with _fase(f"docx MP {mp['numero']}"):
-            docx_bytes = await asyncio.to_thread(build_docx, mp, nota)
-        await bot.send_document(
-            user.id,
-            BufferedInputFile(docx_bytes, filename=docx_filename(mp)),
-            caption=None if nota else "⚠️ Nota gerada sem análise da IA (texto base).",
-        )
+        await gerar_e_enviar_nota(bot, user, mp)
 
     # Serial (não paralelo) DENTRO da chamada. Entre chamadas quem serializa é
     # o _SEM_NOTA — este laço sozinho nunca protegeu de duas gerações
