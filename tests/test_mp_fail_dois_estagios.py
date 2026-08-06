@@ -55,6 +55,9 @@ def _facts_de_falha(monkeypatch):
         return None
 
     monkeypatch.setattr(dou_monitor, "fetch_mps", _fetch)
+    # Portal público DESLIGADO: estes testes cobrem a semântica Inlabs-only
+    # do alarme (o fallback do portal tem suíte própria, test_dou_portal.py).
+    monkeypatch.setattr(proactive.settings, "dou_portal_fallback", False)
     monkeypatch.setattr(proactive, "already_notified", _false)
     monkeypatch.setattr(proactive, "mark_notified", _none)
     monkeypatch.setattr(proactive, "unmark_notified", _none)
@@ -194,6 +197,9 @@ def test_mp_entregue_com_nota_nao_e_reanunciada(monkeypatch) -> None:
         return None
 
     monkeypatch.setattr(dou_monitor, "fetch_mps", _fetch)
+    # Portal público DESLIGADO: estes testes cobrem a semântica Inlabs-only
+    # do alarme (o fallback do portal tem suíte própria, test_dou_portal.py).
+    monkeypatch.setattr(proactive.settings, "dou_portal_fallback", False)
     monkeypatch.setattr(proactive, "already_notified", _false)
     monkeypatch.setattr(proactive, "mark_notified", _none)
     monkeypatch.setattr(proactive, "unmark_notified", _none)
@@ -226,6 +232,9 @@ def test_curto_circuito_para_de_insistir_no_inlabs(monkeypatch) -> None:
         return None
 
     monkeypatch.setattr(dou_monitor, "fetch_mps", _fetch)
+    # Portal público DESLIGADO: estes testes cobrem a semântica Inlabs-only
+    # do alarme (o fallback do portal tem suíte própria, test_dou_portal.py).
+    monkeypatch.setattr(proactive.settings, "dou_portal_fallback", False)
     monkeypatch.setattr(proactive, "already_notified", _false)
     monkeypatch.setattr(proactive, "mark_notified", _none)
     monkeypatch.setattr(proactive, "unmark_notified", _none)

@@ -71,6 +71,9 @@ def _colher_com(monkeypatch, resultado, marcadas: list[tuple[str, str]]):
     # após as 19h BRT o batimento de fechamento emite um fato extra e o
     # assert de lista exata quebrava só à noite.
     monkeypatch.setattr(proactive, "_janelas_restantes", lambda *_a: [19])
+    # Portal público DESLIGADO: estes testes cobrem a semântica Inlabs-only
+    # do alarme (o fallback do portal tem suíte própria, test_dou_portal.py).
+    monkeypatch.setattr(proactive.settings, "dou_portal_fallback", False)
     monkeypatch.setattr(proactive, "already_notified", _false)
     monkeypatch.setattr(proactive, "mark_notified", _mark)
     monkeypatch.setattr(proactive, "unmark_notified", _none)

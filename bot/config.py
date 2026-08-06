@@ -93,6 +93,10 @@ class Settings(BaseSettings):
     # Aviso "Esquentando" no briefing quando a máxima da semana supera a de
     # hoje neste tanto (dono: +2°C na semana).
     heat_trend_delta_c: float = Field(2.0, alias="HEAT_TREND_DELTA_C")
+    # Fallback de detecção de MP pelo portal público www.in.gov.br quando o
+    # Inlabs falha ("vaga-lume"). Detecção e aviso apenas — baixa e nota
+    # continuam exigindo o Inlabs. Ver bot/services/dou_portal.py.
+    dou_portal_fallback: bool = Field(True, alias="DOU_PORTAL_FALLBACK")
     proactive_lookahead_hours: int = Field(48, alias="PROACTIVE_LOOKAHEAD_HOURS")
     proactive_workout_idle_days: int = Field(4, alias="PROACTIVE_WORKOUT_IDLE_DAYS")
     proactive_finance_idle_days: int = Field(7, alias="PROACTIVE_FINANCE_IDLE_DAYS")

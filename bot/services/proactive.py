@@ -872,6 +872,65 @@ async def collect_mp(
             failed.append(d)
             inlabs_fora = True
 
+    # FALLBACK pelo portal público (in.gov.br) — homologado no Orange Pi em
+    # 06/08/2026 ("Inlabs virou vaga-lume", diagnóstico do dono). Quando o
+    # Inlabs falha, o portal responde "houve MP hoje?" com evidência real.
+    # NÃO dá baixa (Inlabs segue sendo a confirmação final e a fonte da
+    # nota): o dia continua pendente; o que muda é o AVISO — MP detectada é
+    # anunciada JÁ (com a nota na fila pra quando o Inlabs voltar) e o "não
+    # consegui checar" vira linha informativa com o estado apurado.
+    portal_estado: dict[date, str] = {}
+    if failed and settings.dou_portal_fallback:
+        from bot.services import dou_portal
+        for d in failed:
+            try:
+                dia_portal = await dou_portal.checar_dia_portal(d)
+            except Exception as exc:
+                logger.warning("proactive: portal do DOU também falhou p/ %s: %s",
+                               d, exc)
+                continue
+            numeros: list[str] = []
+            for mp in dia_portal.mps:
+                key = f"{mp.numero}/{mp.ano}"
+                numeros.append(mp.numero)
+                if key in seen:
+                    continue
+                seen.add(key)
+                if not force and await already_notified(session, user.id, "mp", key):
+                    continue
+                if not force:
+                    if entregues is None:
+                        rows_seen = await session.scalars(
+                            select(DouSeenMP).where(DouSeenMP.user_id == user.id)
+                        )
+                        entregues = {(r.numero, r.ano) for r in rows_seen}
+                    if (mp.numero, mp.ano) in entregues:
+                        continue
+                descricao = _clean_ementa(mp.ementa or mp.titulo)
+                facts.append(ProactiveFact(
+                    "mp", "mp", key,
+                    f"📜 MP {mp.numero}/{mp.ano}: {descricao} — detectada pelo "
+                    "PORTAL do DOU (Inlabs fora agora); a nota técnica entra na "
+                    "fila e sai quando ele voltar.",
+                    date_iso=d.isoformat(),
+                ))
+            if numeros:
+                # Outbox: a nota entra na fila JÁ — o retry só roda quando o
+                # Inlabs voltar (dou_fora_agora bloqueia job imediato).
+                key_np = f"{d.isoformat()}:{','.join(sorted(set(numeros)))}"
+                if not await already_notified(session, user.id, "nota_pendente", key_np):
+                    await mark_notified(session, user.id, "nota_pendente", key_np)
+                portal_estado[d] = (
+                    f"{len(dia_portal.mps)} MP(s) publicada(s) — avisada(s) "
+                    "acima, nota na fila"
+                )
+            elif dia_portal.edicao_confirmada:
+                portal_estado[d] = "edição no ar e SEM MP até agora"
+            else:
+                # Índice sem a data: inconclusivo — não vira linha informativa
+                # (o alarme normal fala; na dúvida, é pendência).
+                logger.info("proactive: portal sem índice p/ %s (inconclusivo)", d)
+
     # Sinaliza pro run_for_user: se o fetch DESTE run não alcançou o Inlabs, não
     # adianta disparar job de nota (ele buscaria o mesmo Inlabs e falharia) — e
     # dizer "gerando agora" seria mentira, já que a própria checagem acima
@@ -953,6 +1012,21 @@ async def collect_mp(
         agora_brt = datetime.now(BRT)
         fortes: list[date] = []
         for d in failed:
+            if d in portal_estado:
+                # O portal RESPONDEU pelo dia: nada de "não consegui checar" —
+                # informa o estado apurado (1x por dia por estado) e segue
+                # re-checando o Inlabs pra confirmação final.
+                pkey = f"portal:{d.isoformat()}:{portal_estado[d][:20]}"
+                if force or not await already_notified(session, user.id, "mp_fail", pkey):
+                    facts.append(ProactiveFact(
+                        "mp", "mp_fail", pkey,
+                        f"ℹ️ Inlabs fora agora; chequei o DOU de "
+                        f"{d.strftime('%d/%m')} pelo <b>portal público</b>: "
+                        f"{portal_estado[d]}. Sigo re-checando o Inlabs pra "
+                        "confirmação final.",
+                        date_iso=None,
+                    ))
+                continue
             ok = ultima_checagem_ok(d)
             if ok is None or (agora_brt - ok[0]) > timedelta(hours=_OK_RECENTE_H):
                 fortes.append(d)
