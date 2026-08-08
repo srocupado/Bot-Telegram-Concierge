@@ -283,6 +283,21 @@ def test_inlabs_fora_portal_sem_mp_vira_afirmacao_com_evidencia(monkeypatch) -> 
     assert ("mp_pendente", hoje.isoformat()) in marks, "sem baixa pelo portal"
 
 
+def test_indice_sem_a_data_vira_linha_informativa_das_duas_fontes(monkeypatch) -> None:
+    """Incidente de 08/08/2026 (sábado 7h05): portal consultado, índice ainda
+    sem a edição — e o briefing só mostrou o grito 'NÃO assuma', como se o
+    fallback nem existisse. Inconclusivo agora É dito: duas fontes
+    consultadas, leitura provável, nada afirmado, dia segue pendente."""
+    hoje, facts, marks = _rodar_collect(monkeypatch, dou_portal.PortalDia([], False))
+
+    fails = [f for f in facts if f.kind == "mp_fail"]
+    assert len(fails) == 1 and fails[0].key.startswith("portal:")
+    assert "índice ainda não tem a edição" in fails[0].text
+    assert "fim de semana" in fails[0].text
+    assert "NÃO assuma" not in fails[0].text
+    assert ("mp_pendente", hoje.isoformat()) in marks, "segue pendente"
+
+
 def test_portal_tambem_fora_mantem_alarme_forte(monkeypatch) -> None:
     _, facts, _ = _rodar_collect(
         monkeypatch, dou_portal.PortalError("WAF bloqueou"))

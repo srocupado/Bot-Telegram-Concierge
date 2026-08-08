@@ -992,14 +992,23 @@ async def collect_mp(
                     await mark_notified(session, user.id, "nota_pendente", key_np)
                 portal_estado[d] = (
                     f"{len(dia_portal.mps)} MP(s) publicada(s) — avisada(s) "
-                    "acima, nota na fila"
+                    "acima. Sigo re-checando o Inlabs pra confirmação final."
                 )
             elif dia_portal.edicao_confirmada:
-                portal_estado[d] = "edição no ar e SEM MP até agora"
+                portal_estado[d] = ("edição no ar e SEM MP até agora. Sigo "
+                                    "re-checando o Inlabs pra confirmação final.")
             else:
-                # Índice sem a data: inconclusivo — não vira linha informativa
-                # (o alarme normal fala; na dúvida, é pendência).
+                # Índice sem a data: INCONCLUSIVO — mas o portal RESPONDEU, e
+                # isso merece ser dito (incidente de 08/08/2026: sábado às
+                # 7h05 só sobrou o grito 'NÃO assuma', como se o fallback nem
+                # existisse). A linha informa as DUAS fontes consultadas e a
+                # leitura provável, sem afirmar nada — o dia segue pendente.
                 logger.info("proactive: portal sem índice p/ %s (inconclusivo)", d)
+                portal_estado[d] = (
+                    "o índice ainda não tem a edição do dia — sem como afirmar "
+                    "nada (comum de manhã cedo; em fim de semana/feriado pode "
+                    "nem haver edição). Sigo re-checando os dois."
+                )
 
     # Sinaliza pro run_for_user: se o fetch DESTE run não alcançou o Inlabs, não
     # adianta disparar job de nota (ele buscaria o mesmo Inlabs e falharia) — e
@@ -1092,8 +1101,7 @@ async def collect_mp(
                         "mp", "mp_fail", pkey,
                         f"ℹ️ Inlabs fora agora; chequei o DOU de "
                         f"{d.strftime('%d/%m')} pelo <b>portal público</b>: "
-                        f"{portal_estado[d]}. Sigo re-checando o Inlabs pra "
-                        "confirmação final.",
+                        f"{portal_estado[d]}",
                         date_iso=None,
                     ))
                 continue
