@@ -40,6 +40,7 @@ from bot.handlers.financeiro import cmd_setup as cmd_financeiro_setup
 from bot.handlers.ping import cmd_ping
 from bot.handlers.proactive import (
     cmd_agora as cmd_proativo_agora,
+    cmd_fds_cinema,
     cmd_off as cmd_proativo_off,
     cmd_on as cmd_proativo_on,
     cmd_status as cmd_proativo_status,
@@ -219,6 +220,7 @@ _DISPATCH: dict[str, Callable[..., Any]] = {
     "proativo_on": cmd_proativo_on,
     "proativo_off": cmd_proativo_off,
     "proativo_agora": cmd_proativo_agora,
+    "fds_cinema": cmd_fds_cinema,
     "tradutor": cmd_tradutor,
     "tradutor_provider": cmd_tradutor_provider,
     "viagem": cmd_viagem,

@@ -3,6 +3,7 @@
 /proativo_on  /proativo_off  — liga/desliga avisos automáticos.
 /proativo                    — status (janelas, briefing).
 /proativo_agora [briefing]   — força a checagem agora (teste; ignora dedup).
+/fds_cinema [nome|off|padrao] — cinema do resumo de sexta (padrão Iguatemi).
 """
 from __future__ import annotations
 
@@ -59,6 +60,63 @@ async def cmd_status(message: Message, user: User) -> None:
         f"MP: {'acompanhando' if user.dou_mp_subscribed else 'desligado (use /mp_dou_on)'}\n"
         "Use /proativo_on, /proativo_off ou /proativo_agora.",
         parse_mode=None,
+    )
+
+
+@router.message(Command("fds_cinema"))
+async def cmd_fds_cinema(
+    message: Message, command: CommandObject, user: User, session: AsyncSession,
+) -> None:
+    """Cinema do resumo de sexta — por COMANDO de propósito (dono, 09/08/2026):
+    em viagem ele não tem VPN pro Pi, então nada de exigir .env. Nome novo é
+    validado AO VIVO contra a rede Cinemark antes de gravar — salvar nome torto
+    viraria erro repetido toda sexta."""
+    if not user.is_authorized:
+        return
+    from bot.services.proactive import fds_cinema_do_user
+
+    arg = (command.args or "").strip()
+    if not arg:
+        atual = fds_cinema_do_user(user)
+        await message.answer(
+            f"🎬 Cinema do resumo de sexta: {atual or 'desligado'}\n"
+            "• /fds_cinema <nome> — troca (ex.: /fds_cinema Pier 21)\n"
+            "• /fds_cinema off — resumo sem a parte de cinema\n"
+            f"• /fds_cinema padrao — volta ao padrão ({settings.fds_cinema})\n"
+            "Em viagem, a parte de cinema fica de fora sozinha.",
+            parse_mode=None,
+        )
+        return
+    low = arg.lower()
+    if low in ("off", "desligar", "desliga"):
+        user.fds_cinema = "off"
+        await session.commit()
+        await message.answer(
+            "🔕 Resumo de sexta sai sem a parte de cinema. "
+            "/fds_cinema padrao religa.", parse_mode=None,
+        )
+        return
+    if low in ("padrao", "padrão", "default", "on"):
+        user.fds_cinema = None
+        await session.commit()
+        await message.answer(
+            f"✅ Voltei ao padrão: {settings.fds_cinema}.", parse_mode=None,
+        )
+        return
+    from bot.services.cinema import CinemaError, filmes_em_cartaz
+    try:
+        label, _nomes = await filmes_em_cartaz(arg)
+    except CinemaError as e:
+        await message.answer(
+            f"⚠️ Não consegui confirmar esse cinema na rede Cinemark ({e}). "
+            "Nada foi alterado — confira o nome (shopping + cidade ajuda) e "
+            "tente de novo.", parse_mode=None,
+        )
+        return
+    user.fds_cinema = arg
+    await session.commit()
+    await message.answer(
+        f"✅ Resumo de sexta vai usar o {label}.", parse_mode=None,
     )
 
 

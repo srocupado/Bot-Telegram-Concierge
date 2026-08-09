@@ -95,9 +95,10 @@ class Settings(BaseSettings):
     # continuam exigindo o Inlabs. Ver bot/services/dou_portal.py.
     dou_portal_fallback: bool = Field(True, alias="DOU_PORTAL_FALLBACK")
     # Resumo de fim de semana (dono, 09/08/2026): na última janela proativa de
-    # sexta — clima de sáb/dom, lembretes do fds e filmes em cartaz no Cinemark
-    # configurado aqui (ex.: "Iguatemi Brasília"). Vazio = sem bloco de cinema.
-    fds_cinema: str = Field("", alias="FDS_CINEMA")
+    # sexta — clima de sáb/dom, lembretes do fds e filmes em cartaz no Cinemark.
+    # Este é só o PADRÃO; a troca do dia a dia é pelo comando /fds_cinema
+    # (dono, 09/08/2026: em viagem ele não alcança o .env do Pi).
+    fds_cinema: str = Field("Iguatemi Brasília", alias="FDS_CINEMA")
     # Rotina noturna (dono, 09/08/2026): ~21h30 LOCAIS — gastos lançados hoje,
     # lembretes e previsão de amanhã, e pergunta se ficou gasto sem lançar.
     # 1x/dia; perdeu o horário (bot fora), sai quando voltar, até a meia-noite.

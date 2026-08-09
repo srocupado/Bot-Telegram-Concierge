@@ -148,6 +148,9 @@ async def _ensure_columns(conn) -> None:
         if col not in cols:
             await conn.exec_driver_sql(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
             logger.info("migrated: added users.%s", col)
+    if "fds_cinema" not in cols:
+        await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN fds_cinema VARCHAR(120)")
+        logger.info("migrated: added users.fds_cinema")
 
     tw_cols = await conn.exec_driver_sql("PRAGMA table_info(travel_watches)")
     cols = {row[1] for row in tw_cols.fetchall()}

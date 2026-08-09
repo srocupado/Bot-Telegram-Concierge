@@ -98,6 +98,10 @@ class User(Base):
 
     # Agente proativo (opt-in): avisos automáticos (vencimentos, briefing, nudges, MP)
     proactive_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
+    # Cinema do resumo de sexta (/fds_cinema). NULL = padrão FDS_CINEMA do
+    # .env (Iguatemi Brasília); "off" = resumo sem a parte de cinema. Por
+    # comando de propósito: em viagem o dono não alcança o .env do Pi.
+    fds_cinema: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

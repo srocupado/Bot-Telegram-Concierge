@@ -1453,16 +1453,29 @@ async def collect_clima(
     return facts
 
 
+def fds_cinema_do_user(user: User) -> str | None:
+    """Cinema do resumo de fds: preferência gravada via /fds_cinema vence;
+    "off" desliga a parte de cinema; sem preferência vale o padrão do .env
+    (FDS_CINEMA, Iguatemi Brasília). None = sem cinema no resumo."""
+    pref = (getattr(user, "fds_cinema", None) or "").strip()
+    if pref.lower() == "off":
+        return None
+    return pref or (settings.fds_cinema or "").strip() or None
+
+
 async def collect_fds(
     session: AsyncSession, user: User, now_local: datetime, *, force: bool = False,
 ) -> list[ProactiveFact]:
     """Resumo de sexta pro FIM DE SEMANA (dono, 09/08/2026), na última janela
     proativa de sexta: clima de sábado/domingo, lembretes que caem no fds e
-    filmes em cartaz no Cinemark configurado (FDS_CINEMA; vazio = sem cinema).
-    Tarefas abertas já saem no resumo do fim do dia — não repetimos aqui.
-    Falha de qualquer fonte é DITA, nunca vira 'fds sem nada'. Com force
-    (/proativo_agora), mostra o bloco do PRÓXIMO fds em qualquer dia (teste)."""
-    from bot.services.viagem import effective_coords, effective_tz
+    filmes em cartaz no Cinemark configurado (/fds_cinema; padrão Iguatemi
+    Brasília). Em VIAGEM ativa, clima e lembretes seguem o destino e a parte
+    de cinema fica de fora (o Cinemark configurado é o de casa — listar filme
+    de Brasília com o dono em Tóquio é ruído). Tarefas abertas já saem no
+    resumo do fim do dia — não repetimos aqui. Falha de qualquer fonte é DITA,
+    nunca vira 'fds sem nada'. Com force (/proativo_agora), mostra o bloco do
+    PRÓXIMO fds em qualquer dia (teste)."""
+    from bot.services.viagem import effective_coords, effective_tz, viagem_ativa
 
     hoje = now_local.date()
     sab = hoje + timedelta(days=(5 - hoje.weekday()) % 7)
@@ -1510,11 +1523,12 @@ async def collect_fds(
         facts.append(ProactiveFact("fds", "fds_agenda", key,
                                    "⏰ Nenhum lembrete marcado pro fim de semana."))
 
-    # Em cartaz no Cinemark configurado (opcional).
-    if settings.fds_cinema:
+    # Em cartaz no Cinemark configurado (fora de viagem).
+    nome_cinema = None if viagem_ativa(user) else fds_cinema_do_user(user)
+    if nome_cinema:
         from bot.services import cinema as _cinema
         try:
-            label, nomes = await _cinema.filmes_em_cartaz(settings.fds_cinema)
+            label, nomes = await _cinema.filmes_em_cartaz(nome_cinema)
             corpo = "\n".join(f"• {n}" for n in nomes[:12])
             extra = f"\n… e mais {len(nomes) - 12} filme(s)" if len(nomes) > 12 else ""
             facts.append(ProactiveFact(
@@ -1528,7 +1542,7 @@ async def collect_fds(
                 "fds", "fds_cinema_falhou", key,
                 f"⚠️ Não consegui a programação do cinema ({det}) — NÃO "
                 "significa que não há sessões; pergunte \"programação do "
-                f"{settings.fds_cinema} sábado\" que eu tento de novo.",
+                f"{nome_cinema} sábado\" que eu tento de novo.",
             ))
     return facts
 

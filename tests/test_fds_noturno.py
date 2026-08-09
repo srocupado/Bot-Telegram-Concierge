@@ -20,12 +20,14 @@ BRT = ZoneInfo("America/Sao_Paulo")
 SEXTA = datetime(2026, 8, 14, 19, 5, tzinfo=BRT)
 
 
-def _user():
-    return SimpleNamespace(
-        id=7, timezone="America/Sao_Paulo",
+def _user(**kw):
+    base = dict(
+        id=7, timezone="America/Sao_Paulo", fds_cinema=None,
         viagem_inicio=None, viagem_fim=None, viagem_tz=None,
         viagem_coords=None, viagem_destino=None,
     )
+    base.update(kw)
+    return SimpleNamespace(**base)
 
 
 def _dia(iso: str, *, prob: int = 10) -> DayWeather:
@@ -118,6 +120,84 @@ def test_fds_em_outro_dia_olha_proximo_sabado(monkeypatch) -> None:
     quarta = datetime(2026, 8, 12, 10, 0, tzinfo=BRT)
     facts = asyncio.run(proactive.collect_fds(None, _user(), quarta, force=True))
     assert facts[0].key == "2026-08-15"
+
+
+def test_fds_cinema_do_user_resolucao(monkeypatch) -> None:
+    """Padrão do .env vale sem preferência; /fds_cinema grava a preferência
+    (vence o padrão); 'off' desliga só a parte de cinema."""
+    monkeypatch.setattr(proactive.settings, "fds_cinema", "Iguatemi Brasília")
+    assert proactive.fds_cinema_do_user(_user()) == "Iguatemi Brasília"
+    assert proactive.fds_cinema_do_user(_user(fds_cinema="Pier 21")) == "Pier 21"
+    assert proactive.fds_cinema_do_user(_user(fds_cinema="off")) is None
+    assert proactive.fds_cinema_do_user(_user(fds_cinema="OFF")) is None
+
+
+def test_fds_em_viagem_sem_cinema_e_clima_do_destino(monkeypatch) -> None:
+    """Em viagem: cinema (de casa) fica de fora; o clima do fds usa as coords
+    do DESTINO."""
+    coords_usadas: list[str] = []
+    _prep_fds(monkeypatch, cinema="Iguatemi Brasília",
+              forecast=[_dia("2026-08-15"), _dia("2026-08-16")])
+    from bot.services import weather as w_mod
+    original = w_mod.fetch_forecast
+
+    async def _espiao(client, coords, *, tz, days):
+        coords_usadas.append(coords)
+        return await original(client, coords, tz=tz, days=days)
+
+    monkeypatch.setattr(w_mod, "fetch_forecast", _espiao)
+    viajante = _user(viagem_inicio="2026-01-01", viagem_fim="2100-01-01",
+                     viagem_tz="Asia/Tokyo", viagem_coords="35.68,139.69",
+                     viagem_destino="Tóquio")
+    facts = asyncio.run(proactive.collect_fds(None, viajante, SEXTA, force=True))
+    assert coords_usadas == ["35.68,139.69"]
+    assert not any(f.kind.startswith("fds_cinema") for f in facts)
+
+
+def test_cmd_fds_cinema_off_padrao_e_validacao(monkeypatch) -> None:
+    """/fds_cinema: off desliga, padrao volta ao .env, nome novo só grava se a
+    rede Cinemark confirmar — nome torto NÃO pode virar erro toda sexta."""
+    from bot.handlers.proactive import cmd_fds_cinema
+    from bot.services import cinema as cin_mod
+    from bot.services.cinema import CinemaError
+
+    monkeypatch.setattr(proactive.settings, "fds_cinema", "Iguatemi Brasília")
+
+    respostas: list[str] = []
+
+    class _Msg:
+        async def answer(self, text, **kw):
+            respostas.append(text)
+
+    class _Sessao:
+        async def commit(self):
+            pass
+
+    def _rodar(user, args):
+        cmd = SimpleNamespace(args=args)
+        asyncio.run(cmd_fds_cinema(_Msg(), cmd, user, _Sessao()))
+
+    u = _user(is_authorized=True)
+    _rodar(u, "off")
+    assert u.fds_cinema == "off" and "sem a parte de cinema" in respostas[-1]
+    _rodar(u, "padrao")
+    assert u.fds_cinema is None and "Iguatemi Brasília" in respostas[-1]
+
+    async def _falha(nome):
+        raise CinemaError("cinema 'Xurupita' não encontrado na rede Cinemark")
+
+    monkeypatch.setattr(cin_mod, "filmes_em_cartaz", _falha)
+    _rodar(u, "Xurupita")
+    assert u.fds_cinema is None                      # nada gravado
+    assert "Nada foi alterado" in respostas[-1]
+
+    async def _ok(nome):
+        return "Cinemark Pier 21 (Brasília/DF)", ["Filme A"]
+
+    monkeypatch.setattr(cin_mod, "filmes_em_cartaz", _ok)
+    _rodar(u, "Pier 21")
+    assert u.fds_cinema == "Pier 21"
+    assert "Cinemark Pier 21" in respostas[-1]
 
 
 # ───────────────────────── rotina noturna ─────────────────────────
