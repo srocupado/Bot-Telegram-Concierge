@@ -43,7 +43,18 @@ HELP_TEXT = (
     "<b>Agente proativo</b> (opt-in):\n"
     "• <code>/proativo_on</code> / <code>/proativo_off</code> — liga/desliga avisos automáticos (vencimentos chegando, briefing matinal, MP nova, lembretes de hábito)\n"
     "• <code>/proativo</code> — status e janelas\n"
-    "• <code>/proativo_agora</code> — força a checagem agora (teste)\n\n"
+    "• <code>/proativo_agora</code> — força a checagem agora (teste)\n"
+    "• <b>Resumo de fim de semana</b>: toda sexta, na última janela, o bot "
+    "manda o clima de sábado e domingo, os lembretes que caem no fds e os "
+    "filmes em cartaz no seu Cinemark (configure <code>FDS_CINEMA</code> no "
+    ".env, ex.: <code>Iguatemi Brasília</code>; vazio = sem a parte de cinema). "
+    "O <code>/proativo_agora</code> mostra o bloco do próximo fds em qualquer "
+    "dia, pra testar\n"
+    "• <b>Rotina noturna</b> (~21h30): o bot fecha o dia sozinho — o que você "
+    "lançou hoje no financeiro (com total), os lembretes e a previsão de "
+    "amanhã; sem lançamento no dia, ele pergunta se ficou gasto de fora. "
+    "Horário em <code>NIGHT_SUMMARY_HOUR</code>/<code>NIGHT_SUMMARY_MINUTE</code>; "
+    "<code>NIGHT_SUMMARY_ENABLED=false</code> desliga\n\n"
     "<b>Rota com sua localização</b>:\n"
     "• <code>/rota casa</code> | <code>/rota trabalho</code> — atalhos sem geocode\n"
     "• <code>/rota &lt;endereço&gt;</code> — bot pede sua localização e "
@@ -324,6 +335,17 @@ _HELP_KEYWORDS: dict[str, str] = {
     "memoria": "llm", "lembra": "llm",
     "foto": "imagens", "imagem": "imagens", "recibo": "imagens", "boleto": "imagens",
     "proativo": "proativo", "briefing": "proativo", "aviso": "proativo",
+    # resumo de fim de semana + rotina noturna (seção do agente proativo)
+    "fim de semana": "proativo", "fds": "proativo", "sexta": "proativo",
+    "noturno": "proativo", "noturna": "proativo", "noite": "proativo",
+    "resumo": "proativo", "fechando o dia": "proativo",
+    "fecha o dia": "proativo", "fechar o dia": "proativo",
+    # estreias/em cartaz → seção Cinema (a consulta manual continua lá)
+    "estreia": "cinema", "estreias": "cinema", "em cartaz": "cinema",
+    "cartaz": "cinema",
+    # "esqueci de lançar" → financeiro
+    "lancar": "gerenciador financeiro", "lancei": "gerenciador financeiro",
+    "lancamento": "gerenciador financeiro",
     "busca": "busca web", "pesquisa": "busca web", "pesquisar": "busca web",
     "buscar": "busca web", "google": "busca web", "internet": "busca web",
     # preço/produto e lugar caem na seção de Busca (buscar_preco / buscar_local)

@@ -1453,6 +1453,157 @@ async def collect_clima(
     return facts
 
 
+async def collect_fds(
+    session: AsyncSession, user: User, now_local: datetime, *, force: bool = False,
+) -> list[ProactiveFact]:
+    """Resumo de sexta pro FIM DE SEMANA (dono, 09/08/2026), na última janela
+    proativa de sexta: clima de sábado/domingo, lembretes que caem no fds e
+    filmes em cartaz no Cinemark configurado (FDS_CINEMA; vazio = sem cinema).
+    Tarefas abertas já saem no resumo do fim do dia — não repetimos aqui.
+    Falha de qualquer fonte é DITA, nunca vira 'fds sem nada'. Com force
+    (/proativo_agora), mostra o bloco do PRÓXIMO fds em qualquer dia (teste)."""
+    from bot.services.viagem import effective_coords, effective_tz
+
+    hoje = now_local.date()
+    sab = hoje + timedelta(days=(5 - hoje.weekday()) % 7)
+    dom = sab + timedelta(days=1)
+    key = sab.isoformat()
+    facts: list[ProactiveFact] = []
+
+    # Clima de sábado e domingo (mesma cascata do briefing: viagem → casa).
+    coords = effective_coords(user) or settings.home_coords
+    tz_name = effective_tz(user)
+    if coords:
+        import httpx
+        from bot.services import weather as _weather
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                dias = await _weather.fetch_forecast(
+                    client, coords, tz=tz_name, days=(dom - hoje).days + 1,
+                )
+            alvo = [d for d in dias if d.date_iso in (sab.isoformat(), dom.isoformat())]
+            if alvo:
+                facts.append(ProactiveFact(
+                    "fds", "fds_clima", key, _weather.format_week_forecast(alvo),
+                ))
+            else:
+                raise RuntimeError("previsão não cobriu sáb/dom")
+        except Exception as exc:
+            logger.warning("proactive: clima do fds falhou", exc_info=True)
+            facts.append(ProactiveFact(
+                "fds", "fds_clima_falhou", key,
+                f"⚠️ Não consegui a previsão de sábado/domingo agora "
+                f"({type(exc).__name__}) — NÃO assuma tempo firme.",
+            ))
+    # Sem coords: o briefing já cobra o HOME_COORDS (aviso 1x) — não repete aqui.
+
+    # Lembretes que caem no sábado/domingo.
+    from bot.services import reminders as _rem
+    pend = await _rem.list_pending(session, user.id)
+    tzinfo = ZoneInfo(tz_name)
+    do_fds = [r for r in pend
+              if sab <= as_utc(r.due_at).astimezone(tzinfo).date() <= dom]
+    if do_fds:
+        corpo = "\n".join(format_reminder_line(r, tz_name) for r in do_fds)
+        facts.append(ProactiveFact("fds", "fds_agenda", key, f"⏰ Marcado pro fds:\n{corpo}"))
+    else:
+        facts.append(ProactiveFact("fds", "fds_agenda", key,
+                                   "⏰ Nenhum lembrete marcado pro fim de semana."))
+
+    # Em cartaz no Cinemark configurado (opcional).
+    if settings.fds_cinema:
+        from bot.services import cinema as _cinema
+        try:
+            label, nomes = await _cinema.filmes_em_cartaz(settings.fds_cinema)
+            corpo = "\n".join(f"• {n}" for n in nomes[:12])
+            extra = f"\n… e mais {len(nomes) - 12} filme(s)" if len(nomes) > 12 else ""
+            facts.append(ProactiveFact(
+                "fds", "fds_cinema", key, f"🎬 Em cartaz no {label}:\n{corpo}{extra}",
+            ))
+        except Exception as exc:
+            # CinemaError tem mensagem limpa (sem token/URL); outras, só o tipo.
+            det = str(exc) if isinstance(exc, _cinema.CinemaError) else type(exc).__name__
+            logger.warning("proactive: cinema do fds falhou (%s)", exc)
+            facts.append(ProactiveFact(
+                "fds", "fds_cinema_falhou", key,
+                f"⚠️ Não consegui a programação do cinema ({det}) — NÃO "
+                "significa que não há sessões; pergunte \"programação do "
+                f"{settings.fds_cinema} sábado\" que eu tento de novo.",
+            ))
+    return facts
+
+
+async def montar_resumo_noturno(
+    session: AsyncSession, user: User, now_local: datetime,
+) -> str:
+    """Texto da rotina noturna (dono, 09/08/2026): fechamento do dia às
+    ~21h30 locais — gastos lançados hoje (banco + cartão), lembretes de
+    amanhã e previsão de amanhã. Sem nada lançado, pergunta se ficou gasto de
+    fora (lembrete de hábito, o gancho principal da rotina). Falha de fonte é
+    DITA; financeiro não configurado só omite a seção (não há o que cobrar)."""
+    from bot.services.viagem import effective_coords, effective_tz
+
+    hoje = now_local.date()
+    amanha = hoje + timedelta(days=1)
+    partes = ["🌙 <b>Fechando o dia</b>"]
+
+    # Gastos lançados hoje.
+    from bot.services import financeiro as _fin
+    try:
+        linhas, total = await _fin.gastos_do_dia(session, user, hoje.isoformat())
+    except _fin.NotConfiguredError:
+        pass
+    except Exception as exc:
+        logger.warning("resumo noturno: gastos de hoje falharam", exc_info=True)
+        partes.append(
+            f"⚠️ Não consegui checar os <b>gastos de hoje</b> "
+            f"({type(exc).__name__}) — não significa que não houve lançamento.",
+        )
+    else:
+        if linhas:
+            partes.append(
+                "💸 <b>Lançado hoje</b>\n" + "\n".join(linhas)
+                + f"\nTotal gasto: {_fin._fmt_brl(total)}",
+            )
+        else:
+            partes.append(
+                "💸 Nenhum lançamento hoje. Se rolou algum gasto no cartão ou "
+                "no débito, me manda agora que eu lanço.",
+            )
+
+    # Lembretes de amanhã.
+    from bot.services import reminders as _rem
+    tz_name = effective_tz(user)
+    tzinfo = ZoneInfo(tz_name)
+    pend = await _rem.list_pending(session, user.id)
+    de_amanha = [r for r in pend
+                 if as_utc(r.due_at).astimezone(tzinfo).date() == amanha]
+    if de_amanha:
+        corpo = "\n".join(format_reminder_line(r, tz_name) for r in de_amanha)
+        partes.append(f"⏰ <b>Amanhã</b>\n{corpo}")
+    else:
+        partes.append("⏰ Amanhã: nenhum lembrete marcado.")
+
+    # Previsão de amanhã.
+    coords = effective_coords(user) or settings.home_coords
+    if coords:
+        import httpx
+        from bot.services import weather as _weather
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                dias = await _weather.fetch_forecast(client, coords, tz=tz_name, days=2)
+            alvo = [d for d in dias if d.date_iso == amanha.isoformat()]
+            if not alvo:
+                raise RuntimeError("previsão não cobriu amanhã")
+            partes.append("🌦️ " + _weather.format_week_forecast(alvo))
+        except Exception as exc:
+            logger.warning("resumo noturno: previsão de amanhã falhou", exc_info=True)
+            partes.append(
+                f"⚠️ Não consegui a previsão de amanhã ({type(exc).__name__}).",
+            )
+    return "\n\n".join(partes)
+
+
 async def collect_moeda_viagem(user: User) -> list[ProactiveFact]:
     """Cotação da moeda local no briefing DURANTE a viagem (se configurada
     com 'moeda X'). Sem dedup (leitura fresca por dia)."""
@@ -1609,6 +1760,7 @@ _CAT_HEADER = {
     "transito": "🚗 <b>Trânsito casa → trabalho</b>",
     "venc": "⏳ <b>Chegando</b>",
     "tarefas": "📋 <b>Tarefas abertas</b>",
+    "fds": "🏖️ <b>Fim de semana</b>",
     "mp": "📜 <b>Diário Oficial</b>",
     "nudge": "💡 <b>Hábitos</b>",
     "carteira": "📈 <b>Carteira hoje</b>",
@@ -1619,7 +1771,7 @@ def _compose(facts: list[ProactiveFact], *, briefing: bool) -> str:
     blocks: list[str] = []
     if briefing:
         blocks.append("☀️ <b>Bom dia! Resumo de hoje</b>")
-    for cat in ("clima", "transito", "venc", "tarefas", "mp", "nudge", "carteira"):
+    for cat in ("clima", "transito", "venc", "tarefas", "fds", "mp", "nudge", "carteira"):
         lines = [f.text for f in facts if f.category == cat]
         if not lines:
             continue
@@ -1723,6 +1875,15 @@ async def run_for_user(
     # Tarefas abertas no briefing matinal e no resumo do fim do dia.
     if briefing or end_of_day:
         facts += await collect_tarefas(session, user, now_brt)
+    # Resumo de fim de semana: última janela de SEXTA. Com force
+    # (/proativo_agora) sai em qualquer dia, olhando o próximo fds — é como
+    # o dono testa sem esperar sexta (mesma régua da carteira, que o force
+    # também dispara fora da última janela).
+    if force or (end_of_day and now_brt.weekday() == 4):
+        try:
+            facts += await collect_fds(session, user, now_brt, force=force)
+        except Exception:
+            logger.exception("proactive: resumo do fds falhou p/ user %s", user.id)
     facts += await collect_mp(
         session, user, mp_dates, force=force, conferir=briefing or force,
     )

@@ -438,6 +438,32 @@ async def _sessions_for(
     return "\n".join([cab, ""] + grupos)
 
 
+async def filmes_em_cartaz(cinema: str) -> tuple[str, list[str]]:
+    """Nomes dos filmes em cartaz num cinema da rede — pro resumo de fim de
+    semana (FDS_CINEMA). Retorna (rótulo do cinema, nomes). Levanta CinemaError
+    sempre que a lista não pode ser AFIRMADA (cinema não achado, config
+    ambígua, API fora, lista vazia): o caller reporta a falha, nunca traduz
+    pra 'sem filmes'."""
+    cinema = (cinema or "").strip()
+    if not cinema:
+        raise CinemaError("nome do cinema vazio")
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        cands = await _resolve_theaters(client, cinema)
+        if not cands:
+            raise CinemaError(f"cinema '{cinema}' não encontrado na rede Cinemark")
+        if len(cands) > 1:
+            nomes = "; ".join(f"{c['name']} ({c['city']})" for c in cands[:4])
+            raise CinemaError(f"'{cinema}' é ambíguo ({nomes}) — seja mais específico")
+        th = cands[0]
+        em_cartaz = await _get(client, "/v1/movies/onDisplayByTheater",
+                               {"theaterId": th["id"], "pageNumber": 1, "pageSize": 40})
+        em_cartaz = em_cartaz if isinstance(em_cartaz, list) else []
+        if not em_cartaz:
+            raise CinemaError(f"sem programação retornada para {th['name']}")
+        label = f"Cinemark {th['name']} ({th['city']}/{_uf(th['state'])})"
+        return label, [m.get("name") or "?" for m in em_cartaz]
+
+
 async def consultar_sessoes(
     filme: str, cinema: str, data_iso: str | None, tz: str = "America/Sao_Paulo",
 ) -> str:

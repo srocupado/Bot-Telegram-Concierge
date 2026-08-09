@@ -94,6 +94,16 @@ class Settings(BaseSettings):
     # Inlabs falha ("vaga-lume"). Detecção e aviso apenas — baixa e nota
     # continuam exigindo o Inlabs. Ver bot/services/dou_portal.py.
     dou_portal_fallback: bool = Field(True, alias="DOU_PORTAL_FALLBACK")
+    # Resumo de fim de semana (dono, 09/08/2026): na última janela proativa de
+    # sexta — clima de sáb/dom, lembretes do fds e filmes em cartaz no Cinemark
+    # configurado aqui (ex.: "Iguatemi Brasília"). Vazio = sem bloco de cinema.
+    fds_cinema: str = Field("", alias="FDS_CINEMA")
+    # Rotina noturna (dono, 09/08/2026): ~21h30 LOCAIS — gastos lançados hoje,
+    # lembretes e previsão de amanhã, e pergunta se ficou gasto sem lançar.
+    # 1x/dia; perdeu o horário (bot fora), sai quando voltar, até a meia-noite.
+    night_summary_enabled: bool = Field(True, alias="NIGHT_SUMMARY_ENABLED")
+    night_summary_hour: int = Field(21, alias="NIGHT_SUMMARY_HOUR")
+    night_summary_minute: int = Field(30, alias="NIGHT_SUMMARY_MINUTE")
     proactive_lookahead_hours: int = Field(48, alias="PROACTIVE_LOOKAHEAD_HOURS")
     proactive_workout_idle_days: int = Field(4, alias="PROACTIVE_WORKOUT_IDLE_DAYS")
     proactive_finance_idle_days: int = Field(7, alias="PROACTIVE_FINANCE_IDLE_DAYS")

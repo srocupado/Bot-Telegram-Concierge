@@ -805,6 +805,60 @@ async def run_card_closing_summary(
                 logger.exception("card summary send crashed for user %d", u.id)
 
 
+def _noturno_devido(now_local: datetime) -> bool:
+    """True da hora-alvo (NIGHT_SUMMARY_HOUR:MINUTE) até a meia-noite LOCAL.
+    A janela larga é o catch-up: bot fora do ar às 21h30 manda quando voltar,
+    ainda no mesmo dia (dedup por data segura o duplicado). Virou o dia, fica
+    pra próxima noite — resumo "de ontem" às 9h só atrapalharia o briefing."""
+    return ((now_local.hour, now_local.minute)
+            >= (settings.night_summary_hour, settings.night_summary_minute))
+
+
+async def run_resumo_noturno(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    bot: Bot,
+) -> None:
+    """Rotina noturna (dono, 09/08/2026): ~21h30 LOCAIS, fecha o dia — gastos
+    lançados hoje, lembretes e previsão de amanhã, e o gancho de lançar o que
+    ficou de fora. 1x/dia (dedup ProactiveNotice kind=noturno, key=data local);
+    em viagem sai no fuso do destino, como o resto do proativo."""
+    if not (settings.night_summary_enabled and settings.proactive_enabled):
+        return
+    from bot.services.proactive import (
+        _send, already_notified, mark_notified, montar_resumo_noturno,
+    )
+
+    now_utc = datetime.now(timezone.utc)
+    async with sessionmaker() as session:
+        users = list((await session.scalars(select(User).where(
+            User.is_authorized.is_(True),
+            User.proactive_enabled.is_(True),
+        ))).all())
+        for u in users:
+            try:
+                tz = ZoneInfo(effective_tz(u))
+            except Exception:
+                tz = BRT
+            now_local = now_utc.astimezone(tz)
+            if not _noturno_devido(now_local):
+                continue
+            key = now_local.date().isoformat()
+            if await already_notified(session, u.id, "noturno", key):
+                continue
+            try:
+                texto = await montar_resumo_noturno(session, u, now_local)
+            except Exception:
+                # Bug de montagem (as fontes externas já são tratadas por
+                # seção lá dentro): loga e tenta no próximo tick.
+                logger.exception("resumo noturno: montagem falhou (user %s)", u.id)
+                continue
+            # Marca só após envio OK — falha de envio re-tenta no tick
+            # seguinte, até a meia-noite local.
+            if await _send(bot, u.id, texto):
+                await mark_notified(session, u.id, "noturno", key)
+                logger.info("resumo noturno enviado (user %s)", u.id)
+
+
 async def run_proactive(
     sessionmaker: async_sessionmaker[AsyncSession],
     bot: Bot,
@@ -1024,6 +1078,11 @@ async def tick(
         await run_proactive(sessionmaker, bot)
     except Exception:
         logger.exception("proactive crashed")
+
+    try:
+        await run_resumo_noturno(sessionmaker, bot)
+    except Exception:
+        logger.exception("resumo noturno crashed")
 
     try:
         await run_birthday_greeting(sessionmaker, bot)

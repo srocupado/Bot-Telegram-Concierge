@@ -1571,6 +1571,39 @@ def confirm_operacao_ativo(res: dict, op_type: str) -> str:
     )
 
 
+async def gastos_do_dia(
+    session: AsyncSession, user, today_iso: str,
+) -> tuple[list[str], float]:
+    """Lançamentos DE HOJE pra rotina noturna: movimentos do banco + compras
+    do cartão (pela data da compra). Retorna (linhas prontas, total GASTO —
+    entradas do banco aparecem na lista mas não somam no total). Levanta
+    NotConfiguredError/erros do Firestore como o resto do módulo: o caller
+    decide como reportar — falha NUNCA vira 'dia sem gastos'."""
+    uid = _require_uid(user)
+    db = await _get_db(session)
+    state = await _read_state(db, uid)
+    linhas: list[str] = []
+    total = 0.0
+    for it in state.get("bankTransactions") or []:
+        if it.get("date") != today_iso:
+            continue
+        amt = float(it.get("amount") or 0)
+        if amt >= 0:
+            linhas.append(f"• {it.get('desc', '?')} · ➕ {_fmt_brl(amt)} (banco)")
+        else:
+            total += -amt
+            linhas.append(f"• {it.get('desc', '?')} · {_fmt_brl(-amt)} (banco)")
+    for it in state.get("cardEntries") or []:
+        if it.get("date") != today_iso:
+            continue
+        amt = float(it.get("amount") or 0)
+        n = int(it.get("installments") or 1)
+        par = f" em {n}x" if n > 1 else ""
+        total += amt
+        linhas.append(f"• {it.get('desc', '?')} · {_fmt_brl(amt)}{par} (cartão)")
+    return linhas, total
+
+
 async def consultar_lancamentos(
     session: AsyncSession,
     user,
