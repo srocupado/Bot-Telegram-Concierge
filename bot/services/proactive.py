@@ -1415,13 +1415,12 @@ async def collect_clima(
     if label:
         bloco = f"✈️ {label.strip()}:\n{bloco}"
     facts = [ProactiveFact("clima", "clima_hoje", "", bloco)]
-    # Tendência de calor (+2°C na semana, régua do dono): só fala quando HÁ
-    # tendência — semana estável fica em silêncio. O \n inicial separa a
-    # linha do bloco dos 7 dias (pedido do dono, 05/08/2026: coladas, a
-    # tendência se perdia no meio da lista).
-    linha_calor = _weather.tendencia_calor(dias, settings.heat_trend_delta_c)
-    if linha_calor:
-        facts.append(ProactiveFact("clima", "clima_tendencia", "", "\n" + linha_calor))
+    # Tendência de temperatura SEMPRE presente (dono, 09/08/2026 — substituiu
+    # a régua de +2°C): esquentando, esfriando, sobe-e-desce ou estável. O \n
+    # inicial separa a linha do bloco dos 7 dias (pedido de 05/08/2026).
+    linha_tend = _weather.tendencia_temperatura(dias)
+    if linha_tend:
+        facts.append(ProactiveFact("clima", "clima_tendencia", "", "\n" + linha_tend))
     return facts
 
 

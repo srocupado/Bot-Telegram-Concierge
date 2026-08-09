@@ -90,9 +90,6 @@ class Settings(BaseSettings):
     rain_alert_threshold_pct: int = Field(60, alias="RAIN_ALERT_THRESHOLD_PCT")
     rain_alert_start_hour: int = Field(6, alias="RAIN_ALERT_START_HOUR")
     rain_alert_end_hour: int = Field(23, alias="RAIN_ALERT_END_HOUR")
-    # Aviso "Esquentando" no briefing quando a máxima da semana supera a de
-    # hoje neste tanto (dono: +2°C na semana).
-    heat_trend_delta_c: float = Field(2.0, alias="HEAT_TREND_DELTA_C")
     # Fallback de detecção de MP pelo portal público www.in.gov.br quando o
     # Inlabs falha ("vaga-lume"). Detecção e aviso apenas — baixa e nota
     # continuam exigindo o Inlabs. Ver bot/services/dou_portal.py.

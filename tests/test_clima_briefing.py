@@ -61,10 +61,12 @@ def _rodar(monkeypatch, *, coords, erro=None, ja_avisado=False):
 
 def test_previsao_ok_vira_bloco_da_semana(monkeypatch) -> None:
     facts = _rodar(monkeypatch, coords="-15.79,-47.88")
-    assert [f.kind for f in facts] == ["clima_hoje"]
+    # Bloco da semana + tendência SEMPRE presente (dono, 09/08/2026).
+    assert [f.kind for f in facts] == ["clima_hoje", "clima_tendencia"]
     # Briefing mostra a SEMANA (pedido do dono, 04/08/2026), não só hoje.
     assert "Previsão — próximos dias" in facts[0].text
     assert "05/08" in facts[0].text and "06/08" in facts[0].text
+    assert "estáveis" in facts[1].text, "máximas iguais no fixture → estável"
 
 
 def test_falha_da_api_e_dita(monkeypatch) -> None:

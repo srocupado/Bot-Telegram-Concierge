@@ -296,21 +296,42 @@ async def fetch_forecast(
 _DIAS_SEMANA = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"]
 
 
-def tendencia_calor(days: list[DayWeather], delta_min_c: float = 2.0) -> str | None:
-    """Linha de aviso quando a semana vem ESQUENTANDO: a máxima de algum dia
-    futuro supera a de hoje em ≥ delta_min_c (pedido do dono, 04/08/2026:
-    +2°C na semana). None quando não há tendência — semana estável fica em
-    silêncio, aviso que dispara sempre vira ruído que se ignora."""
+def tendencia_temperatura(days: list[DayWeather]) -> str | None:
+    """Linha da tendência de temperatura da semana — SEMPRE presente
+    (esquentando, esfriando, sobe-e-desce ou estável). Pedido do dono em
+    09/08/2026, substituindo a régua de +2°C de 04/08: 'relata sempre se vai
+    esquentar ou esfriar'. Compara em graus ARREDONDADOS (o que o dono lê nas
+    linhas do bloco) — 0,4°C de diferença não é tendência, é ruído de modelo.
+    None só com menos de 2 dias de previsão."""
     if len(days) < 2:
         return None
-    hoje = days[0]
-    pico = max(days[1:], key=lambda d: d.temp_max_c)
-    if pico.temp_max_c - hoje.temp_max_c < delta_min_c:
-        return None
-    dt = date.fromisoformat(pico.date_iso)
-    return (f"🌡️ Esquentando: hoje máxima de {round(hoje.temp_max_c)}°, "
-            f"subindo até {round(pico.temp_max_c)}° na {_DIAS_SEMANA[dt.weekday()]} "
-            f"{dt.strftime('%d/%m')}.")
+    hoje = round(days[0].temp_max_c)
+    futuros = days[1:]
+    pico = max(futuros, key=lambda d: d.temp_max_c)
+    vale = min(futuros, key=lambda d: d.temp_max_c)
+    sobe = round(pico.temp_max_c) - hoje >= 1
+    desce = hoje - round(vale.temp_max_c) >= 1
+
+    def _quando(d: DayWeather) -> str:
+        dt = date.fromisoformat(d.date_iso)
+        return f"{_DIAS_SEMANA[dt.weekday()]} {dt.strftime('%d/%m')}"
+
+    if sobe and desce:
+        # Sobe E desce na janela: descreve na ordem em que acontece.
+        primeiro, depois = ((pico, vale) if pico.date_iso < vale.date_iso
+                            else (vale, pico))
+        verbo1 = "sobe até" if primeiro is pico else "cai até"
+        verbo2 = "cai até" if depois is vale else "sobe até"
+        return (f"🌡️ Semana: hoje máxima de {hoje}°, {verbo1} "
+                f"{round(primeiro.temp_max_c)}° na {_quando(primeiro)}, depois "
+                f"{verbo2} {round(depois.temp_max_c)}° na {_quando(depois)}.")
+    if sobe:
+        return (f"🌡️ Esquentando: hoje máxima de {hoje}°, subindo até "
+                f"{round(pico.temp_max_c)}° na {_quando(pico)}.")
+    if desce:
+        return (f"🌡️ Esfriando: hoje máxima de {hoje}°, caindo até "
+                f"{round(vale.temp_max_c)}° na {_quando(vale)}.")
+    return f"🌡️ Máximas estáveis a semana toda, na casa dos {hoje}°."
 
 
 @dataclass(frozen=True)

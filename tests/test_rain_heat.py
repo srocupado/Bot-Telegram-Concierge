@@ -54,28 +54,43 @@ def _dia(iso: str, tmax: float) -> weather.DayWeather:
     return weather.DayWeather(iso, 15, tmax, 0, 0, "🌤️", "limpo")
 
 
-def test_calor_dispara_com_2_graus_na_semana() -> None:
+# Sem régua (dono, 09/08/2026): a tendência é relatada SEMPRE — esquentando,
+# esfriando, sobe-e-desce ou estável.
+
+def test_tendencia_esquentando() -> None:
     dias = [_dia("2026-08-05", 26), _dia("2026-08-06", 27), _dia("2026-08-08", 28)]
-    linha = weather.tendencia_calor(dias, 2.0)
-    assert linha is not None
+    linha = weather.tendencia_temperatura(dias)
     assert "Esquentando" in linha
     assert "26°" in linha and "28°" in linha
     assert "sáb 08/08" in linha, "aponta O DIA do pico, não só o valor"
 
 
-def test_calor_semana_estavel_fica_em_silencio() -> None:
-    dias = [_dia("2026-08-05", 26), _dia("2026-08-06", 27.9), _dia("2026-08-07", 26)]
-    assert weather.tendencia_calor(dias, 2.0) is None, "+1.9° não é tendência"
+def test_tendencia_esfriando_tambem_e_relatada() -> None:
+    """O caso de 09/08/2026: hoje 33° no topo da semana e o briefing mudo."""
+    dias = [_dia("2026-08-09", 33), _dia("2026-08-10", 32), _dia("2026-08-12", 29)]
+    linha = weather.tendencia_temperatura(dias)
+    assert "Esfriando" in linha
+    assert "33°" in linha and "29°" in linha and "qua 12/08" in linha
 
 
-def test_calor_esfriando_fica_em_silencio() -> None:
-    dias = [_dia("2026-08-05", 30), _dia("2026-08-06", 25), _dia("2026-08-07", 22)]
-    assert weather.tendencia_calor(dias, 2.0) is None
+def test_tendencia_sobe_e_desce_na_ordem_em_que_acontece() -> None:
+    dias = [_dia("2026-08-05", 28), _dia("2026-08-06", 32), _dia("2026-08-08", 24)]
+    linha = weather.tendencia_temperatura(dias)
+    assert "sobe até 32°" in linha and "cai até 24°" in linha
+    assert linha.index("sobe") < linha.index("depois") < linha.index("cai")
 
 
-def test_calor_lista_curta_nao_estoura() -> None:
-    assert weather.tendencia_calor([], 2.0) is None
-    assert weather.tendencia_calor([_dia("2026-08-05", 26)], 2.0) is None
+def test_tendencia_estavel_agora_fala() -> None:
+    dias = [_dia("2026-08-05", 26), _dia("2026-08-06", 26.4), _dia("2026-08-07", 26)]
+    linha = weather.tendencia_temperatura(dias)
+    assert "estáveis" in linha and "26°" in linha
+    # 0,4° não vira "esquentando" — arredondado é o que o dono lê no bloco.
+    assert "Esquentando" not in linha
+
+
+def test_tendencia_lista_curta_nao_estoura() -> None:
+    assert weather.tendencia_temperatura([]) is None
+    assert weather.tendencia_temperatura([_dia("2026-08-05", 26)]) is None
 
 
 # ─────────────────────────── nowcast (fonte da chuva) ───────────────────────

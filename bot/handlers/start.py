@@ -76,9 +76,9 @@ HELP_TEXT = (
     "• <b>Alerta de chuva</b> automático: quando a chance de chuva na PRÓXIMA "
     "hora cruza 60%, o bot avisa sozinho (6h–23h; um aviso por chuva, sem "
     "repetição enquanto ela dura).\n"
-    "• No <b>briefing da manhã</b>: previsão dos 7 dias + aviso "
-    "<i>\"Esquentando\"</i> quando a máxima da semana sobe 2°C ou mais sobre "
-    "a de hoje.\n\n"
+    "• No <b>briefing da manhã</b>: previsão dos 7 dias + a tendência da "
+    "semana, sempre (<i>\"Esquentando\"</i>, <i>\"Esfriando\"</i>, sobe-e-"
+    "desce ou estável).\n\n"
     "<b>Cotações</b> (ao vivo):\n"
     "• <i>\"quanto está o dólar?\"</i>, <i>\"cotação da PETR4\"</i>, "
     "<i>\"quanto tá o HGLG11 / bitcoin?\"</i> → preço atual de moeda, ação, "
@@ -307,7 +307,8 @@ _HELP_KEYWORDS: dict[str, str] = {
     # clima (consultar_clima)
     "chuva": "clima", "chover": "clima", "previsao": "clima",
     "guarda-chuva": "clima", "calor": "clima", "esquentando": "clima",
-    "esquentar": "clima", "temperatura": "clima",
+    "esquentar": "clima", "temperatura": "clima", "esfriando": "clima",
+    "esfriar": "clima", "frio": "clima", "tendencia": "clima",
     # cotações (consultar_cotacao)
     "cotacao": "cotacoes", "cotacoes": "cotacoes", "dolar": "cotacoes",
     "euro": "cotacoes", "bitcoin": "cotacoes", "cripto": "cotacoes",
