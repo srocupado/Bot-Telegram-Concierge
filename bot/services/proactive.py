@@ -943,72 +943,78 @@ async def collect_mp(
     # anunciada JÁ (com a nota na fila pra quando o Inlabs voltar) e o "não
     # consegui checar" vira linha informativa com o estado apurado.
     portal_estado: dict[date, str] = {}
-    if failed and settings.dou_portal_fallback:
+
+    async def _portal_cobrir(d: date) -> str | None:
+        """Cobre UM dia pelo portal público: anuncia MPs novas (com a nota na
+        fila) e devolve o ESTADO apurado pra linha informativa. None = o
+        próprio portal falhou (aí vale o alarme normal). Compartilhado entre
+        a varredura do dia e a fila RETROATIVA (dono, 09/08/2026: dia preso
+        esperava só o Inlabs mesmo com o portal no ar)."""
+        nonlocal entregues
         from bot.services import dou_portal
-        for d in failed:
-            try:
-                dia_portal = await dou_portal.checar_dia_portal(d)
-            except Exception as exc:
-                logger.warning("proactive: portal do DOU também falhou p/ %s: %s",
-                               d, exc)
+        try:
+            dia_portal = await dou_portal.checar_dia_portal(d)
+        except Exception as exc:
+            logger.warning("proactive: portal do DOU também falhou p/ %s: %s",
+                           d, exc)
+            return None
+        numeros: list[str] = []
+        for mp in dia_portal.mps:
+            key = f"{mp.numero}/{mp.ano}"
+            numeros.append(mp.numero)
+            if key in seen:
                 continue
-            numeros: list[str] = []
-            for mp in dia_portal.mps:
-                key = f"{mp.numero}/{mp.ano}"
-                numeros.append(mp.numero)
-                if key in seen:
+            seen.add(key)
+            if not force and await already_notified(session, user.id, "mp", key):
+                continue
+            if not force:
+                if entregues is None:
+                    rows_seen = await session.scalars(
+                        select(DouSeenMP).where(DouSeenMP.user_id == user.id)
+                    )
+                    entregues = {(r.numero, r.ano) for r in rows_seen}
+                if (mp.numero, mp.ano) in entregues:
                     continue
-                seen.add(key)
-                if not force and await already_notified(session, user.id, "mp", key):
-                    continue
-                if not force:
-                    if entregues is None:
-                        rows_seen = await session.scalars(
-                            select(DouSeenMP).where(DouSeenMP.user_id == user.id)
-                        )
-                        entregues = {(r.numero, r.ano) for r in rows_seen}
-                    if (mp.numero, mp.ano) in entregues:
-                        continue
-                descricao = _clean_ementa(mp.ementa or mp.titulo)
-                # Com o texto integral aprovado na sanidade, a nota é gerada
-                # JÁ com o texto do portal (job desta janela); sem ele, espera
-                # o Inlabs — e o aviso diz qual dos dois vai acontecer.
-                destino_nota = (
-                    "a nota técnica vem em seguida (texto do portal)"
-                    if mp.texto else
-                    "a nota técnica entra na fila e sai quando ele voltar"
-                )
-                facts.append(ProactiveFact(
-                    "mp", "mp", key,
-                    f"📜 MP {mp.numero}/{mp.ano}: {descricao} — detectada pelo "
-                    f"PORTAL do DOU (Inlabs fora agora); {destino_nota}.",
-                    date_iso=d.isoformat(),
-                ))
-            if numeros:
-                # Outbox: a nota entra na fila JÁ — o retry só roda quando o
-                # Inlabs voltar (dou_fora_agora bloqueia job imediato).
-                key_np = f"{d.isoformat()}:{','.join(sorted(set(numeros)))}"
-                if not await already_notified(session, user.id, "nota_pendente", key_np):
-                    await mark_notified(session, user.id, "nota_pendente", key_np)
-                portal_estado[d] = (
-                    f"{len(dia_portal.mps)} MP(s) publicada(s) — avisada(s) "
-                    "acima. Sigo re-checando o Inlabs pra confirmação final."
-                )
-            elif dia_portal.edicao_confirmada:
-                portal_estado[d] = ("edição no ar e SEM MP até agora. Sigo "
-                                    "re-checando o Inlabs pra confirmação final.")
-            else:
-                # Índice sem a data: INCONCLUSIVO — mas o portal RESPONDEU, e
-                # isso merece ser dito (incidente de 08/08/2026: sábado às
-                # 7h05 só sobrou o grito 'NÃO assuma', como se o fallback nem
-                # existisse). A linha informa as DUAS fontes consultadas e a
-                # leitura provável, sem afirmar nada — o dia segue pendente.
-                logger.info("proactive: portal sem índice p/ %s (inconclusivo)", d)
-                portal_estado[d] = (
-                    "o índice ainda não tem a edição do dia — sem como afirmar "
-                    "nada (comum de manhã cedo; em fim de semana/feriado pode "
-                    "nem haver edição). Sigo re-checando os dois."
-                )
+            descricao = _clean_ementa(mp.ementa or mp.titulo)
+            # Com o texto integral aprovado na sanidade, a nota é gerada JÁ
+            # com o texto do portal (job desta janela); sem ele, espera o
+            # Inlabs — e o aviso diz qual dos dois vai acontecer.
+            destino_nota = (
+                "a nota técnica vem em seguida (texto do portal)"
+                if mp.texto else
+                "a nota técnica entra na fila e sai quando ele voltar"
+            )
+            facts.append(ProactiveFact(
+                "mp", "mp", key,
+                f"📜 MP {mp.numero}/{mp.ano}: {descricao} — detectada pelo "
+                f"PORTAL do DOU (Inlabs fora agora); {destino_nota}.",
+                date_iso=d.isoformat(),
+            ))
+        if numeros:
+            # Outbox: a nota entra na fila JÁ — o job desta janela tenta o
+            # Inlabs, cai no portal e entrega (ver _tentar_nota_via_portal).
+            key_np = f"{d.isoformat()}:{','.join(sorted(set(numeros)))}"
+            if not await already_notified(session, user.id, "nota_pendente", key_np):
+                await mark_notified(session, user.id, "nota_pendente", key_np)
+            return (f"{len(dia_portal.mps)} MP(s) publicada(s) — avisada(s) "
+                    "acima. Sigo re-checando o Inlabs pra confirmação final.")
+        if dia_portal.edicao_confirmada:
+            return ("edição no ar e SEM MP até agora. Sigo re-checando o "
+                    "Inlabs pra confirmação final.")
+        # Índice sem a data: INCONCLUSIVO — mas o portal RESPONDEU, e isso
+        # merece ser dito (incidente de 08/08/2026: sábado às 7h05 só sobrou
+        # o grito 'NÃO assuma', como se o fallback nem existisse). A linha
+        # informa as DUAS fontes e a leitura provável, sem afirmar nada.
+        logger.info("proactive: portal sem índice p/ %s (inconclusivo)", d)
+        return ("o índice ainda não tem a edição do dia — sem como afirmar "
+                "nada (comum de manhã cedo; em fim de semana/feriado pode "
+                "nem haver edição). Sigo re-checando os dois.")
+
+    if failed and settings.dou_portal_fallback:
+        for d in failed:
+            estado = await _portal_cobrir(d)
+            if estado:
+                portal_estado[d] = estado
 
     # Sinaliza pro run_for_user: se o fetch DESTE run não alcançou o Inlabs, não
     # adianta disparar job de nota (ele buscaria o mesmo Inlabs e falharia) — e
@@ -1154,17 +1160,21 @@ async def collect_mp(
         ))
     resolvidos: list[date] = [d for d in pendentes if d in ok_dates]
     restantes = [d for d in pendentes if d not in dates][:_MP_RETRO_MAX_POR_JANELA]
+    retro_falhos: list[date] = []
     for d in restantes:
         # Mesmo curto-circuito da varredura: Inlabs fora neste run → não paga
-        # a cascata de timeouts de novo; os dias seguem pendentes.
+        # a cascata de timeouts de novo; os dias seguem pendentes (e o portal
+        # cobre a detecção logo abaixo).
         if inlabs_fora:
             logger.info("proactive: Inlabs fora neste run — retroativa de %s adiada", d)
-            break
+            retro_falhos.append(d)
+            continue
         try:
             c = await _colher(d)
         except Exception as exc:
             logger.warning("proactive: retroativa DOU %s ainda falhando: %s", d, exc)
             inlabs_fora = True
+            retro_falhos.append(d)
             continue
         facts += c.facts
         if not c.baixa:
@@ -1184,6 +1194,25 @@ async def collect_mp(
             f"✅ Checagem retroativa do DOU de {d.strftime('%d/%m')} concluída — {detalhe}.",
             date_iso=None,
         ))
+
+    # Dia RETROATIVO preso com o Inlabs fora também é coberto pelo portal
+    # (dono, 09/08/2026): MP de dia antigo não pode esperar o vaga-lume
+    # acender pra ser sequer DETECTADA. Mesma regra da varredura: detecção e
+    # aviso apenas — a baixa continua exigindo o Inlabs.
+    if retro_falhos and settings.dou_portal_fallback:
+        for d in retro_falhos:
+            estado = await _portal_cobrir(d)
+            if not estado:
+                continue
+            pkey = f"portal:{d.isoformat()}:{estado[:20]}"
+            if force or not await already_notified(session, user.id, "mp_fail", pkey):
+                facts.append(ProactiveFact(
+                    "mp", "mp_fail", pkey,
+                    f"ℹ️ Inlabs fora agora; chequei o DOU de "
+                    f"{d.strftime('%d/%m')} (fila retroativa) pelo "
+                    f"<b>portal público</b>: {estado}",
+                    date_iso=None,
+                ))
 
     # A retroativa pode ter descoberto o Inlabs fora DEPOIS da atribuição
     # inicial — re-sincroniza o sinal que trava o disparo de jobs de nota.
@@ -1534,8 +1563,19 @@ async def collect_carteira(
         try:
             prices = await fetch_quotes(tickers)
         except QuotesError as e:
+            # Falha TOTAL da fonte não pode virar revisão que simplesmente não
+            # veio (item 14 da auditoria): o dono lia a ausência como "dia sem
+            # nada" — e os preços do Firestore seguiam os de ontem sem ninguém
+            # saber. Sem detalhe do erro no texto (a mensagem da lib pode
+            # carregar a URL com o token da brapi).
             logger.warning("proactive: cotação indisponível (%s)", e)
-            return []
+            return [ProactiveFact(
+                "carteira", "carteira_falhou", now_brt.date().isoformat(),
+                "⚠️ Não consegui cotar a <b>carteira</b> hoje (brapi "
+                "indisponível) — os preços de mercado NÃO foram atualizados; "
+                "não assuma os valores de ontem como atuais. Tento de novo "
+                "amanhã.",
+            )]
         if not prices:
             return []
         assets = await atualizar_cotacoes_carteira(
@@ -1544,9 +1584,16 @@ async def collect_carteira(
         text = format_carteira_review(assets, prices)
         if not text:
             return []
-    except Exception:
+    except Exception as exc:
+        # Mesma regra pro resto do pipeline (Firestore fora, formatação):
+        # falha é dita, nunca revisão sumida em silêncio.
         logger.exception("proactive: revisão de carteira falhou p/ user %s", user.id)
-        return []
+        return [ProactiveFact(
+            "carteira", "carteira_falhou", now_brt.date().isoformat(),
+            f"⚠️ A revisão da <b>carteira</b> falhou hoje "
+            f"({type(exc).__name__}) — preços sem atualização. Tento de novo "
+            "amanhã.",
+        )]
     key = now_brt.date().isoformat()
     return [ProactiveFact("carteira", "carteira_review", key, text)]
 

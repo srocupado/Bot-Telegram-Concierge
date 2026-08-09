@@ -53,10 +53,16 @@ async def _fetch_one(
                     price = item.get("regularMarketPrice")
                     if price is not None:
                         try:
-                            return ticker, float(price), None
+                            p = float(price)
                         except (TypeError, ValueError):
-                            pass
-                return ticker, None, "resposta sem preço"  # 200 válido, não retenta
+                            p = None
+                        # Preço 0/negativo é lixo da API, não cotação: aceitar
+                        # ZERAVA o currentPrice no Firestore em silêncio e a
+                        # carteira inteira parecia no prejuízo (item 14 da
+                        # auditoria de 03/08/2026).
+                        if p is not None and p > 0:
+                            return ticker, p, None
+                return ticker, None, "resposta sem preço válido"  # 200, não retenta
             body = (resp.text or "").strip()[:200]
             last_err = f"HTTP {resp.status_code}: {body or '(sem corpo)'}"
             if resp.status_code not in _QUOTE_RETRY_STATUS:

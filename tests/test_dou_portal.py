@@ -298,6 +298,59 @@ def test_indice_sem_a_data_vira_linha_informativa_das_duas_fontes(monkeypatch) -
     assert ("mp_pendente", hoje.isoformat()) in marks, "segue pendente"
 
 
+def test_dia_retroativo_preso_tambem_e_coberto_pelo_portal(monkeypatch) -> None:
+    """Dono, 09/08/2026: dia PRESO na fila retroativa esperava só o Inlabs —
+    MP de dia antigo ficava nem detectada com o portal no ar. Agora o mesmo
+    _portal_cobrir varre os retro presos: MP anunciada + nota na fila +
+    linha informativa '(fila retroativa)'; baixa continua sendo do Inlabs."""
+    hoje = datetime.now(proactive.BRT).date()
+    ontem = hoje - timedelta(days=1)
+    marks: list[tuple[str, str]] = []
+
+    async def _fetch(_d):
+        raise dou_monitor.DouError("Inlabs em manutenção")
+
+    mp = dou_portal.PortalMP("1.383", 2026, "MEDIDA PROVISÓRIA Nº 1.383",
+                             "Ementa retro.", "https://x", texto="TEXTO ok")
+
+    async def _portal(d):
+        # hoje: índice vazio; ontem (retro): MP publicada
+        return (dou_portal.PortalDia([mp], True) if d == ontem
+                else dou_portal.PortalDia([], False))
+
+    async def _pendentes(_s, _uid, _hoje, _desist=None):
+        return [ontem]
+
+    async def _false(*a, **kw):
+        return False
+
+    async def _mark(_s, _uid, kind, key):
+        marks.append((kind, key))
+
+    async def _none(*a, **kw):
+        return None
+
+    monkeypatch.setattr(dou_monitor, "fetch_mps", _fetch)
+    monkeypatch.setattr(dou_portal, "checar_dia_portal", _portal)
+    monkeypatch.setattr(proactive, "_mp_dias_pendentes", _pendentes)
+    monkeypatch.setattr(proactive, "already_notified", _false)
+    monkeypatch.setattr(proactive, "mark_notified", _mark)
+    monkeypatch.setattr(proactive, "unmark_notified", _none)
+    monkeypatch.setattr(proactive.settings, "dou_portal_fallback", True)
+
+    user = SimpleNamespace(id=99, dou_mp_subscribed=True,
+                           dou_ultimo_dia_ok=hoje - timedelta(days=1))
+    facts = asyncio.run(proactive.collect_mp(_FakeSession(), user, [hoje]))
+
+    mps = [f for f in facts if f.kind == "mp"]
+    assert len(mps) == 1 and mps[0].key == "1.383/2026"
+    assert mps[0].date_iso == ontem.isoformat()
+    retro_lines = [f for f in facts if f.kind == "mp_fail"
+                   and "fila retroativa" in f.text]
+    assert len(retro_lines) == 1 and "1 MP(s)" in retro_lines[0].text
+    assert ("nota_pendente", f"{ontem.isoformat()}:1.383") in marks
+
+
 def test_portal_tambem_fora_mantem_alarme_forte(monkeypatch) -> None:
     _, facts, _ = _rodar_collect(
         monkeypatch, dou_portal.PortalError("WAF bloqueou"))

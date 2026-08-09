@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -128,6 +128,17 @@ async def _send_html_with_fallback(bot: Bot, chat_id: int, text: str) -> bool:
     return ok
 
 
+def _segunda_do_digest(now_brt: datetime) -> date | None:
+    """Segunda é o dia do digest do Congresso; terça e quarta são CATCH-UP —
+    bot fora do ar na segunda (deploy, queda de luz) perdia a pauta da SEMANA
+    inteira em silêncio (item 12 da auditoria de 03/08/2026). De quinta em
+    diante a semana está madura demais pra valer o envio atrasado. Devolve a
+    SEGUNDA da semana (chave do dedup semanal) ou None fora da janela."""
+    if now_brt.weekday() > 2:
+        return None
+    return now_brt.date() - timedelta(days=now_brt.weekday())
+
+
 async def run_congress_digest(
     sessionmaker: async_sessionmaker[AsyncSession],
     bot: Bot,
@@ -135,10 +146,14 @@ async def run_congress_digest(
     if not settings.congress_digest_enabled:
         return
     now_brt = datetime.now(BRT)
-    if now_brt.weekday() != 0:
+    segunda = _segunda_do_digest(now_brt)
+    if segunda is None:
         return
 
-    monday_brt = datetime.combine(now_brt.date(), time(0, 0), tzinfo=BRT)
+    # Dedup SEMANAL ancorado na segunda-feira real da semana (não em "hoje"):
+    # no catch-up de terça/quarta, ancorar em hoje deixaria o digest sair
+    # duas vezes na mesma semana.
+    monday_brt = datetime.combine(segunda, time(0, 0), tzinfo=BRT)
     monday_start_utc = monday_brt.astimezone(timezone.utc)
 
     async with sessionmaker() as session:
