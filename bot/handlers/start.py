@@ -137,10 +137,6 @@ HELP_TEXT = (
     "• <i>\"aportei 1000 no Tesouro IPCA+ 2035\"</i> → contribuição em título existente.\n"
     "• <i>\"como tá meu cartão esse mês?\"</i> → consulta os últimos lançamentos.\n"
     "• <i>\"qual meu saldo?\"</i> / <i>\"quanto tá a fatura em aberto?\"</i> → saldo bancário atual e total da fatura do ciclo.\n\n"
-    "<b>Análise de gastos</b>:\n"
-    "• <i>\"quanto gastei com alimentação em maio?\"</i> / <i>\"maior categoria do trimestre\"</i>\n"
-    "• <i>\"evolução dos meus gastos mês a mês\"</i> / <i>\"compara maio e junho\"</i>\n"
-    "• <i>\"gastei mais nas semanas que treinei?\"</i> — cruza dados quando dá.\n\n"
     "<b>Desfazer</b>:\n"
     "• <i>\"desfaz\"</i> / <i>\"errei, cancela isso\"</i> → desfaz o último lançamento/tarefa/lembrete/item criado pelo bot. Encadeia (chama de novo desfaz o anterior).\n\n"
     "<b>Agendamento recorrente</b>:\n"
@@ -309,7 +305,12 @@ _HELP_KEYWORDS: dict[str, str] = {
     "despesa": "gerenciador financeiro", "fatura": "gerenciador financeiro",
     "banco": "gerenciador financeiro", "salario": "gerenciador financeiro",
     "aporte": "gerenciador financeiro", "investimento": "gerenciador financeiro",
-    "gasto": "analise de gastos", "gastos": "analise de gastos",
+    # "análise de gastos" foi removida (dono, 10/08/2026: nunca usou) — as
+    # perguntas de gasto (verbos incluídos: "quanto gastei…") caem no
+    # gerenciador financeiro.
+    "gasto": "gerenciador financeiro", "gastos": "gerenciador financeiro",
+    "gastei": "gerenciador financeiro", "gastar": "gerenciador financeiro",
+    "gastando": "gerenciador financeiro",
     "saldo": "gerenciador financeiro", "extrato": "gerenciador financeiro",
     # câmara — comissões/pautas (consultar_pauta_camara / varrer_comissoes_partido)
     "comissao": "camara", "comissoes": "camara", "camara": "camara",

@@ -77,7 +77,7 @@ provider/modelo em runtime, além de **voz** (STT) e **imagens** (visão).
   aportes em Tesouro Direto e **operações de compra/venda em ações, FIIs,
   ETFs, Renda Fixa, fundos e cripto** (`state.investments.assets`); consulta
   lançamentos; **saldo bancário + entradas/saídas do mês + total em
-  investimentos** num só lugar; análise de gastos por categoria/período.
+  investimentos** num só lugar.
   Por voz/texto: *"qual meu saldo?"*, *"lança 250 no cartão, mercado, hoje"*,
   *"comprei 10 HGLG11 a 168,50"*, *"como tá meu cartão esse mês?"*,
   *"lista meus investimentos"*. A **fatura em aberto** replica o cálculo do

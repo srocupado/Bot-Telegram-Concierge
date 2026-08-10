@@ -45,7 +45,6 @@ from bot.services.actions import record_action, undo_last
 from bot.services.financeiro import (
     FinanceiroError,
     NotConfiguredError,
-    analisar_gastos,
     apagar_lancamento,
     confirm_banco,
     confirm_cartao,
@@ -1350,45 +1349,6 @@ async def _h_zerar_lista_compras(_args: dict, ctx: ToolContext) -> str:
 async def _h_desfazer_ultima_acao(_args: dict, ctx: ToolContext) -> str:
     msg = await undo_last(ctx.session, ctx.user)
     return msg
-
-
-async def _h_analisar_gastos(args: dict, ctx: ToolContext) -> str:
-    agrupar_por = (args.get("agrupar_por") or "categoria").strip().lower()
-    fonte = (args.get("fonte") or "tudo").strip().lower()
-
-    today = datetime.now(ZoneInfo(ctx.tz)).date()
-    inicio_iso = (args.get("inicio_iso") or "").strip()
-    fim_iso = (args.get("fim_iso") or "").strip()
-
-    # Se não vier intervalo, aceita 'dias' (janela até hoje) ou default 30d.
-    if not inicio_iso or not fim_iso:
-        dias = args.get("dias") or 30
-        try:
-            dias = int(dias)
-        except (TypeError, ValueError):
-            return "erro: 'dias' deve ser inteiro (ou passe inicio_iso+fim_iso)"
-        from datetime import timedelta as _td
-        fim_iso = today.isoformat()
-        inicio_iso = (today - _td(days=dias)).isoformat()
-
-    try:
-        out = await analisar_gastos(
-            ctx.session, ctx.user, inicio_iso, fim_iso,
-            agrupar_por=agrupar_por, fonte=fonte,
-        )
-    except NotConfiguredError as e:
-        return f"erro: {e}"
-    except FinanceiroError as e:
-        return f"erro: {e}"
-    if not out.strip() or out.strip() == "(sem dados)":
-        return "ok: sem gastos no período (diga isso ao usuário)"
-    # Totais/percentuais de gasto são dado monetário determinístico: verbatim
-    # + short_circuit, como o consultar_saldo logo acima — era a última tool
-    # financeira cujos números passavam pela paráfrase do LLM.
-    ctx.fallback_text = out
-    ctx.direct_html = _html_escape(out)
-    ctx.short_circuit = True
-    return "ok: análise enviada ao usuário (não escreva nada, a mensagem já foi enviada)"
 
 
 async def _h_consultar_mp_dou(args: dict, ctx: ToolContext) -> str:
@@ -2711,40 +2671,6 @@ TOOLS: list[Tool] = [
         ),
         parameters={"type": "object", "properties": {}},
         handler=_h_desfazer_ultima_acao,
-    ),
-    Tool(
-        name="analisar_gastos",
-        description=(
-            "Análise de gastos num intervalo, agrupada por categoria, mês "
-            "ou semana. Considera só SAÍDAS (débitos do banco + gastos do "
-            "cartão por fatura). Use pra perguntas analíticas: 'quanto "
-            "gastei com alimentação em maio', 'qual minha maior categoria "
-            "no trimestre', 'evolução dos meus gastos mês a mês', 'comparar "
-            "maio com junho' (use agrupar_por='mes' cobrindo os dois "
-            "meses).\n"
-            "Passe inicio_iso+fim_iso pra intervalo exato, OU 'dias' pra "
-            "janela até hoje (default 30). Para cruzar com outros dados "
-            "(ex: treinos), combine com consultar_treinos numa mesma "
-            "resposta e sintetize você mesmo."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "inicio_iso": {"type": "string", "description": "Início 'YYYY-MM-DD' (opcional se usar 'dias')"},
-                "fim_iso": {"type": "string", "description": "Fim 'YYYY-MM-DD' (opcional se usar 'dias')"},
-                "dias": {"type": "integer", "description": "Janela em dias até hoje (default 30; ignorado se inicio+fim vierem)"},
-                "agrupar_por": {
-                    "type": "string",
-                    "enum": ["categoria", "mes", "semana"],
-                },
-                "fonte": {
-                    "type": "string",
-                    "enum": ["banco", "cartao", "tudo"],
-                    "description": "Default 'tudo'",
-                },
-            },
-        },
-        handler=_h_analisar_gastos,
     ),
     Tool(
         name="consultar_mp_dou",

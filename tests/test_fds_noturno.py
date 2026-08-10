@@ -347,3 +347,11 @@ def test_help_fds_e_noturno() -> None:
     # "esqueci de lançar um gasto" → financeiro
     blocos = find_help_sections("esqueci de lançar um gasto ontem")
     assert any("financeiro" in b.lower() for b in blocos)
+
+    # análise de gastos removida (10/08/2026): pergunta de gasto — verbo
+    # incluído — cai no gerenciador financeiro, nunca em seção fantasma
+    for frase in ("quanto gastei esse mês?", "análise de gastos"):
+        blocos = find_help_sections(frase)
+        assert blocos and any("financeiro" in b.lower() for b in blocos), frase
+    from bot.handlers.start import HELP_TEXT
+    assert "Análise de gastos" not in HELP_TEXT

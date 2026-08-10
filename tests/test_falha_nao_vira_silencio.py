@@ -3,8 +3,8 @@
 Cinco irmãos do mesmo bug, cada um numa fonte:
 - cotação: erro voltava como texto pro LLM → modelo respondia preço de
   memória do treino;
-- extrato/análise de gastos: valores monetários passavam pela paráfrase
-  (as únicas tools financeiras sem verbatim);
+- extrato: valores monetários passavam pela paráfrase (a tool análise de
+  gastos, irmã deste bug, foi removida em 10/08/2026 — dono nunca usou);
 - congresso: scrape PARCIAL (4 dias em 503) saía como semana completa;
 - cinema: falha de API por filme virava "Sem sessões nessa data" verbatim;
 - geocode: todos os métodos falhando viravam "não encontrei o endereço".
@@ -73,19 +73,6 @@ def test_extrato_sem_dados_nao_manda_verbatim(monkeypatch) -> None:
     out = asyncio.run(tools._h_consultar_lancamentos({}, ctx))
     assert ctx.direct_html is None
     assert "nenhum lançamento" in out
-
-
-# ─────────────────────── análise de gastos ───────────────────────
-
-def test_analise_de_gastos_vai_verbatim(monkeypatch) -> None:
-    async def _fake(*a, **kw):
-        return "📊 alimentação: R$ 1.234,56 (45%)"
-
-    monkeypatch.setattr(tools, "analisar_gastos", _fake)
-    ctx = _ctx()
-    asyncio.run(tools._h_analisar_gastos({}, ctx))
-    assert ctx.short_circuit is True
-    assert "R$ 1.234,56" in ctx.direct_html
 
 
 # ─────────────────────────── congresso ───────────────────────────

@@ -13,54 +13,11 @@ from zoneinfo import ZoneInfo
 import pytest
 
 
-# ═══ #1 financeiro: compra à vista some da análise de mês único ═══════════════
-
-def _estado_cartao(entries):
-    return {"cardEntries": entries, "bankTransactions": [],
-            "categories": [], "settings": {"cardClosingDay": 10}}
-
-
-def _rodar_analise(monkeypatch, state, inicio, fim, agrupar="categoria"):
-    from bot.services import financeiro
-
-    async def _db(_s):
-        return object()
-
-    async def _read(_db_, _uid):
-        return state
-
-    monkeypatch.setattr(financeiro, "_get_db", _db)
-    monkeypatch.setattr(financeiro, "_read_state", _read)
-    monkeypatch.setattr(financeiro, "_require_uid", lambda _u: "uid")
-    monkeypatch.setattr(financeiro, "_get_card_closing_day", lambda _s: 10)
-    return asyncio.run(financeiro.analisar_gastos(
-        None, SimpleNamespace(), inicio, fim, agrupar_por=agrupar, fonte="cartao",
-    ))
-
-
-def test_avista_pos_fechamento_aparece_no_mes_da_fatura(monkeypatch) -> None:
-    """Fechamento dia 10: compra à vista de 15/01 cai na fatura de FEVEREIRO.
-    Antes sumia da consulta de fevereiro (d_compra fora do intervalo → continue)."""
-    state = _estado_cartao([{
-        "date": "2026-01-15", "amount": 500.0, "category": "mercado",
-        "installments": 1, "currentInstallment": 1,
-    }])
-    fev = _rodar_analise(monkeypatch, state, "2026-02-01", "2026-02-28")
-    assert "500,00" in fev, "compra à vista (fatura de fev) sumiu de fevereiro"
-    jan_fev = _rodar_analise(monkeypatch, state, "2026-01-01", "2026-02-28")
-    assert "500,00" in jan_fev and "1.000,00" not in jan_fev, "não pode duplicar"
-
-
-def test_parcelas_ancoradas_no_mes_de_cada_fatura(monkeypatch) -> None:
-    """3x de 05/01: cada parcela no SEU mês de fatura, não tudo em janeiro."""
-    state = _estado_cartao([{
-        "date": "2026-01-05", "amount": 300.0, "category": "eletro",
-        "installments": 3, "currentInstallment": 1,
-    }])
-    out = _rodar_analise(monkeypatch, state, "2026-01-01", "2026-03-31", agrupar="mes")
-    assert "2026-01" in out and "2026-02" in out and "2026-03" in out
-    assert out.count("100,00") == 3, "cada parcela devia cair num mês distinto"
-
+# (Os testes #1 — âncora de fatura na análise de gastos — saíram junto com a
+# tool analisar_gastos, removida a pedido do dono em 10/08/2026: nunca usou.
+# A lógica de fatura que SEGUE viva — _entry_in_bill/_bill_month_for_date no
+# consultar_lancamentos — continua coberta em test_fatura_cartao.py e
+# test_fatura_fechamento_dia1.py.)
 
 # ═══ #6 cotação: dado monetário vai VERBATIM ═════════════════════════════════
 
