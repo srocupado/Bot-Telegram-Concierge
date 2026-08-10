@@ -114,13 +114,14 @@ HELP_TEXT = (
     "• <code>/provider thinking [auto|0|N|padrao]</code> — quanto o Gemini pode \"pensar\" antes de responder. <code>auto</code> deixa o modelo decidir (sempre aceito); <code>0</code> desliga e economiza tokens, mas modelo novo costuma recusar; <code>N</code> fixa um teto; <code>padrao</code> volta ao .env. Sem argumento, mostra o valor atual. Antes só existia no .env, e o valor certo depende do modelo — trocar de modelo exigia deploy\n"
     "• <code>/provider_visao anthropic|openai|gemini|auto</code> — provider só pra fotos (auto = segue /provider). <code>/provider_visao modelos</code> lista só modelos com entrada de imagem\n"
     "• <code>/voice gemini|openai</code> — provider da transcrição de voz. Gemini converte voz→/comando; OpenAI (Whisper) é literal mas mais estável. <code>/voice modelos</code> lista só modelos com entrada de áudio\n"
-    "• <code>/tradutor &lt;idioma&gt;</code> — modo tradutor de VIA DUPLA: manda áudio, recebe a tradução em texto e voz; áudio já no idioma-alvo (a resposta do atendente) volta em português (ex.: <code>/tradutor japonês</code>). <code>/tradutor off</code> desliga — ou fale no próprio áudio \"desliga o tradutor\", que ele sai do modo em vez de traduzir a frase\n"
-    "• <code>/tradutor_provider openai|gemini [id]</code> — motor do tradutor (openai não treina; gemini grátis pode). Fixa o modelo por id (ex.: <code>gemini gemini-3.1-flash-lite</code>); <code>/tradutor_provider modelos</code> lista os de áudio\n"
     "• <code>/reset</code> — limpa o contexto da conversa livre\n"
     "• <code>/reset_memoria [tudo]</code> — zera a memória de longo prazo "
     "(resumo automático; com <code>tudo</code>, também o histórico pesquisável)\n"
     "• Memória: o bot lembra da conversa entre restarts, resume o que sai do "
     "contexto e busca em conversas antigas (<i>\"o que eu te falei sobre…?\"</i>)\n\n"
+    "<b>Tradutor</b> (modo intérprete por voz):\n"
+    "• <code>/tradutor &lt;idioma&gt;</code> — modo tradutor de VIA DUPLA: manda áudio, recebe a tradução em texto e voz; áudio já no idioma-alvo (a resposta do atendente) volta em português (ex.: <code>/tradutor japonês</code>). <code>/tradutor off</code> desliga — ou fale no próprio áudio \"desliga o tradutor\", que ele sai do modo em vez de traduzir a frase\n"
+    "• <code>/tradutor_provider openai|gemini [id]</code> — motor do tradutor (openai não treina; gemini grátis pode). Fixa o modelo por id (ex.: <code>gemini gemini-3.1-flash-lite</code>); <code>/tradutor_provider modelos</code> lista os de áudio\n\n"
     "<b>Academia</b>:\n"
     "• Mande voz/texto descrevendo o treino: <i>\"hoje malhei peito e fiz 10min de cardio\"</i>, "
     "<i>\"ontem treinei costas\"</i> — bot registra.\n"
@@ -331,8 +332,12 @@ _HELP_KEYWORDS: dict[str, str] = {
     # melhor horário de sair (melhor_horario_sair) — é trânsito
     "melhor horario": "transito", "melhor hora": "transito", "sair": "transito",
     "academia": "academia", "treino": "academia", "malhar": "academia", "malho": "academia",
-    "tradutor": "llm", "traduzir": "llm", "traducao": "llm", "traduz": "llm",
-    "interprete": "llm", "idioma": "llm", "lingua": "llm",
+    # Tradutor tem seção PRÓPRIA (10/08/2026): a pergunta "como uso o
+    # tradutor?" devolvia a seção LLM inteira (provider/thinking/reset…) —
+    # informação demais pra pergunta de menos.
+    "tradutor": "tradutor", "traduzir": "tradutor", "traducao": "tradutor",
+    "traduz": "tradutor", "interprete": "tradutor", "idioma": "tradutor",
+    "lingua": "tradutor",
     "provider": "llm", "modelo": "llm", "llm": "llm", "voz": "voz", "audio": "voz",
     "thinking": "llm", "raciocinio": "llm", "pensar": "llm", "pensando": "llm",
     "budget": "llm", "gemini": "llm", "token": "llm", "tokens": "llm",
@@ -363,7 +368,7 @@ _HELP_KEYWORDS: dict[str, str] = {
     # inglês (a esposa fala PT, mas o LLM às vezes passa o assunto em EN)
     "reminder": "lembrete", "task": "lembrete", "shopping list": "compras",
     "grocery": "compras", "traffic": "transito", "flight": "viagens",
-    "translate": "llm", "workout": "academia",
+    "translate": "tradutor", "workout": "academia",
 }
 
 

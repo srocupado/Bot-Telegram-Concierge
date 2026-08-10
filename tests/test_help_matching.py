@@ -38,6 +38,29 @@ def test_comando_com_underscore_casa() -> None:
     assert any("proativo" in t.lower() for t in _titulos("/proativo_on serve pra que"))
 
 
+def test_tradutor_devolve_so_a_secao_do_tradutor() -> None:
+    """Bug real (dono, 10/08/2026): 'Como uso o tradutor?' devolvia a seção
+    LLM INTEIRA (provider, thinking, reset, memória…) porque os bullets do
+    tradutor moravam lá dentro. Agora o tradutor tem seção própria — e a
+    resposta é SÓ ela."""
+    for p in (
+        "Como uso o tradutor?",
+        "como funciona o modo tradutor",
+        "traduz japonês pra mim?",
+        "quero um intérprete de voz",
+    ):
+        blocos = find_help_sections(p)
+        titulos = [b.splitlines()[0] for b in blocos]
+        assert any("Tradutor" in t for t in titulos), f"sem match: {p!r}"
+        assert not any(t.startswith("<b>LLM") for t in titulos), (
+            f"veio a seção LLM junto: {p!r} → {titulos}"
+        )
+    # e o /tradutor pelo nome do comando também acha
+    assert any("Tradutor" in t for t in _titulos("o que faz o /tradutor_provider"))
+    # perguntas de provider/modelo continuam achando a seção LLM
+    assert any("<b>LLM" in t for t in _titulos("como troco o provider?"))
+
+
 def test_limite_de_palavra_continua_valendo() -> None:
     """A troca de `_` por espaço não pode ter afrouxado o limite de palavra:
     'mp' dentro de 'compras' seguiria casando com o Diário Oficial."""
