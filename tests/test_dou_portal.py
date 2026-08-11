@@ -274,7 +274,11 @@ def _rodar_collect(monkeypatch, portal_result):
     return hoje, facts, marks
 
 
-def test_inlabs_fora_mp_do_portal_e_avisada_com_nota_na_fila(monkeypatch) -> None:
+def test_portal_primeiro_mp_anunciada_sem_tocar_o_inlabs(monkeypatch) -> None:
+    """PORTAL PRIMEIRO (dono, 11/08/2026): o portal conclusivo responde a
+    janela SOZINHO — nenhuma linha de falha (o Inlabs quebrado nem é
+    percebido), MP anunciada como sempre (com botão de nota, geração sob
+    demanda — sem fila automática)."""
     mp = dou_portal.PortalMP("1.382", 2026,
                              "MEDIDA PROVISÓRIA Nº 1.382, DE 5 DE AGOSTO DE 2026",
                              "Dispõe sobre teste.", "https://x",
@@ -284,28 +288,25 @@ def test_inlabs_fora_mp_do_portal_e_avisada_com_nota_na_fila(monkeypatch) -> Non
     mps = [f for f in facts if f.kind == "mp"]
     assert len(mps) == 1
     assert mps[0].key == "1.382/2026"
-    assert "PORTAL" in mps[0].text and "Dispõe sobre teste" in mps[0].text
-    assert "texto do portal" in mps[0].text, (
-        "com texto aprovado o aviso promete a nota EM SEGUIDA, não fila"
+    assert "Dispõe sobre teste" in mps[0].text
+    assert mps[0].date_iso == hoje.isoformat()          # botão de nota ativo
+    assert [f for f in facts if f.kind == "mp_fail"] == [], (
+        "portal conclusivo → Inlabs fora nem aparece"
     )
-    # Aviso informativo no lugar do alarme "não consegui checar".
-    fails = [f for f in facts if f.kind == "mp_fail"]
-    assert len(fails) == 1 and fails[0].key.startswith("portal:")
-    assert "NÃO assuma" not in fails[0].text
-    # Outbox: nota na fila; e o dia ABERTO segue pendente (baixa pelo portal
-    # só em dia fechado — a edição de hoje ainda pode crescer).
-    assert ("nota_pendente", f"{hoje.isoformat()}:1.382") in marks
+    # Nota continua SOB DEMANDA (botão) — sem fila automática.
+    assert not any(k == "nota_pendente" for k, _ in marks)
+    # Dia ABERTO segue pendente (provisorio) até fechar.
     assert ("mp_pendente", hoje.isoformat()) in marks
 
 
-def test_inlabs_fora_portal_sem_mp_vira_afirmacao_com_evidencia(monkeypatch) -> None:
+def test_portal_primeiro_sem_mp_responde_sem_alarme(monkeypatch) -> None:
     hoje, facts, marks = _rodar_collect(monkeypatch, dou_portal.PortalDia([], True))
 
     assert [f for f in facts if f.kind == "mp"] == []
-    fails = [f for f in facts if f.kind == "mp_fail"]
-    assert len(fails) == 1 and fails[0].key.startswith("portal:")
-    assert "SEM MP" in fails[0].text
-    assert ("mp_pendente", hoje.isoformat()) in marks, "sem baixa pelo portal"
+    assert [f for f in facts if f.kind == "mp_fail"] == [], (
+        "edição confirmada sem MP é resposta, não falha"
+    )
+    assert ("mp_pendente", hoje.isoformat()) in marks, "dia aberto: sem baixa"
 
 
 def test_indice_sem_a_data_vira_linha_informativa_das_duas_fontes(monkeypatch) -> None:
@@ -364,9 +365,10 @@ def _rodar_retro(monkeypatch, portal_do_retro, *, dias_atras=3):
 
 
 def test_dia_retroativo_fechado_com_mp_e_baixado_pelo_portal(monkeypatch) -> None:
-    """Dono, 09/08/2026: dia preso na fila esperava só o Inlabs. Com a
-    INVERSÃO (11/08/2026): MP do dia fechado é anunciada, a nota entra na
-    fila e o próprio portal dá BAIXA — linha ✅ própria, sem alarme."""
+    """Dono, 09/08/2026: dia preso na fila esperava só o Inlabs. PORTAL
+    PRIMEIRO: a retroativa consulta o portal antes de qualquer Inlabs — MP
+    do dia fechado é anunciada e o dia recebe BAIXA (✅ retroativa
+    concluída), sem alarme nenhum."""
     mp = dou_portal.PortalMP("1.383", 2026, "MEDIDA PROVISÓRIA Nº 1.383",
                              "Ementa retro.", "https://x", texto="TEXTO ok")
     retro, facts, marks = _rodar_retro(
@@ -375,13 +377,13 @@ def test_dia_retroativo_fechado_com_mp_e_baixado_pelo_portal(monkeypatch) -> Non
     mps = [f for f in facts if f.kind == "mp"]
     assert len(mps) == 1 and mps[0].key == "1.383/2026"
     assert mps[0].date_iso == retro.isoformat()
-    baixas = [f for f in facts if f.kind == "mp_retro"
-              and "fila retroativa" in f.text]
-    assert len(baixas) == 1 and "portal público" in baixas[0].text
+    baixas = [f for f in facts if f.kind == "mp_retro"]
+    assert len(baixas) == 1 and "1 MP(s) nova(s)" in baixas[0].text
     assert baixas[0].key == f"retro:{retro.isoformat()}"
     assert not [f for f in facts if f.kind == "mp_fail"
                 and "fila retroativa" in f.text], "baixado não vira alarme"
-    assert ("nota_pendente", f"{retro.isoformat()}:1.383") in marks
+    # Nota sob demanda (botão), como em qualquer anúncio de MP.
+    assert not any(k == "nota_pendente" for k, _ in marks)
 
 
 def test_dia_retroativo_sem_edicao_conclusivo_e_baixado(monkeypatch) -> None:
@@ -391,10 +393,10 @@ def test_dia_retroativo_sem_edicao_conclusivo_e_baixado(monkeypatch) -> None:
     retro, facts, marks = _rodar_retro(
         monkeypatch, dou_portal.PortalDia([], False, sem_edicao=True))
 
-    baixas = [f for f in facts if f.kind == "mp_retro"
-              and "fila retroativa" in f.text]
+    baixas = [f for f in facts if f.kind == "mp_retro"]
     assert len(baixas) == 1
-    assert "não houve edição" in baixas[0].text
+    assert "nenhuma MP nova" in baixas[0].text
+    assert baixas[0].key == f"retro:{retro.isoformat()}"
     assert not [f for f in facts if f.kind == "mp_fail"
                 and "fila retroativa" in f.text]
 

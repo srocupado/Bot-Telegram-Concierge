@@ -70,6 +70,9 @@ def _facts(monkeypatch, resultado, *, conferir=True, restantes=(13, 19)):
     monkeypatch.setattr(proactive, "mark_notified", _none)
     monkeypatch.setattr(proactive, "unmark_notified", _none)
     monkeypatch.setattr(proactive, "_conferir_camara", _sem_conferencia)
+    # Estes cenários exercitam o CAMINHO DO INLABS: portal desligado, senão
+    # o portal-primeiro responderia com o site real e o mock nem rodava.
+    monkeypatch.setattr(proactive.settings, "dou_portal_fallback", False)
     monkeypatch.setattr(proactive, "_janelas_restantes", lambda *_a: list(restantes))
 
     user = SimpleNamespace(id=7, dou_mp_subscribed=True,

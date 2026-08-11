@@ -59,6 +59,9 @@ def reg(monkeypatch):
     monkeypatch.setattr(proactive, "already_notified", _already)
     monkeypatch.setattr(proactive, "mark_notified", _mark)
     monkeypatch.setattr(proactive, "unmark_notified", _unmark)
+    # Estes cenários exercitam o CAMINHO DO INLABS: portal desligado, senão
+    # o portal-primeiro responderia com o site real e o mock nem rodava.
+    monkeypatch.setattr(proactive.settings, "dou_portal_fallback", False)
     return estado
 
 
@@ -119,6 +122,9 @@ def test_linha_diz_manutencao_quando_marcada(monkeypatch) -> None:
     monkeypatch.setattr(proactive, "already_notified", _false)
     monkeypatch.setattr(proactive, "mark_notified", _none)
     monkeypatch.setattr(proactive, "unmark_notified", _none)
+    # Estes cenários exercitam o CAMINHO DO INLABS: portal desligado, senão
+    # o portal-primeiro responderia com o site real e o mock nem rodava.
+    monkeypatch.setattr(proactive.settings, "dou_portal_fallback", False)
     monkeypatch.setattr(proactive.jobs, "spawn", lambda *a, **kw: True)
     monkeypatch.setattr(proactive.jobs, "job_em_andamento", lambda _k: False)
 
@@ -169,6 +175,9 @@ def test_inlabs_fora_no_run_nao_diz_gerando_agora(monkeypatch) -> None:
     monkeypatch.setattr(proactive, "already_notified", _false)
     monkeypatch.setattr(proactive, "mark_notified", _none)
     monkeypatch.setattr(proactive, "unmark_notified", _none)
+    # Estes cenários exercitam o CAMINHO DO INLABS: portal desligado, senão
+    # o portal-primeiro responderia com o site real e o mock nem rodava.
+    monkeypatch.setattr(proactive.settings, "dou_portal_fallback", False)
 
     from types import SimpleNamespace as NS
 

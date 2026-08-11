@@ -84,14 +84,17 @@ async def cb_nota_nao(query: CallbackQuery, user: User) -> None:
 
 
 async def _checar_via_portal(bot, session, user, target: date) -> bool:
-    """Inlabs fora na checagem manual → o PORTAL público responde na hora
-    (inversão de 11/08/2026 — foi ele que achou a MP 1.382 da edição extra
-    retroativa que o Inlabs escondeu por 9 dias). Retorna True quando o
-    portal RESOLVEU o pedido (resposta enviada; baixa quando conclusivo);
-    False = inconclusivo/indisponível — o caller mantém o caminho da fila.
-    """
+    """PORTAL PRIMEIRO na checagem manual (regra do dono, 11/08/2026): o
+    portal público é a fonte primária — foi ele que achou a MP 1.382 da
+    edição extra retroativa que o Inlabs escondeu por 9 dias. Retorna True
+    quando o portal RESOLVEU o pedido (resposta enviada; baixa quando
+    conclusivo); False = inconclusivo/indisponível — o caller cai pro
+    Inlabs como desempate."""
     from bot.services import dou_portal
-    from bot.services.dou_monitor import _dia_encerrado
+    from bot.services.dou_monitor import (
+        PLANALTO_BASE, _dia_encerrado, _planalto_period,
+        format_telegram_message,
+    )
     from bot.services.proactive import (
         _tentar_nota_via_portal, already_notified, baixa_checagem_manual,
         mark_notified,
@@ -104,15 +107,26 @@ async def _checar_via_portal(bot, session, user, target: date) -> bool:
     fechado = _dia_encerrado(target)
 
     if dia.mps:
-        linhas = "\n".join(
-            f"📜 MP {mp.numero}/{mp.ano}: {(mp.ementa or mp.titulo)[:200]}"
-            for mp in dia.mps
-        )
+        # O MESMO card da entrega normal (título, ementa limpa, prazos,
+        # Planalto) — fonte primária não entrega card de segunda classe.
+        for mp in dia.mps:
+            period = _planalto_period(mp.ano)
+            card = {
+                "numero": mp.numero, "ano": mp.ano,
+                "ementa": mp.ementa or mp.titulo,
+                "data_publicacao": mp.data_publicacao or target.isoformat(),
+                "url_planalto": (f"{PLANALTO_BASE}/ccivil_03/_ato{period}/"
+                                 f"{mp.ano}/mpv/mpv{mp.numero}.htm"),
+                "edicao": mp.edicao,
+            }
+            await bot.send_message(
+                user.id, format_telegram_message(card, None),
+                parse_mode="HTML", disable_web_page_preview=True,
+            )
         await bot.send_message(
             user.id,
-            f"O Inlabs está fora, mas o PORTAL público do DOU respondeu — "
-            f"{len(dia.mps)} MP(s) em {dd}:\n{linhas}\n\n"
-            "📄 Gerando a(s) nota(s) com o texto do portal…",
+            f"📄 {len(dia.mps)} MP(s) no DOU de {dd} (portal oficial). "
+            "Gerando a(s) nota(s) técnica(s) com o texto do portal…",
             parse_mode=None,
         )
         numeros = sorted({mp.numero for mp in dia.mps})
@@ -139,12 +153,12 @@ async def _checar_via_portal(bot, session, user, target: date) -> bool:
 
     if fechado and (dia.edicao_confirmada or dia.sem_edicao):
         if dia.sem_edicao:
-            texto = (f"📄 Verifiquei pelo PORTAL público (Inlabs fora): não "
-                     f"houve edição do DOU nem MP indexada em {dd}.")
+            texto = (f"📄 Verifiquei pelo portal oficial do DOU: não houve "
+                     f"edição nem MP indexada em {dd}.")
             motivo = "sem_edicao"
         else:
-            texto = (f"📄 Verifiquei pelo PORTAL público (Inlabs fora): houve "
-                     f"DOU em {dd} e NENHUMA Medida Provisória.")
+            texto = (f"📄 Verifiquei pelo portal oficial do DOU: houve DOU em "
+                     f"{dd} e NENHUMA Medida Provisória.")
             motivo = "sem_mp"
         baixado = False
         try:
@@ -161,8 +175,8 @@ async def _checar_via_portal(bot, session, user, target: date) -> bool:
         # pode sair ao longo do dia).
         await bot.send_message(
             user.id,
-            f"📄 Pelo PORTAL público (Inlabs fora): edição de {dd} no ar e "
-            "SEM MP até agora. O dia segue vigiado nas próximas janelas.",
+            f"📄 Pelo portal oficial do DOU: edição de {dd} no ar e SEM MP "
+            "até agora. O dia segue vigiado nas próximas janelas.",
             parse_mode=None,
         )
         return True
@@ -191,20 +205,24 @@ async def _rodar_nota(
         user = await session.get(User, user_id)
         if user is None or not user.is_authorized:
             return
+        # PORTAL PRIMEIRO (regra do dono, 11/08/2026): a fonte primária é o
+        # portal público — a checagem manual consulta ELE antes de qualquer
+        # Inlabs (que fica como desempate do inconclusivo). Foi entregue ao
+        # contrário uma vez (11/08: /mp_dou_agora 01/08 foi no Inlabs com o
+        # portal no ar e trouxe ementa mutilada do PDF) — a ordem é regra,
+        # não otimização.
+        if only_numeros is None and settings.dou_portal_fallback:
+            try:
+                if await _checar_via_portal(bot, session, user, target):
+                    return
+            except Exception:
+                logger.exception("checagem via portal falhou (%s); Inlabs "
+                                 "desempata", target)
         try:
             n, falhas, motivo = await deliver_to_user(
                 bot, session, user, target, force=True, only_numeros=only_numeros,
             )
         except DouError as e:
-            # INVERSÃO (11/08/2026): Inlabs fora não segura mais a checagem
-            # manual — o portal público tenta resolver JÁ (conclusivo → baixa;
-            # MPs → nota com texto do portal). Só o inconclusivo cai na fila.
-            if only_numeros is None and settings.dou_portal_fallback:
-                try:
-                    if await _checar_via_portal(bot, session, user, target):
-                        return
-                except Exception:
-                    logger.exception("checagem via portal falhou (%s)", target)
             from bot.services.proactive import already_notified, mark_notified
             key = f"{target.isoformat()}:{','.join(only_numeros) if only_numeros else 'all'}"
             if not await already_notified(session, user.id, "nota_pendente", key):
