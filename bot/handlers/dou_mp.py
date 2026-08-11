@@ -93,7 +93,7 @@ async def _checar_via_portal(bot, session, user, target: date) -> bool:
     from bot.services import dou_portal
     from bot.services.dou_monitor import (
         PLANALTO_BASE, _dia_encerrado, _planalto_period,
-        format_telegram_message,
+        format_telegram_message, registrar_checagem_ok,
     )
     from bot.services.proactive import (
         _tentar_nota_via_portal, already_notified, baixa_checagem_manual,
@@ -105,6 +105,9 @@ async def _checar_via_portal(bot, session, user, target: date) -> bool:
     )
     dd = target.strftime("%d/%m/%Y")
     fechado = _dia_encerrado(target)
+    if dia.mps or dia.edicao_confirmada or dia.sem_edicao:
+        # Conclusivo → mesma memória de checagem do Inlabs (furo 4).
+        registrar_checagem_ok(target, len(dia.mps))
 
     if dia.mps:
         # O MESMO card da entrega normal (título, ementa limpa, prazos,
@@ -145,8 +148,9 @@ async def _checar_via_portal(bot, session, user, target: date) -> bool:
             await bot.send_message(
                 user.id,
                 "⚠️ O texto do portal não passou na régua de sanidade — a "
-                "nota fica na fila e sai quando o Inlabs voltar. O AVISO "
-                "acima já vale: a(s) MP(s) existem.",
+                "nota fica na fila e sai quando alguma fonte entregar o "
+                "texto íntegro (portal ou Inlabs). O AVISO acima já vale: "
+                "a(s) MP(s) existem.",
                 parse_mode=None,
             )
         return True
@@ -194,8 +198,9 @@ async def _rodar_nota(
     recebe a confirmação na hora e o trabalho segue sozinho.
 
     Os erros são reportados AQUI (o handler já respondeu): DouError vira fila
-    de nota pendente — o proativo re-tenta e entrega quando o Inlabs voltar —
-    e o resto vira aviso explícito. Nunca silêncio."""
+    de nota pendente — o proativo re-tenta (portal primeiro, Inlabs de
+    desempate) e entrega quando alguma fonte concluir — e o resto vira aviso
+    explícito. Nunca silêncio."""
     from bot.db.session import SessionLocal
 
     async with SessionLocal() as session:
@@ -217,6 +222,20 @@ async def _rodar_nota(
                     return
             except Exception:
                 logger.exception("checagem via portal falhou (%s); Inlabs "
+                                 "desempata", target)
+        elif only_numeros is not None and settings.dou_portal_fallback:
+            # PORTAL PRIMEIRO também no botão com números (furo 3 da
+            # varredura de 11/08/2026): o texto da nota tenta a fonte
+            # primária antes do Inlabs.
+            from bot.services.proactive import _tentar_nota_via_portal
+            key_np = f"{target.isoformat()}:{','.join(sorted(only_numeros))}"
+            try:
+                if await _tentar_nota_via_portal(
+                    bot, session, user, target, sorted(only_numeros), key_np,
+                ):
+                    return
+            except Exception:
+                logger.exception("nota via portal falhou (%s); Inlabs "
                                  "desempata", target)
         try:
             n, falhas, motivo = await deliver_to_user(

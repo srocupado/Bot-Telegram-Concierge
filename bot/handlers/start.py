@@ -34,7 +34,7 @@ HELP_TEXT = (
     "<b>Medidas Provisórias — publicação no Diário Oficial</b>:\n"
     "• <code>/mp_dou_on</code> / <code>/mp_dou_off</code> — assina/desassina o digest diário de MPs novas no DOU\n"
     "• <code>/mp_dou_agora [AAAA-MM-DD]</code> — busca agora; entrega nota técnica (gerada por IA) + DOCX. A nota roda em SEGUNDO PLANO (leva alguns minutos): o bot confirma na hora e continua respondendo você normalmente enquanto gera. Checagem manual conclusiva (dia já fechado, fonte completa) também dá baixa na fila de re-checagem — o bot avisa quando isso acontece\n"
-    "• <code>/mp_em_fila</code> (ou <code>/mp_fila</code>) — mostra o que está na fila: notas técnicas aguardando geração (quando o Inlabs voltar) e dias ainda não verificados que serão re-checados. Só consulta, não altera nada\n"
+    "• <code>/mp_em_fila</code> (ou <code>/mp_fila</code>) — mostra o que está na fila: notas técnicas aguardando geração e dias ainda não verificados, re-tentados pelo portal e pelo Inlabs. Só consulta, não altera nada\n"
     "• <code>/dou_provider</code> — escolhe o motor da nota técnica (ex.: <code>/dou_provider 3.5</code>, <code>/dou_provider gemini 3.1-lite</code>, <code>/dou_provider anthropic sonnet</code>, <code>/dou_provider opus</code>, <code>/dou_provider padrao</code>). Ajusta latência/qualidade sem mexer no .env\n"
     "• Por voz/texto: <i>\"saiu MP nova hoje?\"</i> → lista número + ementa\n"
     "• Cobre edição normal E extra — inclusive a edição extra de sábado/feriado que o DOU publica SÓ em PDF (sem o XML). O bot lê a pasta do dia, extrai o texto do PDF e entrega a MP normalmente\n"

@@ -267,6 +267,7 @@ def _rodar_collect(monkeypatch, portal_result):
     monkeypatch.setattr(proactive, "mark_notified", _mark)
     monkeypatch.setattr(proactive, "unmark_notified", _none)
     monkeypatch.setattr(proactive.settings, "dou_portal_fallback", True)
+    monkeypatch.setattr(dou_monitor, "_ultima_ok", {})   # sem bleed entre testes
 
     user = SimpleNamespace(id=99, dou_mp_subscribed=True,
                            dou_ultimo_dia_ok=hoje - timedelta(days=1))
@@ -307,6 +308,8 @@ def test_portal_primeiro_sem_mp_responde_sem_alarme(monkeypatch) -> None:
         "edição confirmada sem MP é resposta, não falha"
     )
     assert ("mp_pendente", hoje.isoformat()) in marks, "dia aberto: sem baixa"
+    # Furo 4: checagem do portal alimenta a memória do 'já checado HH:MM'.
+    assert dou_monitor.ultima_checagem_ok(hoje) is not None
 
 
 def test_indice_sem_a_data_vira_linha_informativa_das_duas_fontes(monkeypatch) -> None:
@@ -656,3 +659,137 @@ def test_manual_nota_reprovada_avisa_e_nao_baixa(monkeypatch) -> None:
 def test_manual_inconclusivo_devolve_pro_caminho_da_fila(monkeypatch) -> None:
     ok, ev, _ = _rodar_manual(monkeypatch, dou_portal.PortalDia([], False))
     assert ok is False and ev["msgs"] == [] and ev["baixas"] == []
+
+
+# ───────── furos 1-3 da varredura de 11/08/2026 (portal primeiro) ─────────
+
+def _rodar_tool(monkeypatch, portal_result, *, inlabs=None, inlabs_exc=None):
+    """Roda a tool consultar_mp_dou (pergunta 'saiu MP hoje?' em chat/voz/
+    foto/agendado). Inlabs mockado pra ESTOURAR se for consultado sem
+    necessidade."""
+    from bot.services import dou_monitor as dm
+    from bot.services import tools
+    registros = []
+
+    async def _portal(_d, **_kw):
+        if isinstance(portal_result, Exception):
+            raise portal_result
+        return portal_result
+
+    async def _fetch(_d):
+        if inlabs_exc:
+            raise inlabs_exc
+        assert inlabs is not None, "Inlabs consultado com o portal conclusivo"
+        return inlabs
+
+    monkeypatch.setattr(dou_portal, "checar_dia_portal", _portal)
+    monkeypatch.setattr(dm, "fetch_mps", _fetch)
+    monkeypatch.setattr(dm, "registrar_checagem_ok",
+                        lambda d, n: registros.append((d, n)))
+    monkeypatch.setattr(proactive.settings, "dou_portal_fallback", True)
+    ctx = SimpleNamespace(tz="America/Sao_Paulo", fallback_text=None,
+                          direct_html=None, short_circuit=False,
+                          dou_mp_found=None)
+    out = asyncio.run(tools._h_consultar_mp_dou({"data_iso": D.isoformat()}, ctx))
+    return out, ctx, registros
+
+
+def test_pergunta_saiu_mp_vai_no_portal_primeiro(monkeypatch) -> None:
+    """Furo 1: 'saiu MP hoje?' ia DIRETO ao Inlabs. Agora o portal responde
+    sozinho (o mock do Inlabs estoura se tocado) e alimenta a memória de
+    checagem."""
+    mp = _mp_completa("1.390")
+    out, ctx, registros = _rodar_tool(
+        monkeypatch, dou_portal.PortalDia([mp], True))
+    assert ctx.short_circuit is True
+    assert "1.390" in ctx.direct_html
+    assert ctx.dou_mp_found == {"date_iso": D.isoformat(), "count": 1}
+    assert registros == [(D, 1)]
+
+
+def test_pergunta_sem_mp_conclusivo_pelo_portal(monkeypatch) -> None:
+    out, ctx, registros = _rodar_tool(monkeypatch, dou_portal.PortalDia([], True))
+    assert "Nenhuma MP publicada" in ctx.direct_html
+    assert registros == [(D, 0)]
+
+
+def test_pergunta_portal_inconclusivo_cai_no_inlabs(monkeypatch) -> None:
+    out, ctx, _ = _rodar_tool(
+        monkeypatch, dou_portal.PortalDia([], False),
+        inlabs=[{"numero": "1.391", "ano": 2026, "ementa": "Via Inlabs."}])
+    assert "1.391" in ctx.direct_html and "Via Inlabs" in ctx.direct_html
+
+
+def test_pergunta_duas_fontes_mudas_avisa_as_duas(monkeypatch) -> None:
+    from bot.services.dou_monitor import DouError
+    out, ctx, _ = _rodar_tool(
+        monkeypatch, dou_portal.PortalDia([], False),
+        inlabs_exc=DouError("recusou a sessão"))
+    assert "portal público inconclusivo" in ctx.direct_html
+    assert "recusou a sessão" in ctx.direct_html
+
+
+class _SessaoJob:
+    async def get(self, _m, _id):
+        return SimpleNamespace(id=_id, is_authorized=True,
+                               dou_mp_subscribed=True)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+def test_fila_numerada_tenta_portal_antes_do_inlabs(monkeypatch) -> None:
+    """Furo 2: a fila de notas tentava o Inlabs primeiro (portal só nos
+    excepts). Agora o portal resolve e o Inlabs nem é tocado."""
+    from bot.db import session as db_session
+    from bot.services import dou_monitor as dm
+    ordem = []
+
+    async def _nota_portal(bot, session, user, d, numeros, key):
+        ordem.append(("portal", tuple(numeros)))
+        return True
+
+    async def _deliver(*a, **kw):
+        raise AssertionError("Inlabs consultado com o portal resolvendo")
+
+    async def _false(*a, **kw):
+        return False
+
+    async def _none(*a, **kw):
+        return None
+
+    monkeypatch.setattr(db_session, "SessionLocal", lambda: _SessaoJob())
+    monkeypatch.setattr(proactive, "_tentar_nota_via_portal", _nota_portal)
+    monkeypatch.setattr(dm, "deliver_to_user", _deliver)
+    monkeypatch.setattr(proactive, "already_notified", _false)
+    monkeypatch.setattr(proactive, "mark_notified", _none)
+    monkeypatch.setattr(proactive, "unmark_notified", _none)
+    monkeypatch.setattr(proactive.settings, "dou_portal_fallback", True)
+    asyncio.run(proactive._entregar_nota_pendente(
+        None, 42, D, ["1.382"], f"{D.isoformat()}:1.382"))
+    assert ordem == [("portal", ("1.382",))]
+
+
+def test_botao_com_numeros_tenta_portal_antes_do_inlabs(monkeypatch) -> None:
+    """Furo 3: o botão 'gerar nota' (números embutidos) pulava o portal
+    inteiro. Agora o texto da nota tenta a fonte primária antes."""
+    from bot.db import session as db_session
+    from bot.handlers import dou_mp
+    ordem = []
+
+    async def _nota_portal(bot, session, user, d, numeros, key):
+        ordem.append(("portal", tuple(numeros), key))
+        return True
+
+    async def _deliver(*a, **kw):
+        raise AssertionError("Inlabs antes do portal no botão")
+
+    monkeypatch.setattr(db_session, "SessionLocal", lambda: _SessaoJob())
+    monkeypatch.setattr(proactive, "_tentar_nota_via_portal", _nota_portal)
+    monkeypatch.setattr(dou_mp, "deliver_to_user", _deliver)
+    monkeypatch.setattr(proactive.settings, "dou_portal_fallback", True)
+    asyncio.run(dou_mp._rodar_nota(None, 42, D, ["1.383"]))
+    assert ordem == [("portal", ("1.383",), f"{D.isoformat()}:1.383")]

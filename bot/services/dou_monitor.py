@@ -926,6 +926,16 @@ def ultima_checagem_ok(d: date) -> tuple[datetime, int] | None:
     return _ultima_ok.get(d)
 
 
+def registrar_checagem_ok(d: date, n_mps: int) -> None:
+    """Registra checagem COMPLETA da data vinda de QUALQUER fonte. Até
+    11/08/2026 só o fetch do Inlabs alimentava esta memória — checagem
+    conclusiva pelo PORTAL (a fonte primária) ficava invisível pro
+    'já checado HH:MM' do /mp_fila e pro tom do aviso de re-checagem
+    falhada (furo 4 da varredura do dono)."""
+    _ultima_ok[d] = (datetime.now(BRT), n_mps)
+    _podar_estado_fetch()
+
+
 def _podar_estado_fetch() -> None:
     agora = time.monotonic()
     for d in [d for d, (t, _) in _fetch_cache.items() if agora - t >= _FETCH_TTL_S]:
@@ -957,8 +967,7 @@ async def fetch_mps(target_date: date) -> list[dict]:
         result = await asyncio.to_thread(_fetch_mps_sync, target_date)
         if not result.incompleto:
             _fetch_cache[target_date] = (time.monotonic(), result)
-            _ultima_ok[target_date] = (datetime.now(BRT), len(result))
-            _podar_estado_fetch()
+            registrar_checagem_ok(target_date, len(result))
         return result
 
 

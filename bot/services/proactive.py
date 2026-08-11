@@ -207,6 +207,17 @@ async def _entregar_nota_pendente(
         user = await session.get(User, user_id)
         if user is None or not user.is_authorized or not user.dou_mp_subscribed:
             return
+        # PORTAL PRIMEIRO (regra do dono, 11/08/2026 — furo 2 da varredura):
+        # entrada com números tenta o texto do portal ANTES de qualquer
+        # Inlabs; antes o portal era só plano B dos excepts.
+        if numeros and settings.dou_portal_fallback:
+            try:
+                if await _tentar_nota_via_portal(bot, session, user, d, numeros, key):
+                    await _marca_manut(session, False)
+                    return
+            except Exception:
+                logger.exception("nota pendente %s: portal falhou; Inlabs "
+                                 "desempata", key)
         try:
             _entregues, falhas, motivo = await deliver_to_user(
                 bot, session, user, d, force=True, only_numeros=numeros,
@@ -215,9 +226,9 @@ async def _entregar_nota_pendente(
             # Causa APURADA (o Inlabs declara manutenção): a linha de status
             # passa a dizer "aguardando o Inlabs voltar (em manutenção)" em vez
             # de "gerando agora"/"próxima janela", que soam otimistas demais.
+            # O portal já foi tentado acima — sem re-tentativa aqui.
             logger.warning("nota pendente %s: Inlabs em MANUTENÇÃO (%s)", key, e)
             await _marca_manut(session, True)
-            await _tentar_nota_via_portal(bot, session, user, d, numeros, key)
             return
         except DouError as e:
             # Inlabs fora sem declarar manutenção (instabilidade genérica): não
@@ -225,7 +236,6 @@ async def _entregar_nota_pendente(
             # última tentativa não foi manutenção.
             logger.warning("nota pendente %s: Inlabs ainda fora (%s)", key, e)
             await _marca_manut(session, False)
-            await _tentar_nota_via_portal(bot, session, user, d, numeros, key)
             return
         except Exception:
             logger.exception("nota pendente %s: falha inesperada", key)
@@ -274,15 +284,15 @@ async def _tentar_nota_via_portal(
     bot, session: AsyncSession, user: User, d: date,
     numeros: list[str] | None, key: str,
 ) -> bool:
-    """Inlabs fora → tenta gerar as notas da fila com o TEXTO DO PORTAL
-    público (pedido do dono, 06/08/2026: 'não conseguimos pegar o texto do
-    portal?'). Sucesso = notas entregues (com origem dita) e entrada fora da
-    fila. Qualquer dúvida = False e a fila fica intacta (o Inlabs resolve).
+    """Gera as notas da fila com o TEXTO DO PORTAL público — a fonte
+    PRIMÁRIA desde 11/08/2026 (nascida do pedido do dono em 06/08: 'não
+    conseguimos pegar o texto do portal?'). Sucesso = notas entregues (com
+    origem dita) e entrada fora da fila. Qualquer dúvida = False e a fila
+    fica intacta (o Inlabs desempata).
 
-    Só atende entradas com NÚMEROS conhecidos (as que o próprio ramo do
-    portal enfileira). Entrada 'all' é CHECAGEM do dia — resolvê-la pelo
-    portal daria baixa sem a confirmação do Inlabs (edição extra em PDF puro
-    só existe lá), violando a premissa."""
+    Só atende entradas com NÚMEROS conhecidos. Entrada 'all' é CHECAGEM do
+    dia — quem a resolve são os caminhos de checagem (portal-primeiro no
+    collect_mp e no /mp_dou_agora), não a geração de nota."""
     if not settings.dou_portal_fallback or not numeros:
         return False
     from bot.services import dou_portal
@@ -324,8 +334,7 @@ async def _tentar_nota_via_portal(
     await unmark_notified(session, user.id, "nota_pendente", key)
     await _send(bot, user.id, (
         f"✅ Nota(s) de {d.strftime('%d/%m')} entregue(s) com o texto do "
-        "PORTAL oficial do DOU — o Inlabs estava fora. Ele confirma o dia "
-        "quando voltar."
+        "PORTAL oficial do DOU (fonte primária)."
     ))
     logger.info("nota pendente %s entregue via PORTAL", key)
     return True
@@ -755,10 +764,11 @@ async def _conferir_camara(
 ) -> list[ProactiveFact]:
     """Confere o que o bot entregou contra a lista de MPs da Câmara.
 
-    Toda a detecção depende do Inlabs, e o pior modo de falha dele é mudo:
-    404 em arquivo que existe, ZIP truncado servido como válido. O bot conclui
-    "não houve MP" e nada no estado dele denuncia o buraco. A Câmara é outro
-    órgão e outra infraestrutura — é o único jeito de saber o que se perdeu.
+    A detecção primária é o portal público, com o Inlabs de desempate — mas
+    os dois vivem na MESMA infraestrutura da Imprensa Nacional, e o pior modo
+    de falha segue mudo (índice atrasado, ZIP truncado servido como válido).
+    A Câmara é outro órgão e outra infraestrutura — a última rede pra saber
+    o que se perdeu.
 
     Achando MP não entregue, enfileira o DIA dela como pendência: a retroativa
     que já existe busca no DOU e entrega com nota, sem caminho novo de entrega.
@@ -923,7 +933,7 @@ async def collect_mp(
         if not settings.dou_portal_fallback:
             return None
         from bot.services import dou_portal
-        from bot.services.dou_monitor import _dia_encerrado
+        from bot.services.dou_monitor import _dia_encerrado, registrar_checagem_ok
         try:
             dia_portal = await dou_portal.checar_dia_portal(
                 d, controle=dou_portal.dia_controle(d),
@@ -932,6 +942,11 @@ async def collect_mp(
             logger.warning("proactive: portal do DOU falhou p/ %s: %s", d, exc)
             return None
         fechado = _dia_encerrado(d)
+        # Checagem conclusiva alimenta a MESMA memória do Inlabs (furo 4 da
+        # varredura): /mp_fila mostra "já checado HH:MM" e o aviso de
+        # re-checagem falhada mantém o tom informativo.
+        if dia_portal.mps or dia_portal.edicao_confirmada or dia_portal.sem_edicao:
+            registrar_checagem_ok(d, len(dia_portal.mps))
         out: list[ProactiveFact] = []
         houve_mp = False
         for mp in dia_portal.mps:
@@ -1154,9 +1169,9 @@ async def collect_mp(
         facts.append(ProactiveFact(
             "mp", "mp_desisti", f"desisti:{d.isoformat()}",
             f"⚠️ Desisti de checar o DOU de {d.strftime('%d/%m')} — "
-            f"{_MP_RETRO_EXPIRA_DIAS} dias sem conseguir acessar o Inlabs. "
-            f"Esse dia NÃO foi verificado; se quiser, rode "
-            f"/mp_dou_agora {d.strftime('%d/%m/%Y')}.",
+            f"{_MP_RETRO_EXPIRA_DIAS} dias sem conseguir verificar o dia em "
+            f"nenhuma fonte (portal e Inlabs). Esse dia NÃO foi verificado; "
+            f"se quiser, rode /mp_dou_agora {d.strftime('%d/%m/%Y')}.",
             date_iso=None,
         ))
     resolvidos: list[date] = [d for d in pendentes if d in ok_dates]

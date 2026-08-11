@@ -1354,7 +1354,9 @@ async def _h_desfazer_ultima_acao(_args: dict, ctx: ToolContext) -> str:
 async def _h_consultar_mp_dou(args: dict, ctx: ToolContext) -> str:
     from datetime import date as _date
 
-    from bot.services.dou_monitor import DouError, fetch_mps
+    from bot.services.dou_monitor import (
+        DouError, fetch_mps, registrar_checagem_ok,
+    )
 
     data_iso = (args.get("data_iso") or "").strip()
     if data_iso:
@@ -1365,41 +1367,70 @@ async def _h_consultar_mp_dou(args: dict, ctx: ToolContext) -> str:
     else:
         target = datetime.now(ZoneInfo(ctx.tz)).date()
 
-    try:
-        mps = await fetch_mps(target)
-    except DouError as e:
-        # VERBATIM + fim de turno: modelo leve transformava "erro: manutenção"
-        # em "nenhuma MP publicada" (falso negativo perigoso — visto em produção
-        # num agendado pós-restart). "Não consegui checar" ≠ "não houve MP".
-        aviso = f"⚠️ Não consegui checar o DOU: {e}"
-        ctx.fallback_text = aviso
-        ctx.direct_html = _html_escape(aviso)
-        ctx.short_circuit = True
-        return "ok: aviso de indisponibilidade enviado ao usuário (não escreva nada)"
-    except Exception:
-        logger.exception("consultar_mp_dou falhou")
-        aviso = "⚠️ Não consegui checar o DOU agora (falha inesperada). Tente de novo."
-        ctx.fallback_text = aviso
-        ctx.direct_html = _html_escape(aviso)
-        ctx.short_circuit = True
-        return "ok: aviso de indisponibilidade enviado ao usuário (não escreva nada)"
+    # PORTAL PRIMEIRO (regra do dono, 11/08/2026 — furo 1 da varredura): a
+    # pergunta "saiu MP hoje?" (chat/voz/foto/agendado) ia DIRETO ao Inlabs,
+    # sem portal nem no erro. A fonte primária responde; o Inlabs desempata.
+    # itens = (numero, ano, ementa); None = portal não concluiu.
+    itens: list[tuple[str, int, str]] | None = None
+    portal_tentado = False
+    if settings.dou_portal_fallback:
+        from bot.services import dou_portal
+        portal_tentado = True
+        try:
+            dia = await dou_portal.checar_dia_portal(
+                target, controle=dou_portal.dia_controle(target),
+            )
+            if dia.mps:
+                itens = [(mp.numero, mp.ano, mp.ementa or mp.titulo)
+                         for mp in dia.mps]
+                registrar_checagem_ok(target, len(dia.mps))
+            elif dia.edicao_confirmada or dia.sem_edicao:
+                itens = []
+                registrar_checagem_ok(target, 0)
+        except Exception:
+            logger.exception("consultar_mp_dou: portal falhou; Inlabs desempata")
 
-    if not mps:
-        # Vazio CONFIRMADO (fetch leu o DOU inteiro) — também verbatim, pra o
-        # "nenhuma MP" que o usuário vê ser sempre o do servidor, nunca fraseado.
+    if itens is None:
+        try:
+            mps = await fetch_mps(target)
+        except DouError as e:
+            # VERBATIM + fim de turno: modelo leve transformava "erro:
+            # manutenção" em "nenhuma MP publicada" (falso negativo perigoso —
+            # visto em produção num agendado pós-restart). "Não consegui
+            # checar" ≠ "não houve MP".
+            aviso = (f"⚠️ Não consegui checar o DOU — portal público "
+                     f"inconclusivo e Inlabs: {e}"
+                     if portal_tentado else
+                     f"⚠️ Não consegui checar o DOU: {e}")
+            ctx.fallback_text = aviso
+            ctx.direct_html = _html_escape(aviso)
+            ctx.short_circuit = True
+            return "ok: aviso de indisponibilidade enviado ao usuário (não escreva nada)"
+        except Exception:
+            logger.exception("consultar_mp_dou falhou")
+            aviso = "⚠️ Não consegui checar o DOU agora (falha inesperada). Tente de novo."
+            ctx.fallback_text = aviso
+            ctx.direct_html = _html_escape(aviso)
+            ctx.short_circuit = True
+            return "ok: aviso de indisponibilidade enviado ao usuário (não escreva nada)"
+        itens = [(mp["numero"], mp["ano"], mp.get("ementa") or "") for mp in mps]
+
+    if not itens:
+        # Vazio CONFIRMADO (portal conclusivo ou fetch completo) — também
+        # verbatim, pra o "nenhuma MP" ser sempre o da fonte, nunca fraseado.
         vazio = f"📭 Nenhuma MP publicada no DOU em {target.strftime('%d/%m/%Y')}."
         ctx.fallback_text = vazio
         ctx.direct_html = _html_escape(vazio)
         ctx.short_circuit = True
         return "ok: resultado enviado ao usuário (não escreva nada)"
     # Sinaliza ao handler de chat/voz pra oferecer a nota técnica com botões.
-    ctx.dou_mp_found = {"date_iso": target.isoformat(), "count": len(mps)}
+    ctx.dou_mp_found = {"date_iso": target.isoformat(), "count": len(itens)}
     from bot.services.proactive import _clean_ementa
-    n = len(mps)
+    n = len(itens)
     plural = "Medida Provisória publicada" if n == 1 else "Medidas Provisórias publicadas"
     linhas = [f"📜 {n} {plural} no DOU em {target.strftime('%d/%m/%Y')}:"]
-    for mp in mps:
-        linhas.append(f"• MP {mp['numero']}/{mp['ano']} — {_clean_ementa(mp.get('ementa') or '')}")
+    for numero, ano, ementa in itens:
+        linhas.append(f"• MP {numero}/{ano} — {_clean_ementa(ementa)}")
     linhas.append("\nQuer a nota técnica completa? 👇")
     # VERBATIM: número, ano e ementa de MP são dado determinístico — pedir
     # "repasse exatamente" ao LLM já não segurou (encurtava ementa, juntava
