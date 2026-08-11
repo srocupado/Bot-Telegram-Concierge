@@ -130,6 +130,39 @@ def test_listagem_da_pasta_do_dia_segue_normal(monkeypatch) -> None:
     assert out.incompleto is False
 
 
+def test_todos_os_cookies_do_login_sao_reenviados(monkeypatch) -> None:
+    """Comportamento MEDIDO no Pi (10/08/2026): o login seta PHPSESSID + TS*
+    além do inlabs_session_cookie, e pra pasta INEXISTENTE o Inlabs decide
+    "raiz ou login?" pela PHPSESSID. Só reenviar o cookie de sessão fazia dia
+    sem pasta cair na tela de login (pasta existente respondia normal — por
+    isso o dia corrente passava e o fim de semana morria). O mock reproduz
+    exatamente isso: sem PHPSESSID no Cookie → tela de login."""
+    from pydantic import SecretStr
+
+    monkeypatch.setattr(dou_monitor.settings, "inlabs_email", "x@y.z")
+    monkeypatch.setattr(dou_monitor.settings, "inlabs_password", SecretStr("s"))
+    monkeypatch.setattr(dou_monitor.time, "sleep", lambda _s: None)
+    _invalidar_sessao()
+    login_page = '<html><form action="logar.php"><input type="password"></form></html>'
+
+    def _rota(request):
+        url = str(request.url)
+        if "logar.php" in url:
+            return httpx.Response(200, text="ok", headers=[
+                ("set-cookie", "inlabs_session_cookie=abc; Path=/"),
+                ("set-cookie", "PHPSESSID=xyz; Path=/"),
+                ("set-cookie", "TS016f630c=waf1; Path=/"),
+            ])
+        if "PHPSESSID=xyz" not in request.headers.get("cookie", ""):
+            return httpx.Response(200, text=login_page)
+        return httpx.Response(200, text=RAIZ_SEM_O_DIA)
+
+    with respx.mock:
+        respx.route(host="inlabs.in.gov.br").side_effect = _rota
+        out = _fetch_mps_sync(date(2026, 8, 9))
+    assert out.sem_edicao is True and out.provisorio is False
+
+
 def test_tela_de_login_continua_sendo_recusa(monkeypatch) -> None:
     """A recusa REAL de sessão continua falhando como antes."""
     login = '<html><form action="logar.php"><input type="password"></form></html>'

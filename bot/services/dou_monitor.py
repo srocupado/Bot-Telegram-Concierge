@@ -578,12 +578,19 @@ def _invalidar_sessao() -> None:
 
 
 def _obter_cookie(email: str, password: str, *, force: bool = False) -> str:
-    """Cookie de sessão do Inlabs, REUSADO entre fetches. Loga só em
-    cache-miss/expirado (ou force=True). UMA tentativa por chamada: re-tentar
-    login em rajada aprofunda o rate-limit do Inlabs. Falhou? levanta DouError e
-    o dia fica pendente pra próxima janela (~6h), com o limite já resetado.
-    Serializado (lock): fetches concorrentes reusam o mesmo login, não logam em
-    dobro."""
+    """Header Cookie COMPLETO da sessão do Inlabs (todos os cookies do login),
+    REUSADO entre fetches. Loga só em cache-miss/expirado (ou force=True). UMA
+    tentativa por chamada: re-tentar login em rajada aprofunda o rate-limit do
+    Inlabs. Falhou? levanta DouError e o dia fica pendente pra próxima janela
+    (~6h), com o limite já resetado. Serializado (lock): fetches concorrentes
+    reusam o mesmo login, não logam em dobro.
+
+    TODOS os cookies, não só o inlabs_session_cookie (medido 10/08/2026, probe
+    no Pi): o login seta também PHPSESSID e dois TS* (WAF F5). Com só o cookie
+    de sessão, pasta EXISTENTE responde normal — mas pasta INEXISTENTE cai na
+    tela de login (a decisão "sem pasta → raiz ou login?" é pela PHPSESSID).
+    Era por isso que fim de semana sem edição morria como "recusou a sessão"
+    enquanto o dia corrente passava, DETERMINISTICAMENTE, não vaga-lume."""
     with _SESSION_LOCK:
         if (not force and _SESSION["cookie"]
                 and time.monotonic() - _SESSION["ts"] < _SESSION_TTL):
@@ -603,16 +610,17 @@ def _obter_cookie(email: str, password: str, *, force: bool = False) -> str:
                 raise  # InlabsMaintenanceError já traz mensagem clara
             except Exception as exc:
                 raise DouError(f"falha ao autenticar no Inlabs: {exc}") from exc
-            cookie = login.cookies.get("inlabs_session_cookie")
-        if not cookie:
+            cookies = dict(login.cookies)
+        if "inlabs_session_cookie" not in cookies:
             raise DouError(
                 "o Inlabs recusou o login agora (não devolveu cookie) — costuma "
                 "ser o limite de tentativas dele e passa em minutos. O dia fica "
                 "pendente e é re-checado na próxima janela."
             )
-        _SESSION["cookie"] = cookie
+        header = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        _SESSION["cookie"] = header
         _SESSION["ts"] = time.monotonic()
-        return cookie
+        return header
 
 
 def _fetch_mps_sync(target_date: date) -> list[dict]:
@@ -635,7 +643,7 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
             with _fase("listagem"):
                 rl = _inlabs_call(lambda: client.get(
                     f"{INLABS_BASE}/index.php?p={date_str}",
-                    headers={"Cookie": f"inlabs_session_cookie={cookie}"}, timeout=60.0,
+                    headers={"Cookie": cookie}, timeout=60.0,
                 ))
             rl.raise_for_status()
             return rl.text
@@ -725,7 +733,7 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
                 "MP; tente de novo em instantes."
             )
 
-        hdr = {"Cookie": f"inlabs_session_cookie={cookie}"}
+        hdr = {"Cookie": cookie}
 
         def _baixar(nome: str) -> bytes:
             """Bytes de um arquivo QUE A LISTAGEM disse existir."""
