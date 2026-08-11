@@ -438,6 +438,17 @@ def _e_listagem(corpo: str) -> bool:
     return all(m in baixo for m in _MARCAS_LISTAGEM)
 
 
+# Datas de PASTA (YYYY-MM-DD) referenciadas no corpo. É o que separa a listagem
+# RAIZ (pastas de vários dias) da listagem DA PASTA de um dia (só arquivos
+# daquele dia — os nomes carregam a própria data, nunca outra). A coluna
+# "Modificado" usa DD-MM-YYYY e não casa aqui de propósito.
+_DATA_PASTA_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
+
+
+def _datas_no_corpo(corpo: str) -> set[str]:
+    return set(_DATA_PASTA_RE.findall(corpo))
+
+
 class InlabsMaintenanceError(DouError):
     pass
 
@@ -633,7 +644,20 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
         # tiver mesmo vencido. Dentro do ciclo, re-tenta a LISTAGEM (GET barato)
         # pra absorver o blip do Inlabs. Recupera o caso 02/08 (blip isolado) SEM
         # rajada de login. Manutenção declarada tem precedência (pane, não blip).
+        #
+        # PASTA INEXISTENTE ≠ SESSÃO RECUSADA (medido 10/08/2026, probe no Pi):
+        # pra `?p=<dia sem pasta>` o Inlabs serve a listagem RAIZ com HTTP 200 —
+        # que também passa no _e_listagem. Sem distinguir raiz de pasta-do-dia,
+        # o bug cortava dos DOIS lados: (a) fim de semana sem edição, com o
+        # Inlabs instável, ficava preso na fila como "recusou a sessão" pra
+        # sempre (08-09/08/2026); (b) pior, raiz servida por blip no lugar da
+        # pasta de um dia QUE EXISTE seria lida como "sem edição" e o dia
+        # fechado receberia baixa — MP perdida em silêncio. O desempate é pelas
+        # datas de pasta no corpo: raiz referencia vários dias; a listagem da
+        # pasta só carrega a própria data (nos nomes de arquivo).
         corpo: str | None = None
+        raiz_sem_pasta = False
+        raiz_com_pasta = False
         cookie = ""
         for ciclo in range(2):
             cookie = _obter_cookie(email, password, force=(ciclo == 1))
@@ -645,14 +669,54 @@ def _fetch_mps_sync(target_date: date) -> list[dict]:
                         "— não dá pra checar as MPs. Tente mais tarde."
                     )
                 if _e_listagem(body):
-                    corpo = body
-                    break
+                    datas = _datas_no_corpo(body)
+                    outras = datas - {date_str}
+                    if not outras:
+                        corpo = body   # listagem da PASTA do dia — segue o fluxo
+                        break
+                    # Veio a RAIZ (referencia outras datas), não a pasta do dia.
+                    if date_str in datas:
+                        # A pasta EXISTE na raiz e mesmo assim veio a raiz:
+                        # blip — re-tenta; concluir "sem edição" aqui perderia
+                        # o DOU do dia inteiro com baixa carimbada.
+                        raiz_com_pasta = True
+                    elif min(outras) < date_str:
+                        # Raiz viva (sessão boa) cobrindo datas ANTERIORES ao
+                        # alvo, sem a pasta dele: evidência positiva de que o
+                        # dia não tem edição (domingo/feriado).
+                        raiz_sem_pasta = True
+                        break
+                    # Raiz sem nenhuma data anterior ao alvo: não dá pra afirmar
+                    # ausência (fora do range/paginação) — re-tenta e, se
+                    # persistir, falha explícita.
                 if tentativa < _LISTAGEM_TRIES - 1:
                     time.sleep(2)   # blip transitório — dá um beat e re-tenta o GET
-            if corpo is not None:
+            if corpo is not None or raiz_sem_pasta:
                 break
             _invalidar_sessao()   # cookie deste ciclo não colou → login novo no próximo
+        if raiz_sem_pasta:
+            out = MPList()
+            out.sem_edicao = True
+            if not _dia_encerrado(target_date):
+                # Dia aberto ainda pode ganhar a pasta (edição sai ao longo do
+                # dia) — sem baixa por enquanto, mesma régua do 404 de seção.
+                out.provisorio = True
+                out.secoes_404 = tuple(DOU_SECTIONS)
+            logger.info(
+                "dou: %s sem pasta no Inlabs (raiz servida no lugar) — dia sem "
+                "edição%s", date_str,
+                "" if _dia_encerrado(target_date) else " ATÉ AGORA (dia aberto)",
+            )
+            return out
         if corpo is None:
+            if raiz_com_pasta:
+                # Não é sessão recusada: a sessão está viva (raiz veio), mas o
+                # Inlabs insiste em servir a raiz no lugar da pasta que existe.
+                raise DouError(
+                    f"o Inlabs está servindo a listagem raiz no lugar da pasta "
+                    f"do dia {date_str} (que existe lá) — não dá pra confirmar "
+                    "se houve MP; o dia fica pendente e re-checo em seguida."
+                )
             # Recusa mesmo com login novo e re-tentativas: FALHA explícita (dia
             # pendente, re-checado nas próximas janelas), NUNCA "não houve MP".
             raise DouError(
