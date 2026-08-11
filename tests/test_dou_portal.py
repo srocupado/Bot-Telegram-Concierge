@@ -125,11 +125,33 @@ def test_mp_dict_para_nota_tem_o_formato_do_inlabs() -> None:
     assert dc["texto_integral"] == "TEXTO INTEGRAL..."
     assert dc["data_publicacao"] == "2026-07-31"
     assert "mpv1.381.htm" in dc["url_planalto"]
+    assert dc["edicao"] == "Normal"
 
     sem_texto = dou_portal.PortalMP("1.381", 2026, "t", "e", "u")
     assert dou_portal.mp_dict_para_nota(sem_texto, D) is None, (
         "sem texto aprovado não há dict — a nota espera o Inlabs"
     )
+
+
+def test_edicao_extra_vem_do_pubname() -> None:
+    """Caso MP 1.382 (dono, 11/08/2026): publicada na extra de sábado
+    (pubName DO1_EXTRA_C), a nota saiu rotulada 'Edição Normal' — o portal
+    não capturava a edição e o default silencioso mentia pro LLM. Agora o
+    pubName decide, e o dict da nota carrega a edição."""
+    item = _item_mp(numero="1.382")
+    item["pubName"] = "DO1_EXTRA_C"
+
+    async def _main():
+        with respx.mock:
+            _rotas({"MEDIDA": [item]})
+            return await dou_portal.checar_dia_portal(D)
+
+    dia = asyncio.run(_main())
+    assert dia.mps[0].edicao == "Extra"
+    dc = dou_portal.mp_dict_para_nota(
+        dou_portal.PortalMP("1.382", 2026, "t", "e", "u",
+                            texto="TEXTO...", edicao="Extra"), D)
+    assert dc["edicao"] == "Extra"
 
 
 def test_sem_mp_confirma_edicao_pela_sonda() -> None:

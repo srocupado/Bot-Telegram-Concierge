@@ -74,6 +74,10 @@ class PortalMP:
     # sanidade — nota técnica com texto suspeito é pior que esperar o Inlabs.
     texto: str | None = None
     data_publicacao: str | None = None   # ISO; None = usar o dia consultado
+    # "Extra" | "Normal", do pubName do índice (ex.: DO1_EXTRA_C). Sem isso a
+    # MP 1.382 (extra de sábado 01/08/2026) saiu rotulada "Edição Normal" no
+    # prompt da nota — o default silencioso mentiu pro LLM (dono, 11/08/2026).
+    edicao: str = "Normal"
 
 
 @dataclass(frozen=True)
@@ -222,6 +226,7 @@ def mp_dict_para_nota(mp: PortalMP, d: date) -> dict | None:
         "data_publicacao": mp.data_publicacao or d.isoformat(),
         "url_planalto": f"{PLANALTO_BASE}/ccivil_03/_ato{period}/{mp.ano}/mpv/mpv{mp.numero}.htm",
         "texto_integral": mp.texto,
+        "edicao": mp.edicao,
     }
 
 
@@ -271,6 +276,8 @@ async def checar_dia_portal(d: date, *, controle: date | None = None) -> PortalD
                 url=MATERIA_URL.format(url_title=it.get("urlTitle") or ""),
                 texto=texto,
                 data_publicacao=_data_iso(it.get("pubDate")),
+                edicao=("Extra" if "EXTRA" in (it.get("pubName") or "").upper()
+                        else "Normal"),
             ))
         if mps:
             logger.info("portal DOU: %d MP(s) em %s", len(mps), d.isoformat())

@@ -1126,7 +1126,9 @@ async def _pesquisar_contexto(client, mp: dict, *, model: str | None = None) -> 
 
 def _nota_user_content(mp: dict, dossie: str) -> str:
     return (
-        f"MP nº {mp['numero']}/{mp['ano']} — Edição {mp.get('edicao', 'Normal')} "
+        # Default HONESTO: 'Normal' silencioso rotulou a MP 1.382 (extra de
+        # sábado) como edição normal no prompt — e o LLM repetiu na nota.
+        f"MP nº {mp['numero']}/{mp['ano']} — Edição {mp.get('edicao') or 'não identificada'} "
         f"do DOU de {mp['data_publicacao']}\n"
         f"Ementa: {mp['ementa']}\n"
         f"URL: {mp.get('url_planalto', 'N/A')}\n\n"
