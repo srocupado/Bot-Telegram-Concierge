@@ -39,7 +39,7 @@ HELP_TEXT = (
     "• Por voz/texto: <i>\"saiu MP nova hoje?\"</i> → lista número + ementa\n"
     "• Cobre edição normal E extra — inclusive a edição extra de sábado/feriado que o DOU publica SÓ em PDF (sem o XML). O bot lê a pasta do dia, extrai o texto do PDF e entrega a MP normalmente\n"
     "• <b>Conferência automática</b> (1x/dia, no briefing): o bot compara o que te entregou com a lista oficial de MPs da Câmara. Se alguma escapou (Inlabs fora do ar, dia em que o bot ficou desligado), ele avisa QUAL escapou e busca sozinho no DOU pra te mandar com a nota. Dia que ele não conseguiu checar vira pendência e é re-tentado por 14 dias — e se desistir, ele DIZ; nunca vira silêncio\n"
-    "• <b>Fonte reserva</b>: se o Inlabs estiver fora na hora da checagem, o bot consulta o portal público do DOU (in.gov.br) na mesma hora — MP publicada é avisada mesmo com o Inlabs caído (a nota entra na fila e sai quando ele voltar), e \"sem MP\" vem com evidência em vez de \"não consegui checar\"\n\n"
+    "• <b>Portal público como verificador</b>: se o Inlabs falhar, o bot verifica o dia no portal oficial (in.gov.br) na mesma hora — MP achada é avisada na hora e a nota técnica sai com o texto do próprio portal; dia fechado com evidência positiva (\"houve DOU sem MP\" ou \"não houve edição\") recebe baixa e sai da fila sem esperar o Inlabs voltar. Cobre inclusive edição extra retroativa (foi assim que a MP 1.382, da extra de 01/08 que o Inlabs só materializou 9 dias depois, foi detectada)\n\n"
     "<b>Agente proativo</b> (opt-in):\n"
     "• <code>/proativo_on</code> / <code>/proativo_off</code> — liga/desliga avisos automáticos (vencimentos chegando, briefing matinal, MP nova, lembretes de hábito)\n"
     "• <code>/proativo</code> — status e janelas\n"
@@ -297,6 +297,7 @@ _HELP_KEYWORDS: dict[str, str] = {
     "perder": "diario oficial", "perdida": "diario oficial",
     "escapou": "diario oficial", "faltou": "diario oficial",
     "inlabs": "diario oficial", "pendencia": "diario oficial",
+    "portal": "diario oficial",
     "extra": "diario oficial", "sabado": "diario oficial",
     "feriado": "diario oficial", "pdf": "diario oficial",
     "fila": "diario oficial", "aguardando": "diario oficial",

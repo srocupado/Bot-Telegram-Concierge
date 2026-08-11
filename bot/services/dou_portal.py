@@ -8,12 +8,18 @@ data de publicação e o link da matéria — e a página da matéria entrega o
 título oficial e a ementa. Exige disfarce leve (User-Agent de navegador +
 HTTP/1.1): com UA de curl o WAF corta a conexão.
 
-PAPEL: fonte SECUNDÁRIA de detecção quando o Inlabs pisca ("vaga-lume",
-diagnóstico do dono em 06/08/2026). NUNCA dá baixa no dia — confirmação
-final e nota técnica continuam com o Inlabs. O que o portal resolve é o
-pior modo de falha da janela (ficar CEGO): MP publicada é avisada na hora
-mesmo com o Inlabs caído, e "sem MP" vira afirmação com evidência (edição
-confirmada no índice) em vez de "não consegui checar".
+PAPEL (INVERTIDO em 11/08/2026, decisão do dono): fonte de VERIFICAÇÃO com
+direito a baixa quando a evidência é positiva — MPs encontradas, ou edição
+confirmada sem MP, ou (com dia-CONTROLE) ausência conclusiva de edição. O
+Inlabs vira secundário: enriquecimento (XML) e confirmação quando estiver
+de bom humor. Motivos da inversão, todos medidos: o Inlabs acumulou
+vaga-lume de listagem, manutenções, WAF barrando login frio e o caso
+decisivo — a MP 1.382/2026, publicada na edição EXTRA retroativa de
+01/08 (pasta criada no Inlabs só em 10/08), que APENAS o portal detectou,
+com texto íntegro. A busca de MP do portal cobre inclusive edições extras
+(medido: achou a 1.382); a sonda de edição (portaria/despacho do1) NÃO
+enxerga dia só-extra — por isso o veredito operante da baixa é sempre
+"sem MP indexada", nunca só "sem edição".
 
 É scraping de HTML sem contrato: qualquer mudança de layout estoura
 PortalError ALTO (bloco ausente, título não parseável) — nunca lista vazia
@@ -25,7 +31,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 import httpx
 
@@ -76,6 +82,12 @@ class PortalDia:
     # True = houve edição indexada na data (com ou sem MP). False = índice
     # vazio pra data — NÃO afirma "sem edição": pode ser atraso do índice.
     edicao_confirmada: bool
+    # True = evidência POSITIVA de dia sem DO1 regular E sem MP indexada:
+    # busca de MP e sondas vazias pra data, com a MESMA sonda devolvendo
+    # matérias no dia de CONTROLE (índice vivo cobrindo o período — a mesma
+    # estrutura de prova do "raiz sem a pasta" no Inlabs). Nunca True sem
+    # controle vivo. Combinado com dia fechado, autoriza baixa.
+    sem_edicao: bool = False
 
 
 _PARAMS_RE = re.compile(
@@ -106,6 +118,16 @@ _MIN_CHARS_TEXTO = 200
 
 def _fmt_data(d: date) -> str:
     return d.strftime("%d-%m-%Y")
+
+
+def dia_controle(d: date) -> date:
+    """Último dia ÚTIL estritamente anterior a `d` — o dia com máxima chance
+    de ter DO1 regular no índice. Se ele for feriado (controle vazio), o
+    veredito segue inconclusivo — lado seguro."""
+    c = d - timedelta(days=1)
+    while c.weekday() >= 5:
+        c -= timedelta(days=1)
+    return c
 
 
 async def _buscar(client: httpx.AsyncClient, q: str, d: date, secao: str = "todos") -> list[dict]:
@@ -203,14 +225,21 @@ def mp_dict_para_nota(mp: PortalMP, d: date) -> dict | None:
     }
 
 
-async def checar_dia_portal(d: date) -> PortalDia:
+async def checar_dia_portal(d: date, *, controle: date | None = None) -> PortalDia:
     """Responde 'houve MP publicada no DOU de `d`?' pelo portal público.
 
     Duas consultas: a de MPs e — quando vem vazia — uma sonda genérica que
     prova que a EDIÇÃO do dia está no índice (portaria/despacho existem em
     praticamente toda edição do DO1). Edição confirmada + 0 MPs = evidência
     positiva de "sem MP até agora"; índice vazio = inconclusivo (o caller
-    mantém a pendência — na dúvida, é pendência)."""
+    mantém a pendência — na dúvida, é pendência).
+
+    `controle`: dia útil FECHADO que deveria ter edição (o caller escolhe —
+    tipicamente o último dia útil antes de `d`). Quando o índice vem vazio
+    pra `d` mas a sonda devolve matérias no controle, a ausência vira
+    evidência POSITIVA (sem_edicao=True): o índice está vivo e cobre o
+    período — se houvesse matéria em `d`, apareceria. Controle vazio também
+    → segue inconclusivo (lado seguro)."""
     async with httpx.AsyncClient(
         timeout=_TIMEOUT, headers=_HEADERS, follow_redirects=True,
     ) as client:
@@ -250,4 +279,16 @@ async def checar_dia_portal(d: date) -> PortalDia:
         for sonda in ("portaria", "despacho"):
             if await _buscar(client, sonda, d, secao="do1"):
                 return PortalDia([], True)
+        # Índice vazio pra `d`. Com um dia de CONTROLE respondendo, a
+        # ausência é positiva: não houve DO1 regular nem MP indexada em `d`.
+        if controle is not None:
+            for sonda in ("portaria", "despacho"):
+                if await _buscar(client, sonda, controle, secao="do1"):
+                    logger.info(
+                        "portal DOU: %s sem matérias com controle %s vivo — "
+                        "sem edição/MP (conclusivo)", d.isoformat(), controle,
+                    )
+                    return PortalDia([], False, sem_edicao=True)
+            logger.info("portal DOU: controle %s também vazio — inconclusivo",
+                        controle)
         return PortalDia([], False)

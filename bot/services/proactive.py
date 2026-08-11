@@ -454,7 +454,10 @@ async def baixa_checagem_manual(
     """
     from bot.services.dou_monitor import _dia_encerrado, ultima_checagem_ok
 
-    if motivo in ("sem_mp", "sem_edicao"):
+    # "portal_conclusivo" (inversão de 11/08/2026): o portal público detectou
+    # as MPs do dia FECHADO e as notas saíram com texto aprovado na sanidade
+    # — evidência positiva sem depender da memória de checagem do Inlabs.
+    if motivo in ("sem_mp", "sem_edicao", "portal_conclusivo"):
         conclusiva = True
     elif entregues > 0 and not falhas and _dia_encerrado(d):
         ult = ultima_checagem_ok(d)
@@ -944,20 +947,29 @@ async def collect_mp(
     # consegui checar" vira linha informativa com o estado apurado.
     portal_estado: dict[date, str] = {}
 
-    async def _portal_cobrir(d: date) -> str | None:
+    async def _portal_cobrir(d: date) -> tuple[str, bool] | None:
         """Cobre UM dia pelo portal público: anuncia MPs novas (com a nota na
-        fila) e devolve o ESTADO apurado pra linha informativa. None = o
-        próprio portal falhou (aí vale o alarme normal). Compartilhado entre
-        a varredura do dia e a fila RETROATIVA (dono, 09/08/2026: dia preso
-        esperava só o Inlabs mesmo com o portal no ar)."""
+        fila) e devolve (ESTADO apurado, BAIXA autorizada). None = o próprio
+        portal falhou (aí vale o alarme normal). Compartilhado entre a
+        varredura do dia e a fila RETROATIVA (dono, 09/08/2026).
+
+        BAIXA=True (inversão de 11/08/2026 — caso MP 1.382): evidência
+        positiva do portal em dia FECHADO encerra o dia sem esperar o Inlabs
+        — MPs anunciadas (a nota segue o fluxo próprio), ou 0 MP com edição
+        confirmada, ou ausência conclusiva (dia-controle vivo). Dia aberto
+        nunca recebe baixa (edição ainda pode sair)."""
         nonlocal entregues
         from bot.services import dou_portal
+        from bot.services.dou_monitor import _dia_encerrado
         try:
-            dia_portal = await dou_portal.checar_dia_portal(d)
+            dia_portal = await dou_portal.checar_dia_portal(
+                d, controle=dou_portal.dia_controle(d),
+            )
         except Exception as exc:
             logger.warning("proactive: portal do DOU também falhou p/ %s: %s",
                            d, exc)
             return None
+        fechado = _dia_encerrado(d)
         numeros: list[str] = []
         for mp in dia_portal.mps:
             key = f"{mp.numero}/{mp.ano}"
@@ -996,11 +1008,20 @@ async def collect_mp(
             key_np = f"{d.isoformat()}:{','.join(sorted(set(numeros)))}"
             if not await already_notified(session, user.id, "nota_pendente", key_np):
                 await mark_notified(session, user.id, "nota_pendente", key_np)
+            if fechado:
+                return (f"{len(dia_portal.mps)} MP(s) publicada(s) — "
+                        "avisada(s) acima; a nota segue o fluxo normal.", True)
             return (f"{len(dia_portal.mps)} MP(s) publicada(s) — avisada(s) "
-                    "acima. Sigo re-checando o Inlabs pra confirmação final.")
+                    "acima. Dia ainda aberto; sigo vigiando.", False)
         if dia_portal.edicao_confirmada:
-            return ("edição no ar e SEM MP até agora. Sigo re-checando o "
-                    "Inlabs pra confirmação final.")
+            if fechado:
+                return ("houve DOU e NENHUMA MP (edição confirmada no "
+                        "índice).", True)
+            return ("edição no ar e SEM MP até agora. Sigo vigiando as "
+                    "próximas janelas.", False)
+        if dia_portal.sem_edicao and fechado:
+            return ("não houve edição regular nem MP indexada (índice vivo "
+                    "no dia de controle).", True)
         # Índice sem a data: INCONCLUSIVO — mas o portal RESPONDEU, e isso
         # merece ser dito (incidente de 08/08/2026: sábado às 7h05 só sobrou
         # o grito 'NÃO assuma', como se o fallback nem existisse). A linha
@@ -1008,12 +1029,27 @@ async def collect_mp(
         logger.info("proactive: portal sem índice p/ %s (inconclusivo)", d)
         return ("o índice ainda não tem a edição do dia — sem como afirmar "
                 "nada (comum de manhã cedo; em fim de semana/feriado pode "
-                "nem haver edição). Sigo re-checando os dois.")
+                "nem haver edição). Sigo re-checando os dois.", False)
 
     if failed and settings.dou_portal_fallback:
-        for d in failed:
-            estado = await _portal_cobrir(d)
-            if estado:
+        for d in list(failed):
+            res = await _portal_cobrir(d)
+            if not res:
+                continue
+            estado, baixa_ok = res
+            if baixa_ok:
+                # Portal encerrou o dia: sai da lista de falhas (não vira
+                # pendência nem alarme), entra nos checados (marca d'água) e
+                # o fato mp_retro limpa a pendência antiga no pós-envio.
+                failed.remove(d)
+                ok_dates.add(d)
+                facts.append(ProactiveFact(
+                    "mp", "mp_retro", f"retro:{d.isoformat()}",
+                    f"✅ DOU de {d.strftime('%d/%m')} verificado pelo "
+                    f"<b>portal público</b>: {estado}",
+                    date_iso=None,
+                ))
+            else:
                 portal_estado[d] = estado
 
     # Sinaliza pro run_for_user: se o fetch DESTE run não alcançou o Inlabs, não
@@ -1187,6 +1223,11 @@ async def collect_mp(
             continue
         resolvidos.append(d)
     for d in sorted(resolvidos):
+        # Dia já encerrado pelo PORTAL nesta mesma volta tem a própria linha
+        # ✅ (com a evidência) — não duplica.
+        if any(f.kind == "mp_retro" and f.key == f"retro:{d.isoformat()}"
+               for f in facts):
+            continue
         novas = sum(1 for f in facts if f.kind == "mp" and f.date_iso == d.isoformat())
         detalhe = f"{novas} MP(s) nova(s) acima" if novas else "nenhuma MP nova"
         facts.append(ProactiveFact(
@@ -1197,12 +1238,23 @@ async def collect_mp(
 
     # Dia RETROATIVO preso com o Inlabs fora também é coberto pelo portal
     # (dono, 09/08/2026): MP de dia antigo não pode esperar o vaga-lume
-    # acender pra ser sequer DETECTADA. Mesma regra da varredura: detecção e
-    # aviso apenas — a baixa continua exigindo o Inlabs.
+    # acender pra ser sequer DETECTADA. Com a inversão (11/08/2026), o
+    # portal conclusivo em dia fechado dá BAIXA aqui também — dia antigo é
+    # sempre fechado, então é o caso comum.
     if retro_falhos and settings.dou_portal_fallback:
         for d in retro_falhos:
-            estado = await _portal_cobrir(d)
-            if not estado:
+            res = await _portal_cobrir(d)
+            if not res:
+                continue
+            estado, baixa_ok = res
+            if baixa_ok:
+                ok_dates.add(d)
+                facts.append(ProactiveFact(
+                    "mp", "mp_retro", f"retro:{d.isoformat()}",
+                    f"✅ DOU de {d.strftime('%d/%m')} (fila retroativa) "
+                    f"verificado pelo <b>portal público</b>: {estado}",
+                    date_iso=None,
+                ))
                 continue
             pkey = f"portal:{d.isoformat()}:{estado[:20]}"
             if force or not await already_notified(session, user.id, "mp_fail", pkey):
@@ -1963,9 +2015,13 @@ async def run_for_user(
             # Se o envio falhar, a pendência fica e a retro repete na janela
             # seguinte — que é o comportamento desejado.
             if f.kind == "mp_retro":
-                await unmark_notified(
-                    session, user.id, "mp_pendente", f.key.removeprefix("retro:"),
-                )
+                dia_iso = f.key.removeprefix("retro:")
+                await unmark_notified(session, user.id, "mp_pendente", dia_iso)
+                # Entrada de CHECAGEM "DATA:all" da mesma data morre junto: o
+                # dia acabou de ser verificado (Inlabs ou portal). As entradas
+                # com NÚMEROS ficam — são notas reais ainda não entregues.
+                await unmark_notified(session, user.id, "nota_pendente",
+                                      f"{dia_iso}:all")
             # Daqui pra baixo é DEDUP de aviso, e o force pula de propósito:
             # execução de teste não pode silenciar a janela real.
             if force:

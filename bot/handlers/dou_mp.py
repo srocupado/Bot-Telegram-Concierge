@@ -83,6 +83,92 @@ async def cb_nota_nao(query: CallbackQuery, user: User) -> None:
         pass
 
 
+async def _checar_via_portal(bot, session, user, target: date) -> bool:
+    """Inlabs fora na checagem manual → o PORTAL público responde na hora
+    (inversão de 11/08/2026 — foi ele que achou a MP 1.382 da edição extra
+    retroativa que o Inlabs escondeu por 9 dias). Retorna True quando o
+    portal RESOLVEU o pedido (resposta enviada; baixa quando conclusivo);
+    False = inconclusivo/indisponível — o caller mantém o caminho da fila.
+    """
+    from bot.services import dou_portal
+    from bot.services.dou_monitor import _dia_encerrado
+    from bot.services.proactive import (
+        _tentar_nota_via_portal, already_notified, baixa_checagem_manual,
+        mark_notified,
+    )
+
+    dia = await dou_portal.checar_dia_portal(
+        target, controle=dou_portal.dia_controle(target),
+    )
+    dd = target.strftime("%d/%m/%Y")
+    fechado = _dia_encerrado(target)
+
+    if dia.mps:
+        linhas = "\n".join(
+            f"📜 MP {mp.numero}/{mp.ano}: {(mp.ementa or mp.titulo)[:200]}"
+            for mp in dia.mps
+        )
+        await bot.send_message(
+            user.id,
+            f"O Inlabs está fora, mas o PORTAL público do DOU respondeu — "
+            f"{len(dia.mps)} MP(s) em {dd}:\n{linhas}\n\n"
+            "📄 Gerando a(s) nota(s) com o texto do portal…",
+            parse_mode=None,
+        )
+        numeros = sorted({mp.numero for mp in dia.mps})
+        key = f"{target.isoformat()}:{','.join(numeros)}"
+        if not await already_notified(session, user.id, "nota_pendente", key):
+            await mark_notified(session, user.id, "nota_pendente", key)
+        ok = await _tentar_nota_via_portal(bot, session, user, target, numeros, key)
+        if ok and fechado:
+            try:
+                await baixa_checagem_manual(
+                    session, user, target, len(dia.mps), [], "portal_conclusivo",
+                )
+            except Exception:
+                logger.exception("baixa pós-portal falhou (%s)", target)
+        if not ok:
+            await bot.send_message(
+                user.id,
+                "⚠️ O texto do portal não passou na régua de sanidade — a "
+                "nota fica na fila e sai quando o Inlabs voltar. O AVISO "
+                "acima já vale: a(s) MP(s) existem.",
+                parse_mode=None,
+            )
+        return True
+
+    if fechado and (dia.edicao_confirmada or dia.sem_edicao):
+        if dia.sem_edicao:
+            texto = (f"📄 Verifiquei pelo PORTAL público (Inlabs fora): não "
+                     f"houve edição do DOU nem MP indexada em {dd}.")
+            motivo = "sem_edicao"
+        else:
+            texto = (f"📄 Verifiquei pelo PORTAL público (Inlabs fora): houve "
+                     f"DOU em {dd} e NENHUMA Medida Provisória.")
+            motivo = "sem_mp"
+        baixado = False
+        try:
+            baixado = await baixa_checagem_manual(session, user, target, 0, [], motivo)
+        except Exception:
+            logger.exception("baixa via portal falhou (%s)", target)
+        if baixado:
+            texto += " Dei baixa: o dia sai da fila de re-checagem."
+        await bot.send_message(user.id, texto, parse_mode=None)
+        return True
+
+    if dia.edicao_confirmada:
+        # Dia ABERTO com edição e 0 MP: informa sem baixa (edição extra ainda
+        # pode sair ao longo do dia).
+        await bot.send_message(
+            user.id,
+            f"📄 Pelo PORTAL público (Inlabs fora): edição de {dd} no ar e "
+            "SEM MP até agora. O dia segue vigiado nas próximas janelas.",
+            parse_mode=None,
+        )
+        return True
+    return False
+
+
 async def _rodar_nota(
     bot, user_id: int, target: date, only_numeros: list[str] | None,
 ) -> None:
@@ -110,14 +196,24 @@ async def _rodar_nota(
                 bot, session, user, target, force=True, only_numeros=only_numeros,
             )
         except DouError as e:
+            # INVERSÃO (11/08/2026): Inlabs fora não segura mais a checagem
+            # manual — o portal público tenta resolver JÁ (conclusivo → baixa;
+            # MPs → nota com texto do portal). Só o inconclusivo cai na fila.
+            if only_numeros is None and settings.dou_portal_fallback:
+                try:
+                    if await _checar_via_portal(bot, session, user, target):
+                        return
+                except Exception:
+                    logger.exception("checagem via portal falhou (%s)", target)
             from bot.services.proactive import already_notified, mark_notified
             key = f"{target.isoformat()}:{','.join(only_numeros) if only_numeros else 'all'}"
             if not await already_notified(session, user.id, "nota_pendente", key):
                 await mark_notified(session, user.id, "nota_pendente", key)
             await bot.send_message(
                 user.id,
-                f"⚠️ {e}\n📄 Deixei a nota na fila: assim que o Inlabs voltar, "
-                "gero e te envio automaticamente (sem precisar pedir de novo).",
+                f"⚠️ {e}\n📄 O portal público também não foi conclusivo agora. "
+                "Deixei na fila: a re-checagem segue sozinha (Inlabs OU portal) "
+                "e te aviso o resultado.",
                 parse_mode=None,
             )
             return

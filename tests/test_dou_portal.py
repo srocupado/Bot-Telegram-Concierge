@@ -1,11 +1,13 @@
-"""Fallback do portal público (in.gov.br) pro monitor de MP.
+"""Portal público (in.gov.br) no monitor de MP.
 
 Motivação (06/08/2026): "Inlabs tá virando um vaga-lume" (dono). Homologado
 contra o site real (sondas do container e do Orange Pi, MP 1.381 achada de
-ponta a ponta). Papel: DETECÇÃO quando o Inlabs falha — nunca dá baixa; MP
-achada é avisada já (nota na fila) e "sem MP" vem com evidência (edição
-confirmada no índice). Scraping sem contrato: qualquer forma inesperada
-estoura PortalError ALTO, nunca lista vazia silenciosa.
+ponta a ponta). INVERTIDO em 11/08/2026 (caso MP 1.382, achada só pelo
+portal na edição extra retroativa de 01/08): o portal virou VERIFICADOR —
+evidência positiva em dia FECHADO dá baixa (MPs anunciadas, edição sem MP,
+ou ausência conclusiva com dia-controle vivo); dia aberto segue só detecção.
+Scraping sem contrato: forma inesperada estoura PortalError ALTO, nunca
+lista vazia silenciosa.
 """
 from __future__ import annotations
 
@@ -223,7 +225,7 @@ def _rodar_collect(monkeypatch, portal_result):
     async def _fetch(_d):
         raise dou_monitor.DouError("Inlabs em manutenção")
 
-    async def _portal(_d):
+    async def _portal(_d, **_kw):
         if isinstance(portal_result, Exception):
             raise portal_result
         return portal_result
@@ -268,7 +270,8 @@ def test_inlabs_fora_mp_do_portal_e_avisada_com_nota_na_fila(monkeypatch) -> Non
     fails = [f for f in facts if f.kind == "mp_fail"]
     assert len(fails) == 1 and fails[0].key.startswith("portal:")
     assert "NÃO assuma" not in fails[0].text
-    # Outbox: nota na fila; e o dia SEGUE pendente (portal nunca dá baixa).
+    # Outbox: nota na fila; e o dia ABERTO segue pendente (baixa pelo portal
+    # só em dia fechado — a edição de hoje ainda pode crescer).
     assert ("nota_pendente", f"{hoje.isoformat()}:1.382") in marks
     assert ("mp_pendente", hoje.isoformat()) in marks
 
@@ -298,28 +301,22 @@ def test_indice_sem_a_data_vira_linha_informativa_das_duas_fontes(monkeypatch) -
     assert ("mp_pendente", hoje.isoformat()) in marks, "segue pendente"
 
 
-def test_dia_retroativo_preso_tambem_e_coberto_pelo_portal(monkeypatch) -> None:
-    """Dono, 09/08/2026: dia PRESO na fila retroativa esperava só o Inlabs —
-    MP de dia antigo ficava nem detectada com o portal no ar. Agora o mesmo
-    _portal_cobrir varre os retro presos: MP anunciada + nota na fila +
-    linha informativa '(fila retroativa)'; baixa continua sendo do Inlabs."""
+def _rodar_retro(monkeypatch, portal_do_retro, *, dias_atras=3):
+    """Inlabs falhando; dia retro FECHADO (pin: hoje-3) na fila; portal
+    responde `portal_do_retro` pro retro e inconclusivo pra hoje."""
     hoje = datetime.now(proactive.BRT).date()
-    ontem = hoje - timedelta(days=1)
+    retro = hoje - timedelta(days=dias_atras)
     marks: list[tuple[str, str]] = []
 
     async def _fetch(_d):
         raise dou_monitor.DouError("Inlabs em manutenção")
 
-    mp = dou_portal.PortalMP("1.383", 2026, "MEDIDA PROVISÓRIA Nº 1.383",
-                             "Ementa retro.", "https://x", texto="TEXTO ok")
-
-    async def _portal(d):
-        # hoje: índice vazio; ontem (retro): MP publicada
-        return (dou_portal.PortalDia([mp], True) if d == ontem
+    async def _portal(d, **_kw):
+        return (portal_do_retro if d == retro
                 else dou_portal.PortalDia([], False))
 
     async def _pendentes(_s, _uid, _hoje, _desist=None):
-        return [ontem]
+        return [retro]
 
     async def _false(*a, **kw):
         return False
@@ -341,14 +338,56 @@ def test_dia_retroativo_preso_tambem_e_coberto_pelo_portal(monkeypatch) -> None:
     user = SimpleNamespace(id=99, dou_mp_subscribed=True,
                            dou_ultimo_dia_ok=hoje - timedelta(days=1))
     facts = asyncio.run(proactive.collect_mp(_FakeSession(), user, [hoje]))
+    return retro, facts, marks
+
+
+def test_dia_retroativo_fechado_com_mp_e_baixado_pelo_portal(monkeypatch) -> None:
+    """Dono, 09/08/2026: dia preso na fila esperava só o Inlabs. Com a
+    INVERSÃO (11/08/2026): MP do dia fechado é anunciada, a nota entra na
+    fila e o próprio portal dá BAIXA — linha ✅ própria, sem alarme."""
+    mp = dou_portal.PortalMP("1.383", 2026, "MEDIDA PROVISÓRIA Nº 1.383",
+                             "Ementa retro.", "https://x", texto="TEXTO ok")
+    retro, facts, marks = _rodar_retro(
+        monkeypatch, dou_portal.PortalDia([mp], True))
 
     mps = [f for f in facts if f.kind == "mp"]
     assert len(mps) == 1 and mps[0].key == "1.383/2026"
-    assert mps[0].date_iso == ontem.isoformat()
-    retro_lines = [f for f in facts if f.kind == "mp_fail"
-                   and "fila retroativa" in f.text]
-    assert len(retro_lines) == 1 and "1 MP(s)" in retro_lines[0].text
-    assert ("nota_pendente", f"{ontem.isoformat()}:1.383") in marks
+    assert mps[0].date_iso == retro.isoformat()
+    baixas = [f for f in facts if f.kind == "mp_retro"
+              and "fila retroativa" in f.text]
+    assert len(baixas) == 1 and "portal público" in baixas[0].text
+    assert baixas[0].key == f"retro:{retro.isoformat()}"
+    assert not [f for f in facts if f.kind == "mp_fail"
+                and "fila retroativa" in f.text], "baixado não vira alarme"
+    assert ("nota_pendente", f"{retro.isoformat()}:1.383") in marks
+
+
+def test_dia_retroativo_sem_edicao_conclusivo_e_baixado(monkeypatch) -> None:
+    """08-09/08/2026 ao vivo: fim de semana sem edição, preso na fila por dias
+    com o falso 'recusou a sessão'. Portal com dia-controle vivo → ausência é
+    evidência positiva → baixa retroativa sem Inlabs nenhum."""
+    retro, facts, marks = _rodar_retro(
+        monkeypatch, dou_portal.PortalDia([], False, sem_edicao=True))
+
+    baixas = [f for f in facts if f.kind == "mp_retro"
+              and "fila retroativa" in f.text]
+    assert len(baixas) == 1
+    assert "não houve edição" in baixas[0].text
+    assert not [f for f in facts if f.kind == "mp_fail"
+                and "fila retroativa" in f.text]
+
+
+def test_dia_retroativo_inconclusivo_segue_pendente(monkeypatch) -> None:
+    """Portal sem índice pro retro (e controle vazio): NADA de baixa — linha
+    informativa e o dia continua na fila. Na dúvida, é pendência."""
+    retro, facts, _ = _rodar_retro(
+        monkeypatch, dou_portal.PortalDia([], False))
+
+    assert not [f for f in facts if f.kind == "mp_retro"
+                and "fila retroativa" in f.text]
+    infos = [f for f in facts if f.kind == "mp_fail"
+             and "fila retroativa" in f.text]
+    assert len(infos) == 1 and "índice ainda não tem a edição" in infos[0].text
 
 
 def test_portal_tambem_fora_mantem_alarme_forte(monkeypatch) -> None:
@@ -367,7 +406,7 @@ def _harness_nota_portal(monkeypatch, portal_result, numeros=("1.382",)):
     from bot.services import dou_monitor as dm
     eventos = {"notas": [], "unmarks": [], "sends": [], "seen": []}
 
-    async def _portal(_d):
+    async def _portal(_d, **_kw):
         if isinstance(portal_result, Exception):
             raise portal_result
         return portal_result
@@ -458,8 +497,138 @@ def test_portal_indisponivel_mantem_a_fila(monkeypatch) -> None:
     assert ok is False and ev["unmarks"] == []
 
 
-def test_help_documenta_a_fonte_reserva() -> None:
+def test_help_documenta_o_portal_verificador() -> None:
     from bot.handlers.start import HELP_TEXT, find_help_sections
-    assert "Fonte reserva" in HELP_TEXT
-    secoes = find_help_sections("e se o inlabs estiver fora do ar?")
-    assert any("Fonte reserva" in s for s in secoes)
+    assert "Portal público como verificador" in HELP_TEXT
+    for pergunta in ("e se o inlabs estiver fora do ar?",
+                     "o bot usa o portal do dou?"):
+        secoes = find_help_sections(pergunta)
+        assert any("Portal público como verificador" in s for s in secoes), pergunta
+
+
+# ─────────────── unidade: dia-controle e ausência conclusiva ───────────────
+
+def test_dia_controle_e_o_ultimo_dia_util() -> None:
+    assert dou_portal.dia_controle(date(2026, 8, 9)) == date(2026, 8, 7)   # dom→sex
+    assert dou_portal.dia_controle(date(2026, 8, 8)) == date(2026, 8, 7)   # sáb→sex
+    assert dou_portal.dia_controle(date(2026, 8, 11)) == date(2026, 8, 10)  # ter→seg
+
+
+def test_controle_vivo_transforma_ausencia_em_sem_edicao() -> None:
+    """Índice vazio pra D com a MESMA sonda devolvendo matérias no dia de
+    controle = índice vivo cobrindo o período → 'não houve edição' vira
+    evidência POSITIVA (a prova estrutural do raiz-sem-pasta, no portal)."""
+    ctrl = dou_portal.dia_controle(D)
+
+    def _resp(request):
+        import httpx
+        q = request.url.params.get("q", "")
+        de = request.url.params.get("publishFrom", "")
+        if de == ctrl.strftime("%d-%m-%Y") and "portaria" in q:
+            return httpx.Response(200, text=_pagina([{"title": "PORTARIA 9"}]))
+        return httpx.Response(200, text=_pagina([]))
+
+    async def _main():
+        with respx.mock:
+            respx.route(host="www.in.gov.br").mock(side_effect=_resp)
+            return await dou_portal.checar_dia_portal(D, controle=ctrl)
+
+    dia = asyncio.run(_main())
+    assert dia.mps == [] and dia.edicao_confirmada is False
+    assert dia.sem_edicao is True
+
+
+def test_controle_vazio_segue_inconclusivo() -> None:
+    """Controle também vazio (feriado no controle / índice fora) → nada de
+    afirmar ausência: sem_edicao continua False (lado seguro)."""
+    async def _main():
+        with respx.mock:
+            _rotas({})
+            return await dou_portal.checar_dia_portal(
+                D, controle=dou_portal.dia_controle(D))
+
+    dia = asyncio.run(_main())
+    assert dia.sem_edicao is False and dia.edicao_confirmada is False
+
+
+# ─────────── /mp_dou_agora com Inlabs fora → portal resolve na hora ───────────
+
+def _rodar_manual(monkeypatch, portal_result, *, nota_ok=True, dias_atras=3):
+    from bot.handlers import dou_mp
+    ev = {"msgs": [], "baixas": [], "notas": []}
+
+    async def _portal(_d, **_kw):
+        if isinstance(portal_result, Exception):
+            raise portal_result
+        return portal_result
+
+    async def _baixa(_s, _u, d, entregues, falhas, motivo):
+        ev["baixas"].append((d, entregues, motivo))
+        return True
+
+    async def _nota(bot, session, user, d, numeros, key):
+        ev["notas"].append((d, tuple(numeros), key))
+        return nota_ok
+
+    async def _false(*a, **kw):
+        return False
+
+    async def _mark(*a, **kw):
+        return None
+
+    monkeypatch.setattr(dou_portal, "checar_dia_portal", _portal)
+    monkeypatch.setattr(proactive, "baixa_checagem_manual", _baixa)
+    monkeypatch.setattr(proactive, "_tentar_nota_via_portal", _nota)
+    monkeypatch.setattr(proactive, "already_notified", _false)
+    monkeypatch.setattr(proactive, "mark_notified", _mark)
+
+    class _Bot:
+        async def send_message(self, _uid, text, **kw):
+            ev["msgs"].append(text)
+
+    alvo = datetime.now(proactive.BRT).date() - timedelta(days=dias_atras)
+    user = SimpleNamespace(id=9, is_authorized=True)
+    ok = asyncio.run(dou_mp._checar_via_portal(_Bot(), _FakeSession(), user, alvo))
+    return ok, ev, alvo
+
+
+def test_manual_sem_edicao_da_baixa_na_hora(monkeypatch) -> None:
+    """O caso 08-09/08 ao vivo: /mp_dou_agora não pode mais morrer em
+    'recusou a sessão' quando o portal prova que o dia não teve edição."""
+    ok, ev, alvo = _rodar_manual(
+        monkeypatch, dou_portal.PortalDia([], False, sem_edicao=True))
+    assert ok is True
+    assert any("não houve edição" in m for m in ev["msgs"])
+    assert ev["baixas"] == [(alvo, 0, "sem_edicao")]
+
+
+def test_manual_edicao_sem_mp_da_baixa(monkeypatch) -> None:
+    ok, ev, alvo = _rodar_manual(monkeypatch, dou_portal.PortalDia([], True))
+    assert ok is True
+    assert any("NENHUMA Medida Provisória" in m for m in ev["msgs"])
+    assert ev["baixas"] == [(alvo, 0, "sem_mp")]
+
+
+def test_manual_mp_gera_nota_do_portal_e_da_baixa(monkeypatch) -> None:
+    """O caso MP 1.382 (extra retroativa): o comando detecta pelo portal,
+    gera a nota com o texto de lá e encerra o dia."""
+    ok, ev, alvo = _rodar_manual(
+        monkeypatch, dou_portal.PortalDia([_mp_completa("1.382")], True))
+    assert ok is True
+    assert any("1.382" in m for m in ev["msgs"])
+    assert ev["notas"] == [(alvo, ("1.382",), f"{alvo.isoformat()}:1.382")]
+    assert ev["baixas"] == [(alvo, 1, "portal_conclusivo")]
+
+
+def test_manual_nota_reprovada_avisa_e_nao_baixa(monkeypatch) -> None:
+    ok, ev, _ = _rodar_manual(
+        monkeypatch, dou_portal.PortalDia([_mp_completa("1.382")], True),
+        nota_ok=False)
+    assert ok is True
+    assert any("sanidade" in m for m in ev["msgs"])
+    assert ev["baixas"] == [], "nota que não saiu não pode dar baixa"
+
+
+def test_manual_inconclusivo_devolve_pro_caminho_da_fila(monkeypatch) -> None:
+    ok, ev, _ = _rodar_manual(monkeypatch, dou_portal.PortalDia([], False))
+    assert ok is False and ev["msgs"] == [] and ev["baixas"] == []

@@ -163,6 +163,44 @@ def test_todos_os_cookies_do_login_sao_reenviados(monkeypatch) -> None:
     assert out.sem_edicao is True and out.provisorio is False
 
 
+def test_login_aquecido_como_navegador(monkeypatch) -> None:
+    """WAF F5 de 11/08/2026: POST 'frio' de login levava 5xx com página de
+    manutenção FALSA, enquanto o fluxo de navegador (GET da tela de login
+    antes + POST com Referer/Origin) logava no mesmo minuto. O bot agora
+    imita o navegador — e a ordem/headers são verificados aqui."""
+    from pydantic import SecretStr
+
+    monkeypatch.setattr(dou_monitor.settings, "inlabs_email", "x@y.z")
+    monkeypatch.setattr(dou_monitor.settings, "inlabs_password", SecretStr("s"))
+    monkeypatch.setattr(dou_monitor.time, "sleep", lambda _s: None)
+    _invalidar_sessao()
+    seq: list[tuple[str, str, str | None, str | None]] = []
+
+    def _rota(request):
+        url = str(request.url)
+        metodo = request.method
+        if isinstance(metodo, bytes):
+            metodo = metodo.decode()
+        seq.append((metodo, request.url.path,
+                    request.headers.get("referer"),
+                    request.headers.get("origin")))
+        if "logar.php" in url:
+            return httpx.Response(200, text="ok", headers={
+                "set-cookie": "inlabs_session_cookie=abc; Path=/"})
+        if "acessar.php" in url:
+            return httpx.Response(200, text="<form action='logar.php'></form>")
+        return httpx.Response(200, text=RAIZ_SEM_O_DIA)
+
+    with respx.mock:
+        respx.route(host="inlabs.in.gov.br").side_effect = _rota
+        out = _fetch_mps_sync(date(2026, 8, 9))
+    assert out.sem_edicao is True                       # fluxo inteiro passou
+    assert (seq[0][0], seq[0][1]) == ("GET", "/acessar.php"), "aquece antes"
+    post = next(s for s in seq if s[1] == "/logar.php")
+    assert post[2] and post[2].endswith("/acessar.php"), "POST leva Referer"
+    assert post[3] == "https://inlabs.in.gov.br", "POST leva Origin"
+
+
 def test_tela_de_login_continua_sendo_recusa(monkeypatch) -> None:
     """A recusa REAL de sessão continua falhando como antes."""
     login = '<html><form action="logar.php"><input type="password"></form></html>'

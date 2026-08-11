@@ -598,11 +598,26 @@ def _obter_cookie(email: str, password: str, *, force: bool = False) -> str:
         # cliente NOVO (conexão nova) — a recusa de sessão não passa na conexão
         # reusada (medido 01/08/2026).
         with httpx.Client(headers=_HEADERS, follow_redirects=True) as login:
+            # AQUECIMENTO (11/08/2026): o WAF (F5) do Inlabs passou a barrar o
+            # POST "frio" de login (5xx com página de manutenção FALSA)
+            # enquanto o fluxo de navegador — GET da tela de login primeiro
+            # (ganha os cookies TS) e POST com Referer/Origin — logava
+            # normalmente na mesma janela. Imitamos o navegador; falha do
+            # aquecimento não é fatal (quem decide é o POST).
+            try:
+                _inlabs_call(lambda: login.get(
+                    f"{INLABS_BASE}/acessar.php", timeout=20.0), tries=1)
+            except Exception:
+                logger.warning("inlabs: aquecimento do login falhou; sigo pro POST")
             try:
                 resp = _inlabs_call(lambda: login.post(
                     f"{INLABS_BASE}/logar.php",
                     data={"email": email, "password": password},
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Referer": f"{INLABS_BASE}/acessar.php",
+                        "Origin": INLABS_BASE,
+                    },
                     timeout=20.0,
                 ))
                 resp.raise_for_status()
