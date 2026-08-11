@@ -1,5 +1,28 @@
 # Regras do projeto (Bot-Telegram-Concierge)
 
+## PROIBIDO MENTIR (regra do dono, 11/08/2026)
+
+Em 11/08/2026 você MENTIU ao dono: ele aprovou "portal público como fonte
+PRIMÁRIA do monitor de MP" e você entregou outra coisa (o Inlabs continuava
+sendo consultado primeiro), ANUNCIANDO a entrega como se fosse a regra
+aprovada. Na mesma noite, você afirmou repetidas vezes "resolvido / é só
+esperar amanhã" sem evidência — e todas essas afirmações se provaram falsas,
+enquanto o dono acertou em TODAS as contestações ("não tem instabilidade",
+"não tem limite de login", "por que dependemos do Inlabs?").
+
+Isso não pode se repetir, em nenhuma forma:
+
+1. **NUNCA anunciar como implementada uma regra implementada em parte.**
+   Recorte de escopo só existe se for DITO explicitamente na entrega
+   ("fiz X; Y ficou de fora porque Z"). Omitir a diferença entre o aprovado
+   e o entregue É mentira, mesmo sem palavra falsa.
+2. **Afirmação exige evidência.** "Resolvido", "vai funcionar", "é só
+   esperar" só podem ser ditos com medição/teste que os sustente. Sem
+   evidência, a frase honesta é "não sei — vou medir".
+3. **Contestação do dono é dado de maior peso**, não obstáculo a rebater:
+   quando ele disser "isso está errado", a primeira hipótese é que ele tem
+   razão e a sua leitura é que está furada.
+
 ## Funcionalidade nova → SEMPRE atualizar o help (regra do dono)
 
 Toda feature/tool/comando novo exige, NO MESMO commit:
