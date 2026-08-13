@@ -95,10 +95,7 @@ async def _checar_via_portal(bot, session, user, target: date) -> bool:
         PLANALTO_BASE, _dia_encerrado, _planalto_period,
         format_telegram_message, registrar_checagem_ok,
     )
-    from bot.services.proactive import (
-        _tentar_nota_via_portal, already_notified, baixa_checagem_manual,
-        mark_notified,
-    )
+    from bot.services.proactive import baixa_checagem_manual
 
     dia = await dou_portal.checar_dia_portal(
         target, controle=dou_portal.dia_controle(target),
@@ -110,8 +107,9 @@ async def _checar_via_portal(bot, session, user, target: date) -> bool:
         registrar_checagem_ok(target, len(dia.mps))
 
     if dia.mps:
-        # O MESMO card da entrega normal (título, ementa limpa, prazos,
-        # Planalto) — fonte primária não entrega card de segunda classe.
+        # Card + BOTÃO POR MP (dono, 13/08/2026: "não deu botão por MP,
+        # gerou tudo") — a nota técnica é SOB DEMANDA, igual ao aviso
+        # proativo: o dono escolhe qual MP merece nota, uma a uma.
         for mp in dia.mps:
             period = _planalto_period(mp.ano)
             card = {
@@ -122,37 +120,23 @@ async def _checar_via_portal(bot, session, user, target: date) -> bool:
                                  f"{mp.ano}/mpv/mpv{mp.numero}.htm"),
                 "edicao": mp.edicao,
             }
+            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+                text=f"📄 Gerar nota técnica da MP {mp.numero}",
+                callback_data=f"doump:y:{target.isoformat()}:{mp.numero}",
+            )]])
             await bot.send_message(
                 user.id, format_telegram_message(card, None),
                 parse_mode="HTML", disable_web_page_preview=True,
+                reply_markup=kb,
             )
-        await bot.send_message(
-            user.id,
-            f"📄 {len(dia.mps)} MP(s) no DOU de {dd} (portal oficial). "
-            "Gerando a(s) nota(s) técnica(s) com o texto do portal…",
-            parse_mode=None,
-        )
-        numeros = sorted({mp.numero for mp in dia.mps})
-        key = f"{target.isoformat()}:{','.join(numeros)}"
-        if not await already_notified(session, user.id, "nota_pendente", key):
-            await mark_notified(session, user.id, "nota_pendente", key)
-        ok = await _tentar_nota_via_portal(bot, session, user, target, numeros, key)
-        if ok and fechado:
+        if fechado:
             try:
                 await baixa_checagem_manual(
                     session, user, target, len(dia.mps), [], "portal_conclusivo",
+                    preservar_numeradas=True,
                 )
             except Exception:
                 logger.exception("baixa pós-portal falhou (%s)", target)
-        if not ok:
-            await bot.send_message(
-                user.id,
-                "⚠️ O texto do portal não passou na régua de sanidade — a "
-                "nota fica na fila e sai quando alguma fonte entregar o "
-                "texto íntegro (portal ou Inlabs). O AVISO acima já vale: "
-                "a(s) MP(s) existem.",
-                parse_mode=None,
-            )
         return True
 
     if fechado and (dia.edicao_confirmada or dia.sem_edicao):
@@ -262,7 +246,11 @@ async def _rodar_nota(
                         "pendente.", parse_mode=None,
                     )
                     return
-            key = f"{target.isoformat()}:{','.join(pendentes) if pendentes else 'all'}"
+            # Chave CANÔNICA (ordenada): o botão passava os números na ordem
+            # do anúncio e o comando, ordenados — duas chaves pros mesmos
+            # números, e a baixa por string exata deixava uma órfã (13/08).
+            key = (f"{target.isoformat()}:{','.join(sorted(pendentes))}"
+                   if pendentes else f"{target.isoformat()}:all")
             if not await already_notified(session, user.id, "nota_pendente", key):
                 await mark_notified(session, user.id, "nota_pendente", key)
             await bot.send_message(
@@ -683,7 +671,7 @@ async def cmd_agora(
         return
     await message.answer(
         f"🔎 Buscando MPs publicadas no DOU em {target.strftime('%d/%m/%Y')}… "
-        "se houver, a nota técnica leva alguns minutos e vem em seguida. "
+        "MP encontrada vem com o card e o botão de gerar a nota técnica. "
         "Pode seguir usando o bot normalmente.",
         parse_mode=None,
     )

@@ -525,14 +525,18 @@ def test_portal_indisponivel_mantem_a_fila(monkeypatch) -> None:
 
 
 def _rodar_nota_portal_cru(monkeypatch, *, portal_mps, vistos=(),
-                           falha_em=()):
-    """_tentar_nota_via_portal com sessão que devolve `vistos` como
-    DouSeenMP e geração que falha pras MPs em `falha_em`."""
+                           falha_em=(), entradas=()):
+    """_tentar_nota_via_portal com sessão que devolve `vistos` (DouSeenMP,
+    lista VIVA — mark_seen alimenta), `entradas` (nota_pendente existentes)
+    e geração que falha pras MPs em `falha_em`."""
     eventos = {"notas": [], "unmarks": []}
+    vivos = list(vistos)
 
-    class _SessaoComVistos:
-        async def scalars(self, _stmt):
-            return [SimpleNamespace(numero=n, ano=2026) for n in vistos]
+    class _Sessao2:
+        async def scalars(self, stmt):
+            if "dou_seen" in str(stmt):
+                return [SimpleNamespace(numero=n, ano=2026) for n in vivos]
+            return [SimpleNamespace(key=k) for k in entradas]
 
         async def commit(self):
             return None
@@ -552,7 +556,7 @@ def _rodar_nota_portal_cru(monkeypatch, *, portal_mps, vistos=(),
         return True
 
     async def _seen(_s, _uid, dc):
-        return None
+        vivos.append(dc["numero"])
 
     from bot.services import dou_monitor as dm
     monkeypatch.setattr(dou_portal, "checar_dia_portal", _portal)
@@ -564,7 +568,7 @@ def _rodar_nota_portal_cru(monkeypatch, *, portal_mps, vistos=(),
     numeros = sorted({mp.numero for mp in portal_mps})
     key = f"{D.isoformat()}:{','.join(numeros)}"
     ok = asyncio.run(proactive._tentar_nota_via_portal(
-        None, _SessaoComVistos(), SimpleNamespace(id=9), D, numeros, key))
+        None, _Sessao2(), SimpleNamespace(id=9), D, numeros, key))
     return ok, eventos, key
 
 
@@ -605,6 +609,25 @@ def test_tudo_ja_entregue_da_baixa_sem_regenerar(monkeypatch) -> None:
         vistos=("1.385",),
     )
     assert ok is True and ev["notas"] == [] and ev["unmarks"] == [key]
+
+
+def test_baixa_cobre_chave_com_ordem_diferente(monkeypatch) -> None:
+    """Bug do /mp_fila de 13/08/2026: o botão gravou a entrada como
+    '1.385,1.384,1.383' (ordem do anúncio) e a baixa rodou com a chave
+    ordenada — string diferente, entrada órfã pra sempre com tudo entregue.
+    A baixa agora varre as entradas da data por CONJUNTO de números."""
+    orfa = f"{D.isoformat()}:1.385,1.384,1.383"
+    ok, ev, key = _rodar_nota_portal_cru(
+        monkeypatch,
+        portal_mps=[_mp_completa("1.385"), _mp_completa("1.384"),
+                    _mp_completa("1.383")],
+        vistos=("1.385", "1.384"),
+        entradas=(orfa,),
+    )
+    assert ok is True
+    assert ev["notas"] == ["1.383"]
+    assert key in ev["unmarks"], "a própria chave recebe baixa"
+    assert orfa in ev["unmarks"], "a irmã fora de ordem morre junto"
 
 
 def test_help_documenta_o_portal_verificador() -> None:
@@ -663,38 +686,28 @@ def test_controle_vazio_segue_inconclusivo() -> None:
 
 # ─────────── /mp_dou_agora com Inlabs fora → portal resolve na hora ───────────
 
-def _rodar_manual(monkeypatch, portal_result, *, nota_ok=True, dias_atras=3):
+def _rodar_manual(monkeypatch, portal_result, *, dias_atras=3):
     from bot.handlers import dou_mp
-    ev = {"msgs": [], "baixas": [], "notas": []}
+    ev = {"msgs": [], "baixas": [], "botoes": []}
 
     async def _portal(_d, **_kw):
         if isinstance(portal_result, Exception):
             raise portal_result
         return portal_result
 
-    async def _baixa(_s, _u, d, entregues, falhas, motivo):
-        ev["baixas"].append((d, entregues, motivo))
+    async def _baixa(_s, _u, d, entregues, falhas, motivo, **kw):
+        ev["baixas"].append((d, entregues, motivo, kw.get("preservar_numeradas")))
         return True
-
-    async def _nota(bot, session, user, d, numeros, key):
-        ev["notas"].append((d, tuple(numeros), key))
-        return nota_ok
-
-    async def _false(*a, **kw):
-        return False
-
-    async def _mark(*a, **kw):
-        return None
 
     monkeypatch.setattr(dou_portal, "checar_dia_portal", _portal)
     monkeypatch.setattr(proactive, "baixa_checagem_manual", _baixa)
-    monkeypatch.setattr(proactive, "_tentar_nota_via_portal", _nota)
-    monkeypatch.setattr(proactive, "already_notified", _false)
-    monkeypatch.setattr(proactive, "mark_notified", _mark)
 
     class _Bot:
-        async def send_message(self, _uid, text, **kw):
+        async def send_message(self, _uid, text, reply_markup=None, **kw):
             ev["msgs"].append(text)
+            if reply_markup is not None:
+                for linha in reply_markup.inline_keyboard:
+                    ev["botoes"] += [b.callback_data for b in linha]
 
     alvo = datetime.now(proactive.BRT).date() - timedelta(days=dias_atras)
     user = SimpleNamespace(id=9, is_authorized=True)
@@ -709,34 +722,32 @@ def test_manual_sem_edicao_da_baixa_na_hora(monkeypatch) -> None:
         monkeypatch, dou_portal.PortalDia([], False, sem_edicao=True))
     assert ok is True
     assert any("não houve edição" in m for m in ev["msgs"])
-    assert ev["baixas"] == [(alvo, 0, "sem_edicao")]
+    assert ev["baixas"] == [(alvo, 0, "sem_edicao", None)]
 
 
 def test_manual_edicao_sem_mp_da_baixa(monkeypatch) -> None:
     ok, ev, alvo = _rodar_manual(monkeypatch, dou_portal.PortalDia([], True))
     assert ok is True
     assert any("NENHUMA Medida Provisória" in m for m in ev["msgs"])
-    assert ev["baixas"] == [(alvo, 0, "sem_mp")]
+    assert ev["baixas"] == [(alvo, 0, "sem_mp", None)]
 
 
-def test_manual_mp_gera_nota_do_portal_e_da_baixa(monkeypatch) -> None:
-    """O caso MP 1.382 (extra retroativa): o comando detecta pelo portal,
-    gera a nota com o texto de lá e encerra o dia."""
+def test_manual_mp_manda_card_com_botao_sem_gerar(monkeypatch) -> None:
+    """Dono, 13/08/2026: '/mp_dou_agora não deu botão por MP, gerou tudo'.
+    Agora cada MP vem no card com o SEU botão de nota (sob demanda); o dia
+    fechado recebe baixa preservando notas prometidas na fila."""
     ok, ev, alvo = _rodar_manual(
-        monkeypatch, dou_portal.PortalDia([_mp_completa("1.382")], True))
+        monkeypatch, dou_portal.PortalDia(
+            [_mp_completa("1.382"), _mp_completa("1.383")], True))
     assert ok is True
-    assert any("1.382" in m for m in ev["msgs"])
-    assert ev["notas"] == [(alvo, ("1.382",), f"{alvo.isoformat()}:1.382")]
-    assert ev["baixas"] == [(alvo, 1, "portal_conclusivo")]
-
-
-def test_manual_nota_reprovada_avisa_e_nao_baixa(monkeypatch) -> None:
-    ok, ev, _ = _rodar_manual(
-        monkeypatch, dou_portal.PortalDia([_mp_completa("1.382")], True),
-        nota_ok=False)
-    assert ok is True
-    assert any("sanidade" in m for m in ev["msgs"])
-    assert ev["baixas"] == [], "nota que não saiu não pode dar baixa"
+    cards = [m for m in ev["msgs"] if "Prazos" in m]
+    assert len(cards) == 2 and any("1.382" in c for c in cards)
+    assert ev["botoes"] == [
+        f"doump:y:{alvo.isoformat()}:1.382",
+        f"doump:y:{alvo.isoformat()}:1.383",
+    ], "um botão POR MP, com o número dela"
+    assert not any("Gerando" in m for m in ev["msgs"]), "nota é sob demanda"
+    assert ev["baixas"] == [(alvo, 2, "portal_conclusivo", True)]
 
 
 def test_manual_inconclusivo_devolve_pro_caminho_da_fila(monkeypatch) -> None:

@@ -280,6 +280,35 @@ async def _entregar_nota_pendente(
         logger.info("nota pendente %s entregue", key)
 
 
+async def _baixar_entradas_cobertas(session: AsyncSession, user_id: int,
+                                    d: date, extras: set | frozenset = frozenset()) -> None:
+    """Dá baixa em TODAS as entradas nota_pendente da data cujos números já
+    constam como entregues (DouSeenMP ∪ `extras`, os entregues NESTA rodada
+    — sem depender do commit do mark_seen já estar visível) — independente
+    da ORDEM na chave.
+
+    Bug de 13/08/2026: o botão gravava a chave na ordem do anúncio
+    ("1.385,1.384,1.383") e o comando, ordenada ("1.383,1.384,1.385"); a
+    baixa por string exata deixava a irmã órfã no /mp_fila, com tudo já
+    entregue. Entradas "all" ficam de fora (são checagem do dia, não nota)."""
+    rows = list(await session.scalars(
+        select(ProactiveNotice).where(
+            ProactiveNotice.user_id == user_id,
+            ProactiveNotice.kind == "nota_pendente",
+        )
+    ))
+    vistos_rows = await session.scalars(
+        select(DouSeenMP).where(DouSeenMP.user_id == user_id))
+    vistos = {r.numero for r in vistos_rows} | set(extras)
+    for r in rows:
+        data, _, resto = r.key.partition(":")
+        if data != d.isoformat() or resto in ("", "all"):
+            continue
+        if set(resto.split(",")) <= vistos:
+            await unmark_notified(session, user_id, "nota_pendente", r.key)
+            logger.info("nota pendente %s: números já entregues — baixa", r.key)
+
+
 async def _tentar_nota_via_portal(
     bot, session: AsyncSession, user: User, d: date,
     numeros: list[str] | None, key: str,
@@ -318,8 +347,10 @@ async def _tentar_nota_via_portal(
     faltam_no_portal = alvo - {mp.numero for mp in mps}
     if not pendentes and not faltam_no_portal:
         # Tudo desta entrada já foi entregue antes (geração parcial que
-        # re-enfileirou o dia inteiro): baixa SEM regenerar nada.
+        # re-enfileirou o dia inteiro): baixa SEM regenerar nada — inclusive
+        # das entradas-irmãs com os mesmos números em outra ordem.
         await unmark_notified(session, user.id, "nota_pendente", key)
+        await _baixar_entradas_cobertas(session, user.id, d, extras=alvo)
         logger.info("nota pendente %s: todas já entregues — baixa sem regenerar", key)
         return True
     if faltam_no_portal:
@@ -356,6 +387,9 @@ async def _tentar_nota_via_portal(
     if not completou:
         return False
     await unmark_notified(session, user.id, "nota_pendente", key)
+    # Entradas-irmãs da mesma data (mesmos números noutra ordem) morrem
+    # junto — sem isso o /mp_fila segurava a chave órfã pra sempre.
+    await _baixar_entradas_cobertas(session, user.id, d, extras=alvo)
     await _send(bot, user.id, (
         f"✅ Nota(s) de {d.strftime('%d/%m')} entregue(s) com o texto do "
         "PORTAL oficial do DOU (fonte primária)."
@@ -464,6 +498,7 @@ async def _mp_dias_pendentes(
 async def baixa_checagem_manual(
     session: AsyncSession, user: User, d: date,
     entregues: int, falhas: list[str], motivo: str | None,
+    *, preservar_numeradas: bool = False,
 ) -> bool:
     """Dá baixa nas pendências de `d` quando uma checagem MANUAL conclusiva
     (/mp_dou_agora, dia inteiro) acabou de verificar o dia.
@@ -488,8 +523,10 @@ async def baixa_checagem_manual(
     from bot.services.dou_monitor import _dia_encerrado, ultima_checagem_ok
 
     # "portal_conclusivo" (inversão de 11/08/2026): o portal público detectou
-    # as MPs do dia FECHADO e as notas saíram com texto aprovado na sanidade
-    # — evidência positiva sem depender da memória de checagem do Inlabs.
+    # e ANUNCIOU as MPs do dia FECHADO (cards; nota sob demanda no botão) —
+    # evidência positiva sem depender da memória de checagem do Inlabs.
+    # `preservar_numeradas=True` acompanha esse caso: a checagem do dia acabou,
+    # mas nota PROMETIDA (entrada com números) segue na fila até sair.
     if motivo in ("sem_mp", "sem_edicao", "portal_conclusivo"):
         conclusiva = True
     elif entregues > 0 and not falhas and _dia_encerrado(d):
@@ -514,9 +551,13 @@ async def baixa_checagem_manual(
         )
     ))
     for r in rows:
-        if r.key.partition(":")[0] == d.isoformat():
-            await unmark_notified(session, user.id, "nota_pendente", r.key)
-            removidas = True
+        data_r, _, resto_r = r.key.partition(":")
+        if data_r != d.isoformat():
+            continue
+        if preservar_numeradas and resto_r != "all":
+            continue   # nota prometida: a fila entrega, não a baixa do dia
+        await unmark_notified(session, user.id, "nota_pendente", r.key)
+        removidas = True
     # Marca d'água: só avança no passo CONTÍGUO. Pular dias (marca em 01/08 e
     # baixa manual de 03/08) esconderia 02/08 da _cobrir_lacuna pra sempre —
     # perda silenciosa, exatamente o que a marca existe pra impedir.
