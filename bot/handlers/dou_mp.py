@@ -242,8 +242,27 @@ async def _rodar_nota(
                 bot, session, user, target, force=True, only_numeros=only_numeros,
             )
         except DouError as e:
+            from sqlalchemy import select as _select
+
+            from bot.db.models import DouSeenMP
             from bot.services.proactive import already_notified, mark_notified
-            key = f"{target.isoformat()}:{','.join(only_numeros) if only_numeros else 'all'}"
+            pendentes = only_numeros
+            if only_numeros is not None:
+                # Só o que FALTA entra na fila (bug de 13/08/2026: geração
+                # parcial via portal re-enfileirava o dia inteiro, incluindo
+                # notas já entregues).
+                rows = await session.scalars(_select(DouSeenMP).where(
+                    DouSeenMP.user_id == user.id))
+                vistos = {r.numero for r in rows}
+                pendentes = [n for n in only_numeros if n not in vistos]
+                if not pendentes:
+                    await bot.send_message(
+                        user.id,
+                        "✅ As notas pedidas já foram entregues — nada ficou "
+                        "pendente.", parse_mode=None,
+                    )
+                    return
+            key = f"{target.isoformat()}:{','.join(pendentes) if pendentes else 'all'}"
             if not await already_notified(session, user.id, "nota_pendente", key):
                 await mark_notified(session, user.id, "nota_pendente", key)
             await bot.send_message(

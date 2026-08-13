@@ -524,6 +524,89 @@ def test_portal_indisponivel_mantem_a_fila(monkeypatch) -> None:
     assert ok is False and ev["unmarks"] == []
 
 
+def _rodar_nota_portal_cru(monkeypatch, *, portal_mps, vistos=(),
+                           falha_em=()):
+    """_tentar_nota_via_portal com sessão que devolve `vistos` como
+    DouSeenMP e geração que falha pras MPs em `falha_em`."""
+    eventos = {"notas": [], "unmarks": []}
+
+    class _SessaoComVistos:
+        async def scalars(self, _stmt):
+            return [SimpleNamespace(numero=n, ano=2026) for n in vistos]
+
+        async def commit(self):
+            return None
+
+    async def _portal(_d, **_kw):
+        return dou_portal.PortalDia(list(portal_mps), True)
+
+    async def _nota(bot, user, mp, caption_extra=None):
+        if mp["numero"] in falha_em:
+            raise RuntimeError("LLM 500")
+        eventos["notas"].append(mp["numero"])
+
+    async def _unmark(_s, _uid, kind, key):
+        eventos["unmarks"].append(key)
+
+    async def _send(_b, _uid, texto, **kw):
+        return True
+
+    async def _seen(_s, _uid, dc):
+        return None
+
+    from bot.services import dou_monitor as dm
+    monkeypatch.setattr(dou_portal, "checar_dia_portal", _portal)
+    monkeypatch.setattr(dm, "gerar_e_enviar_nota", _nota)
+    monkeypatch.setattr(dm, "mark_seen", _seen)
+    monkeypatch.setattr(proactive, "unmark_notified", _unmark)
+    monkeypatch.setattr(proactive, "_send", _send)
+    monkeypatch.setattr(proactive.settings, "dou_portal_fallback", True)
+    numeros = sorted({mp.numero for mp in portal_mps})
+    key = f"{D.isoformat()}:{','.join(numeros)}"
+    ok = asyncio.run(proactive._tentar_nota_via_portal(
+        None, _SessaoComVistos(), SimpleNamespace(id=9), D, numeros, key))
+    return ok, eventos, key
+
+
+def test_retentativa_pula_notas_ja_entregues(monkeypatch) -> None:
+    """Bug de 13/08/2026: 1.385 e 1.384 entregues, 1.383 falhou → o dia
+    inteiro re-enfileirado e a re-tentativa REGERAVA as entregues. Agora
+    gera SÓ a que falta e dá baixa."""
+    ok, ev, key = _rodar_nota_portal_cru(
+        monkeypatch,
+        portal_mps=[_mp_completa("1.385"), _mp_completa("1.384"),
+                    _mp_completa("1.383")],
+        vistos=("1.385", "1.384"),
+    )
+    assert ok is True
+    assert ev["notas"] == ["1.383"], "só a que faltava — sem duplicar"
+    assert ev["unmarks"] == [key]
+
+
+def test_falha_em_uma_nao_derruba_as_irmas(monkeypatch) -> None:
+    """A falha na geração de UMA MP não pode abortar as demais (entregar
+    2 de 3 é melhor que 0 de 3); a entrada fica na fila pra refazer só a
+    que faltou."""
+    ok, ev, _ = _rodar_nota_portal_cru(
+        monkeypatch,
+        portal_mps=[_mp_completa("1.385"), _mp_completa("1.384"),
+                    _mp_completa("1.383")],
+        falha_em=("1.384",),
+    )
+    assert ok is False
+    assert ev["notas"] == ["1.385", "1.383"], "irmãs entregues mesmo assim"
+    assert ev["unmarks"] == [], "entrada segue na fila pra 1.384"
+
+
+def test_tudo_ja_entregue_da_baixa_sem_regenerar(monkeypatch) -> None:
+    ok, ev, key = _rodar_nota_portal_cru(
+        monkeypatch,
+        portal_mps=[_mp_completa("1.385")],
+        vistos=("1.385",),
+    )
+    assert ok is True and ev["notas"] == [] and ev["unmarks"] == [key]
+
+
 def test_help_documenta_o_portal_verificador() -> None:
     from bot.handlers.start import HELP_TEXT, find_help_sections
     assert "Portal público como verificador" in HELP_TEXT

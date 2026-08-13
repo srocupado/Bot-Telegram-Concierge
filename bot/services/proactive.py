@@ -292,7 +292,14 @@ async def _tentar_nota_via_portal(
 
     Só atende entradas com NÚMEROS conhecidos. Entrada 'all' é CHECAGEM do
     dia — quem a resolve são os caminhos de checagem (portal-primeiro no
-    collect_mp e no /mp_dou_agora), não a geração de nota."""
+    collect_mp e no /mp_dou_agora), não a geração de nota.
+
+    POR MP, não tudo-ou-nada (bug de 13/08/2026: com 3 MPs no dia, a falha
+    na geração da 1.383 abortava as irmãs, o dia inteiro era re-enfileirado
+    e a re-tentativa REGERAVA as notas já entregues — duplicata sistemática,
+    não caso de dúvida). MPs já entregues (DouSeenMP) saem do alvo; falha em
+    uma não derruba as demais; a entrada só sai da fila quando TODAS saíram
+    — e a re-tentativa só refaz o que falta."""
     if not settings.dou_portal_fallback or not numeros:
         return False
     from bot.services import dou_portal
@@ -304,15 +311,28 @@ async def _tentar_nota_via_portal(
         return False
     alvo = set(numeros)
     mps = [mp for mp in dia.mps if mp.numero in alvo]
-    if {mp.numero for mp in mps} != alvo:
-        logger.info("nota pendente %s: portal não tem todas as MPs da fila", key)
-        return False
-    dicts = [dou_portal.mp_dict_para_nota(mp, d) for mp in mps]
-    if any(dc is None for dc in dicts):
-        logger.info("nota pendente %s: texto do portal reprovado na sanidade "
-                    "— seguindo na fila do Inlabs", key)
-        return False
-    for dc in dicts:
+    rows_seen = await session.scalars(
+        select(DouSeenMP).where(DouSeenMP.user_id == user.id))
+    ja_entregues = {(r.numero, r.ano) for r in rows_seen}
+    pendentes = [mp for mp in mps if (mp.numero, mp.ano) not in ja_entregues]
+    faltam_no_portal = alvo - {mp.numero for mp in mps}
+    if not pendentes and not faltam_no_portal:
+        # Tudo desta entrada já foi entregue antes (geração parcial que
+        # re-enfileirou o dia inteiro): baixa SEM regenerar nada.
+        await unmark_notified(session, user.id, "nota_pendente", key)
+        logger.info("nota pendente %s: todas já entregues — baixa sem regenerar", key)
+        return True
+    if faltam_no_portal:
+        logger.info("nota pendente %s: portal não tem %s — Inlabs desempata",
+                    key, sorted(faltam_no_portal))
+    completou = not faltam_no_portal
+    for mp in pendentes:
+        dc = dou_portal.mp_dict_para_nota(mp, d)
+        if dc is None:
+            logger.info("nota pendente %s: texto do portal reprovado na "
+                        "sanidade (MP %s) — fica pro Inlabs", key, mp.numero)
+            completou = False
+            continue
         try:
             async with _SEM_NOTA:
                 await gerar_e_enviar_nota(
@@ -321,16 +341,20 @@ async def _tentar_nota_via_portal(
                                    "(fonte primária)."),
                 )
         except Exception:
-            # Fila intacta: a próxima janela re-tenta (Inlabs OU portal).
+            # Segue pras irmãs: entregar 2 de 3 é melhor que 0 de 3. A
+            # entrada fica na fila e a re-tentativa refaz SÓ o que faltou.
             logger.exception("nota pendente %s: geração via portal falhou (MP %s)",
                              key, dc["numero"])
-            return False
+            completou = False
+            continue
         rows = await session.scalars(
             select(DouSeenMP).where(DouSeenMP.user_id == user.id,
                                     DouSeenMP.numero == dc["numero"],
                                     DouSeenMP.ano == dc["ano"]))
         if not list(rows):
             await mark_seen(session, user.id, dc)
+    if not completou:
+        return False
     await unmark_notified(session, user.id, "nota_pendente", key)
     await _send(bot, user.id, (
         f"✅ Nota(s) de {d.strftime('%d/%m')} entregue(s) com o texto do "
