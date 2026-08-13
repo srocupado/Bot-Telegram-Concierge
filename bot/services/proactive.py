@@ -280,12 +280,38 @@ async def _entregar_nota_pendente(
         logger.info("nota pendente %s entregue", key)
 
 
+# NOTA ENTREGUE ≠ MP VISTA (descoberto em 13/08/2026 auditando o filtro que
+# eu mesmo introduzira horas antes): `DouSeenMP` é marcada no ANÚNCIO da MP —
+# é o registro de "o dono FICOU SABENDO", usado pela conferência da Câmara. A
+# nota técnica sai DEPOIS (por isso existe o outbox). Usar DouSeenMP como
+# "nota já entregue" fazia a fila PULAR nota prometida e nunca gerada: perda
+# silenciosa, o modo de falha que este monitor existe pra não ter. Este kind
+# é marcado só quando o DOCX foi efetivamente enviado.
+_KIND_NOTA_OK = "nota_entregue"
+
+
+async def marcar_nota_entregue(session: AsyncSession, user_id: int,
+                               numero: str, ano: int) -> None:
+    if not await already_notified(session, user_id, _KIND_NOTA_OK, f"{numero}/{ano}"):
+        await mark_notified(session, user_id, _KIND_NOTA_OK, f"{numero}/{ano}")
+
+
+async def notas_entregues(session: AsyncSession, user_id: int) -> set[str]:
+    """Números de MP cuja NOTA TÉCNICA já foi entregue a este usuário."""
+    rows = await session.scalars(
+        select(ProactiveNotice.key).where(
+            ProactiveNotice.user_id == user_id,
+            ProactiveNotice.kind == _KIND_NOTA_OK,
+        )
+    )
+    return {str(k).partition("/")[0] for k in rows}
+
+
 async def _baixar_entradas_cobertas(session: AsyncSession, user_id: int,
                                     d: date, extras: set | frozenset = frozenset()) -> None:
-    """Dá baixa em TODAS as entradas nota_pendente da data cujos números já
-    constam como entregues (DouSeenMP ∪ `extras`, os entregues NESTA rodada
-    — sem depender do commit do mark_seen já estar visível) — independente
-    da ORDEM na chave.
+    """Dá baixa em TODAS as entradas nota_pendente da data cujas notas já
+    foram ENTREGUES (kind nota_entregue ∪ `extras`, as entregues NESTA
+    rodada) — independente da ORDEM na chave.
 
     Bug de 13/08/2026: o botão gravava a chave na ordem do anúncio
     ("1.385,1.384,1.383") e o comando, ordenada ("1.383,1.384,1.385"); a
@@ -297,16 +323,14 @@ async def _baixar_entradas_cobertas(session: AsyncSession, user_id: int,
             ProactiveNotice.kind == "nota_pendente",
         )
     ))
-    vistos_rows = await session.scalars(
-        select(DouSeenMP).where(DouSeenMP.user_id == user_id))
-    vistos = {r.numero for r in vistos_rows} | set(extras)
+    entregues_ = await notas_entregues(session, user_id) | set(extras)
     for r in rows:
         data, _, resto = r.key.partition(":")
         if data != d.isoformat() or resto in ("", "all"):
             continue
-        if set(resto.split(",")) <= vistos:
+        if set(resto.split(",")) <= entregues_:
             await unmark_notified(session, user_id, "nota_pendente", r.key)
-            logger.info("nota pendente %s: números já entregues — baixa", r.key)
+            logger.info("nota pendente %s: notas já entregues — baixa", r.key)
 
 
 async def _tentar_nota_via_portal(
@@ -340,10 +364,10 @@ async def _tentar_nota_via_portal(
         return False
     alvo = set(numeros)
     mps = [mp for mp in dia.mps if mp.numero in alvo]
-    rows_seen = await session.scalars(
-        select(DouSeenMP).where(DouSeenMP.user_id == user.id))
-    ja_entregues = {(r.numero, r.ano) for r in rows_seen}
-    pendentes = [mp for mp in mps if (mp.numero, mp.ano) not in ja_entregues]
+    # Filtro por NOTA ENTREGUE (não por MP vista — ver _KIND_NOTA_OK): MP
+    # apenas anunciada continua com nota devida e TEM de ser gerada.
+    ja_entregues = await notas_entregues(session, user.id)
+    pendentes = [mp for mp in mps if mp.numero not in ja_entregues]
     faltam_no_portal = alvo - {mp.numero for mp in mps}
     if not pendentes and not faltam_no_portal:
         # Tudo desta entrada já foi entregue antes (geração parcial que
@@ -378,6 +402,7 @@ async def _tentar_nota_via_portal(
                              key, dc["numero"])
             completou = False
             continue
+        await marcar_nota_entregue(session, user.id, dc["numero"], dc["ano"])
         rows = await session.scalars(
             select(DouSeenMP).where(DouSeenMP.user_id == user.id,
                                     DouSeenMP.numero == dc["numero"],

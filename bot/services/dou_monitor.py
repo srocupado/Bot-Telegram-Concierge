@@ -1786,6 +1786,10 @@ async def deliver_to_user(
                             mp["numero"], mp["ano"])
             async with _SEM_NOTA:
                 await _gerar_e_enviar(mp)
+            # Registro de NOTA ENTREGUE (≠ MP vista, que é marcada no aviso
+            # lá em cima): é o que autoriza a fila a não regerar.
+            from bot.services.proactive import marcar_nota_entregue
+            await marcar_nota_entregue(session, user.id, mp["numero"], mp["ano"])
             return True
         except Exception:
             logger.exception("dou: falha ao gerar/enviar nota da MP %s/%s",

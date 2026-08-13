@@ -226,19 +226,15 @@ async def _rodar_nota(
                 bot, session, user, target, force=True, only_numeros=only_numeros,
             )
         except DouError as e:
-            from sqlalchemy import select as _select
-
-            from bot.db.models import DouSeenMP
             from bot.services.proactive import already_notified, mark_notified
             pendentes = only_numeros
             if only_numeros is not None:
                 # Só o que FALTA entra na fila (bug de 13/08/2026: geração
                 # parcial via portal re-enfileirava o dia inteiro, incluindo
-                # notas já entregues).
-                rows = await session.scalars(_select(DouSeenMP).where(
-                    DouSeenMP.user_id == user.id))
-                vistos = {r.numero for r in rows}
-                pendentes = [n for n in only_numeros if n not in vistos]
+                # notas já entregues). Critério = NOTA entregue, não MP vista.
+                from bot.services.proactive import notas_entregues
+                entregues_ = await notas_entregues(session, user.id)
+                pendentes = [n for n in only_numeros if n not in entregues_]
                 if not pendentes:
                     await bot.send_message(
                         user.id,
@@ -611,13 +607,76 @@ def _fmt_fila_mp(fila: dict) -> str:
 async def cmd_em_fila(message: Message, user: User, session: AsyncSession) -> None:
     """Mostra o que está na fila do monitor de MP: notas técnicas com número
     conhecido aguardando geração e dias que ainda serão verificados/re-checados.
-    Read-only — não altera a fila."""
+    Read-only — não altera a fila (a baixa só sai por BOTÃO explícito)."""
     if not user.is_authorized:
         return
     from bot.services.proactive import listar_fila_mp
     hoje = datetime.now(ZoneInfo(user.timezone)).date()
     fila = await listar_fila_mp(session, user.id, hoje)
-    await message.answer(_fmt_fila_mp(fila), parse_mode="HTML")
+    # Botão de baixa por DATA das notas na fila: o dono é a evidência de que
+    # a nota chegou. Existe porque o registro de "nota entregue" nasceu em
+    # 13/08/2026 — nota entregue ANTES disso não tem como ser reconhecida
+    # sozinha, e a fila ficaria pedindo pra sempre. Serve também pro dia em
+    # que ele simplesmente não quer mais aquela nota.
+    datas = sorted({d for d, _ in (fila.get("notas") or []) if d})
+    kb = None
+    if datas:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text=f"✅ Já recebi as notas de {d.strftime('%d/%m')}",
+                callback_data=f"doump:filaok:{d.isoformat()}",
+            )] for d in datas[:6]
+        ])
+    await message.answer(_fmt_fila_mp(fila), parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("doump:filaok:"))
+async def cb_fila_ok(query: CallbackQuery, user: User, session: AsyncSession) -> None:
+    """'✅ Já recebi as notas de DD/MM': baixa EXPLÍCITA das notas daquela
+    data. Registra as MPs como nota entregue (o dono é a evidência), então a
+    re-checagem não re-enfileira. NÃO mexe na verificação do dia — se o dia
+    ainda estiver por confirmar, ele continua na fila de dias."""
+    if not user.is_authorized:
+        await query.answer()
+        return
+    from sqlalchemy import select as _select
+
+    from bot.db.models import ProactiveNotice
+    from bot.services.proactive import (
+        marcar_nota_entregue, unmark_notified,
+    )
+    try:
+        alvo = date.fromisoformat(query.data.split(":")[2])
+    except (IndexError, ValueError):
+        await query.answer("Data inválida.", show_alert=True)
+        return
+    rows = list(await session.scalars(_select(ProactiveNotice).where(
+        ProactiveNotice.user_id == user.id,
+        ProactiveNotice.kind == "nota_pendente",
+    )))
+    numeros: set[str] = set()
+    for r in rows:
+        data_r, _, resto_r = r.key.partition(":")
+        if data_r != alvo.isoformat() or resto_r in ("", "all"):
+            continue
+        numeros.update(n for n in resto_r.split(",") if n)
+        await unmark_notified(session, user.id, "nota_pendente", r.key)
+    if not numeros:
+        await query.answer("Nada na fila para essa data.", show_alert=True)
+        return
+    for numero in sorted(numeros):
+        await marcar_nota_entregue(session, user.id, numero, alvo.year)
+    logger.info("fila de notas: baixa explícita do dono em %s (%s)",
+                alvo, ",".join(sorted(numeros)))
+    await query.answer("Fila limpa.")
+    await query.message.answer(
+        f"✅ Tirei da fila as notas de {alvo.strftime('%d/%m/%Y')} "
+        f"(MP {', '.join(sorted(numeros))}) — você confirmou que recebeu. "
+        "Não vou gerar de novo. Se precisar delas depois, "
+        f"<code>/mp_dou_agora {alvo.strftime('%d/%m/%Y')}</code> traz os "
+        "cards com o botão de nota.",
+        parse_mode="HTML",
+    )
 
 
 def _parse_data_arg(arg: str, hoje: date) -> date | None:

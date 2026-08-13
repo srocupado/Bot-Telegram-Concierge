@@ -34,7 +34,7 @@ HELP_TEXT = (
     "<b>Medidas Provisórias — publicação no Diário Oficial</b>:\n"
     "• <code>/mp_dou_on</code> / <code>/mp_dou_off</code> — assina/desassina o digest diário de MPs novas no DOU\n"
     "• <code>/mp_dou_agora [AAAA-MM-DD]</code> — busca agora; cada MP encontrada vem com o card completo (ementa, prazos, Planalto) e um <b>botão próprio de gerar a nota técnica</b> — você escolhe qual MP merece nota, uma a uma (a geração roda em segundo plano e leva alguns minutos). Checagem conclusiva (dia fechado, fonte completa) também dá baixa na fila de re-checagem\n"
-    "• <code>/mp_em_fila</code> (ou <code>/mp_fila</code>) — mostra o que está na fila: notas técnicas aguardando geração e dias ainda não verificados, re-tentados pelo portal e pelo Inlabs. Só consulta, não altera nada\n"
+    "• <code>/mp_em_fila</code> (ou <code>/mp_fila</code>) — mostra o que está na fila: notas técnicas aguardando geração e dias ainda não verificados, re-tentados pelo portal e pelo Inlabs. Só consulta; havendo nota na fila, aparece o botão <b>\"✅ Já recebi as notas de DD/MM\"</b> pra dar baixa quando a nota já chegou (ou quando você não a quer mais) — o bot não gera de novo\n"
     "• <code>/dou_provider</code> — escolhe o motor da nota técnica (ex.: <code>/dou_provider 3.5</code>, <code>/dou_provider gemini 3.1-lite</code>, <code>/dou_provider anthropic sonnet</code>, <code>/dou_provider opus</code>, <code>/dou_provider padrao</code>). Ajusta latência/qualidade sem mexer no .env\n"
     "• Por voz/texto: <i>\"saiu MP nova hoje?\"</i> → lista número + ementa\n"
     "• Cobre edição normal E extra — inclusive a edição extra de sábado/feriado que o DOU publica SÓ em PDF (sem o XML). O bot lê a pasta do dia, extrai o texto do PDF e entrega a MP normalmente\n"
@@ -302,6 +302,10 @@ _HELP_KEYWORDS: dict[str, str] = {
     "feriado": "diario oficial", "pdf": "diario oficial",
     "fila": "diario oficial", "aguardando": "diario oficial",
     "represada": "diario oficial", "gerando": "diario oficial",
+    # baixa explícita da fila de notas ("já recebi", "tira da fila")
+    "recebi": "diario oficial", "receber": "diario oficial",
+    "limpar fila": "diario oficial", "tirar da fila": "diario oficial",
+    "baixa": "diario oficial",
     "congresso": "pauta do congresso", "pauta": "pauta do congresso",
     "financeiro": "gerenciador financeiro", "cartao": "gerenciador financeiro",
     "despesa": "gerenciador financeiro", "fatura": "gerenciador financeiro",

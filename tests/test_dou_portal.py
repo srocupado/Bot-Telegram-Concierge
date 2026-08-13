@@ -451,11 +451,19 @@ def _harness_nota_portal(monkeypatch, portal_result, numeros=("1.382",)):
     async def _seen(_s, _uid, mp):
         eventos["seen"].append((mp["numero"], mp["ano"]))
 
+    async def _entregues(_s, _uid):
+        return set()
+
+    async def _marcar(_s, _uid, numero, ano):
+        eventos.setdefault("nota_ok", []).append((numero, ano))
+
     monkeypatch.setattr(dou_portal, "checar_dia_portal", _portal)
     monkeypatch.setattr(dm, "gerar_e_enviar_nota", _nota)
     monkeypatch.setattr(dm, "mark_seen", _seen)
     monkeypatch.setattr(proactive, "unmark_notified", _unmark)
     monkeypatch.setattr(proactive, "_send", _send)
+    monkeypatch.setattr(proactive, "notas_entregues", _entregues)
+    monkeypatch.setattr(proactive, "marcar_nota_entregue", _marcar)
     monkeypatch.setattr(proactive.settings, "dou_portal_fallback", True)
 
     user = SimpleNamespace(id=99, dou_mp_provider=None, dou_mp_model=None)
@@ -483,6 +491,7 @@ def test_nota_da_fila_sai_com_texto_do_portal(monkeypatch) -> None:
     assert numero == "1.382"
     assert "portal oficial" in caption, "origem do texto é DITA na entrega"
     assert ev["seen"] == [("1.382", 2026)], "entregue = visto (conferência da Câmara)"
+    assert ev.get("nota_ok") == [("1.382", 2026)], "marcador de NOTA entregue"
     assert ev["unmarks"] == [("nota_pendente", f"{D.isoformat()}:1.382")]
     assert any("PORTAL" in s for s in ev["sends"])
 
@@ -524,18 +533,19 @@ def test_portal_indisponivel_mantem_a_fila(monkeypatch) -> None:
     assert ok is False and ev["unmarks"] == []
 
 
-def _rodar_nota_portal_cru(monkeypatch, *, portal_mps, vistos=(),
-                           falha_em=(), entradas=()):
-    """_tentar_nota_via_portal com sessão que devolve `vistos` (DouSeenMP,
-    lista VIVA — mark_seen alimenta), `entradas` (nota_pendente existentes)
-    e geração que falha pras MPs em `falha_em`."""
-    eventos = {"notas": [], "unmarks": []}
-    vivos = list(vistos)
+def _rodar_nota_portal_cru(monkeypatch, *, portal_mps, entregues=(),
+                           vistos=(), falha_em=(), entradas=()):
+    """_tentar_nota_via_portal com `entregues` (notas JÁ entregues — kind
+    nota_entregue), `vistos` (DouSeenMP: MP apenas anunciada), `entradas`
+    (nota_pendente existentes) e geração que falha pras MPs em `falha_em`."""
+    eventos = {"notas": [], "unmarks": [], "marcadas": []}
+    entregues_vivas = set(entregues)
 
     class _Sessao2:
         async def scalars(self, stmt):
-            if "dou_seen" in str(stmt):
-                return [SimpleNamespace(numero=n, ano=2026) for n in vivos]
+            txt = str(stmt)
+            if "dou_seen" in txt:
+                return [SimpleNamespace(numero=n, ano=2026) for n in vistos]
             return [SimpleNamespace(key=k) for k in entradas]
 
         async def commit(self):
@@ -556,7 +566,14 @@ def _rodar_nota_portal_cru(monkeypatch, *, portal_mps, vistos=(),
         return True
 
     async def _seen(_s, _uid, dc):
-        vivos.append(dc["numero"])
+        return None
+
+    async def _entregues(_s, _uid):
+        return set(entregues_vivas)
+
+    async def _marcar(_s, _uid, numero, ano):
+        entregues_vivas.add(numero)
+        eventos["marcadas"].append(numero)
 
     from bot.services import dou_monitor as dm
     monkeypatch.setattr(dou_portal, "checar_dia_portal", _portal)
@@ -564,12 +581,32 @@ def _rodar_nota_portal_cru(monkeypatch, *, portal_mps, vistos=(),
     monkeypatch.setattr(dm, "mark_seen", _seen)
     monkeypatch.setattr(proactive, "unmark_notified", _unmark)
     monkeypatch.setattr(proactive, "_send", _send)
+    monkeypatch.setattr(proactive, "notas_entregues", _entregues)
+    monkeypatch.setattr(proactive, "marcar_nota_entregue", _marcar)
     monkeypatch.setattr(proactive.settings, "dou_portal_fallback", True)
     numeros = sorted({mp.numero for mp in portal_mps})
     key = f"{D.isoformat()}:{','.join(numeros)}"
     ok = asyncio.run(proactive._tentar_nota_via_portal(
         None, _Sessao2(), SimpleNamespace(id=9), D, numeros, key))
     return ok, eventos, key
+
+
+def test_mp_apenas_anunciada_ainda_tem_nota_gerada(monkeypatch) -> None:
+    """REGRESSÃO do bug que eu introduzi em 13/08/2026: o filtro de 'já
+    entregue' usava DouSeenMP, que é marcada no ANÚNCIO da MP (é o registro
+    de 'o dono ficou sabendo', usado pela conferência da Câmara) — a nota
+    sai depois, por isso existe o outbox. Com o filtro errado, nota
+    PROMETIDA e nunca gerada era pulada e a fila baixada: perda silenciosa.
+    Aqui a MP está vista mas SEM nota entregue → tem de gerar."""
+    ok, ev, key = _rodar_nota_portal_cru(
+        monkeypatch,
+        portal_mps=[_mp_completa("1.385")],
+        vistos=("1.385",),      # anunciada
+        entregues=(),           # nota NUNCA entregue
+    )
+    assert ok is True
+    assert ev["notas"] == ["1.385"], "nota prometida não pode ser pulada"
+    assert ev["marcadas"] == ["1.385"], "entrega registra o marcador próprio"
 
 
 def test_retentativa_pula_notas_ja_entregues(monkeypatch) -> None:
@@ -580,7 +617,7 @@ def test_retentativa_pula_notas_ja_entregues(monkeypatch) -> None:
         monkeypatch,
         portal_mps=[_mp_completa("1.385"), _mp_completa("1.384"),
                     _mp_completa("1.383")],
-        vistos=("1.385", "1.384"),
+        entregues=("1.385", "1.384"),
     )
     assert ok is True
     assert ev["notas"] == ["1.383"], "só a que faltava — sem duplicar"
@@ -606,7 +643,7 @@ def test_tudo_ja_entregue_da_baixa_sem_regenerar(monkeypatch) -> None:
     ok, ev, key = _rodar_nota_portal_cru(
         monkeypatch,
         portal_mps=[_mp_completa("1.385")],
-        vistos=("1.385",),
+        entregues=("1.385",),
     )
     assert ok is True and ev["notas"] == [] and ev["unmarks"] == [key]
 
@@ -621,13 +658,60 @@ def test_baixa_cobre_chave_com_ordem_diferente(monkeypatch) -> None:
         monkeypatch,
         portal_mps=[_mp_completa("1.385"), _mp_completa("1.384"),
                     _mp_completa("1.383")],
-        vistos=("1.385", "1.384"),
+        entregues=("1.385", "1.384"),
         entradas=(orfa,),
     )
     assert ok is True
     assert ev["notas"] == ["1.383"]
     assert key in ev["unmarks"], "a própria chave recebe baixa"
     assert orfa in ev["unmarks"], "a irmã fora de ordem morre junto"
+
+
+def test_botao_da_fila_da_baixa_e_registra_entrega(monkeypatch) -> None:
+    """'✅ Já recebi as notas de DD/MM' (dono, 13/08/2026): as 3 notas do dia
+    tinham sido entregues ANTES do marcador de entrega existir, e a fila
+    pedia pra sempre. A baixa explícita limpa a entrada E registra as MPs
+    como nota entregue — a re-checagem não re-enfileira."""
+    from bot.db.models import ProactiveNotice
+    from bot.handlers import dou_mp
+    ev = {"unmarks": [], "marcadas": [], "msgs": [], "alertas": []}
+    entradas = [f"{D.isoformat()}:1.385,1.384,1.383",
+                f"{D.isoformat()}:all",                 # checagem: NÃO mexe
+                f"{(D + timedelta(days=1)).isoformat()}:1.390"]  # outro dia
+
+    class _Sessao:
+        async def scalars(self, _stmt):
+            return [SimpleNamespace(key=k) for k in entradas]
+
+    async def _unmark(_s, _uid, kind, key):
+        ev["unmarks"].append(key)
+
+    async def _marcar(_s, _uid, numero, ano):
+        ev["marcadas"].append((numero, ano))
+
+    monkeypatch.setattr(proactive, "unmark_notified", _unmark)
+    monkeypatch.setattr(proactive, "marcar_nota_entregue", _marcar)
+
+    class _Msg:
+        async def answer(self, texto, **kw):
+            ev["msgs"].append(texto)
+
+    class _Query:
+        data = f"doump:filaok:{D.isoformat()}"
+        message = _Msg()
+
+        async def answer(self, texto=None, **kw):
+            ev["alertas"].append(texto)
+
+    asyncio.run(dou_mp.cb_fila_ok(
+        _Query(), SimpleNamespace(id=9, is_authorized=True), _Sessao()))
+
+    assert ev["unmarks"] == [f"{D.isoformat()}:1.385,1.384,1.383"], (
+        "só a entrada de NOTA daquele dia — 'all' e outras datas ficam"
+    )
+    assert sorted(ev["marcadas"]) == [("1.383", 2026), ("1.384", 2026),
+                                      ("1.385", 2026)]
+    assert any("Tirei da fila" in m for m in ev["msgs"])
 
 
 def test_help_documenta_o_portal_verificador() -> None:
