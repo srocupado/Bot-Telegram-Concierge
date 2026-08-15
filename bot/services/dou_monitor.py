@@ -1513,8 +1513,9 @@ async def filter_unseen(session: AsyncSession, user_id: int, mps: list[dict]) ->
     rows = await session.scalars(
         select(DouSeenMP).where(DouSeenMP.user_id == user_id)
     )
-    seen = {(r.numero, r.ano) for r in rows}
-    return [mp for mp in mps if (mp["numero"], mp["ano"]) not in seen]
+    seen = {(numero_canonico(r.numero), r.ano) for r in rows}
+    return [mp for mp in mps
+            if (numero_canonico(mp["numero"]), mp["ano"]) not in seen]
 
 
 # Folga pra Câmara registrar a MP publicada. Sem ela, a MP de hoje apareceria
@@ -1557,7 +1558,9 @@ async def mps_nao_recebidas(
     rows = await session.scalars(
         select(DouSeenMP).where(DouSeenMP.user_id == user_id)
     )
-    recebidas = {(r.numero, r.ano) for r in rows}
+    # Comparação em forma CANÔNICA (ver numero_canonico): o portal grava
+    # '1.385' e a Câmara devolve '1385' — string exata acusava tudo.
+    recebidas = {(numero_canonico(r.numero), r.ano) for r in rows}
     # DouSeenMP só registra MP com NOTA entregue. A detecção normal do proativo
     # avisa a MP e grava ProactiveNotice(kind="mp") — sem isso, MP que o dono
     # leu no briefing e dispensou a nota ("Não" no botão) seria acusada de
@@ -1572,11 +1575,12 @@ async def mps_nao_recebidas(
     for r in avisos:
         num, _, ano = (r.key or "").partition("/")
         try:
-            recebidas.add((num, int(ano)))
+            recebidas.add((numero_canonico(num), int(ano)))
         except ValueError:
             logger.warning("dou: chave de aviso de MP inesperada: %r", r.key)
     faltando = [
-        mp for mp in candidatas if (mp["numero"], mp["ano"]) not in recebidas
+        mp for mp in candidatas
+        if (numero_canonico(mp["numero"]), mp["ano"]) not in recebidas
     ]
     if faltando:
         logger.warning(
@@ -1585,6 +1589,21 @@ async def mps_nao_recebidas(
             ", ".join(f"{mp['numero']}/{mp['ano']}" for mp in faltando),
         )
     return sorted(faltando, key=lambda mp: mp["data"])
+
+
+def numero_canonico(numero) -> str:
+    """Número da MP em forma CANÔNICA: só dígitos ('1.385' → '1385').
+
+    Identidade de MP é comparada por string em todo o projeto (DouSeenMP,
+    ProactiveNotice kind='mp'/'nota_entregue', chaves de fila, conferência
+    com a Câmara), e cada fonte escreve o milhar de um jeito: Inlabs e
+    Câmara sem ponto, portal com ponto (o título do DOU traz '1.385'). Em
+    15/08/2026 isso explodiu: com o portal como fonte primária, a
+    conferência acusou as três MPs de 13/08 como NÃO RECEBIDAS — o dono
+    tinha os cards e as notas na mão — e ia re-enfileirar o dia e regerar
+    tudo. Normalizar nas duas pontas cobre inclusive o que já está gravado
+    com ponto no banco (sem migração)."""
+    return "".join(c for c in str(numero or "") if c.isdigit())
 
 
 async def mark_seen(session: AsyncSession, user_id: int, mp: dict) -> None:

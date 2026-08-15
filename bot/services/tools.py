@@ -1425,12 +1425,14 @@ async def _h_consultar_mp_dou(args: dict, ctx: ToolContext) -> str:
         return "ok: resultado enviado ao usuário (não escreva nada)"
     # Sinaliza ao handler de chat/voz pra oferecer a nota técnica com botões.
     ctx.dou_mp_found = {"date_iso": target.isoformat(), "count": len(itens)}
+    from bot.services.dou_monitor import _num_fmt
     from bot.services.proactive import _clean_ementa
     n = len(itens)
     plural = "Medida Provisória publicada" if n == 1 else "Medidas Provisórias publicadas"
     linhas = [f"📜 {n} {plural} no DOU em {target.strftime('%d/%m/%Y')}:"]
     for numero, ano, ementa in itens:
-        linhas.append(f"• MP {numero}/{ano} — {_clean_ementa(ementa)}")
+        # Número interno é canônico ('1385'); a tela mostra o milhar.
+        linhas.append(f"• MP {_num_fmt(numero)}/{ano} — {_clean_ementa(ementa)}")
     linhas.append("\nQuer a nota técnica completa? 👇")
     # VERBATIM: número, ano e ementa de MP são dado determinístico — pedir
     # "repasse exatamente" ao LLM já não segurou (encurtava ementa, juntava

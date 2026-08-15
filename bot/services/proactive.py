@@ -298,13 +298,14 @@ async def marcar_nota_entregue(session: AsyncSession, user_id: int,
 
 async def notas_entregues(session: AsyncSession, user_id: int) -> set[str]:
     """Números de MP cuja NOTA TÉCNICA já foi entregue a este usuário."""
+    from bot.services.dou_monitor import numero_canonico
     rows = await session.scalars(
         select(ProactiveNotice.key).where(
             ProactiveNotice.user_id == user_id,
             ProactiveNotice.kind == _KIND_NOTA_OK,
         )
     )
-    return {str(k).partition("/")[0] for k in rows}
+    return {numero_canonico(str(k).partition("/")[0]) for k in rows}
 
 
 async def _baixar_entradas_cobertas(session: AsyncSession, user_id: int,
@@ -323,12 +324,14 @@ async def _baixar_entradas_cobertas(session: AsyncSession, user_id: int,
             ProactiveNotice.kind == "nota_pendente",
         )
     ))
-    entregues_ = await notas_entregues(session, user_id) | set(extras)
+    from bot.services.dou_monitor import numero_canonico
+    entregues_ = (await notas_entregues(session, user_id)
+                  | {numero_canonico(n) for n in extras})
     for r in rows:
         data, _, resto = r.key.partition(":")
         if data != d.isoformat() or resto in ("", "all"):
             continue
-        if set(resto.split(",")) <= entregues_:
+        if {numero_canonico(n) for n in resto.split(",")} <= entregues_:
             await unmark_notified(session, user_id, "nota_pendente", r.key)
             logger.info("nota pendente %s: notas já entregues — baixa", r.key)
 
@@ -366,8 +369,10 @@ async def _tentar_nota_via_portal(
     mps = [mp for mp in dia.mps if mp.numero in alvo]
     # Filtro por NOTA ENTREGUE (não por MP vista — ver _KIND_NOTA_OK): MP
     # apenas anunciada continua com nota devida e TEM de ser gerada.
+    from bot.services.dou_monitor import numero_canonico
     ja_entregues = await notas_entregues(session, user.id)
-    pendentes = [mp for mp in mps if mp.numero not in ja_entregues]
+    pendentes = [mp for mp in mps
+                 if numero_canonico(mp.numero) not in ja_entregues]
     faltam_no_portal = alvo - {mp.numero for mp in mps}
     if not pendentes and not faltam_no_portal:
         # Tudo desta entrada já foi entregue antes (geração parcial que
@@ -947,7 +952,7 @@ async def collect_mp(
 ) -> list[ProactiveFact]:
     if not user.dou_mp_subscribed:
         return []
-    from bot.services.dou_monitor import fetch_mps
+    from bot.services.dou_monitor import _num_fmt, fetch_mps, numero_canonico
     facts: list[ProactiveFact] = []
     seen: set[str] = set()
     failed: list[date] = []
@@ -982,13 +987,14 @@ async def collect_mp(
                     rows_seen = await session.scalars(
                         select(DouSeenMP).where(DouSeenMP.user_id == user.id)
                     )
-                    entregues = {(r.numero, r.ano) for r in rows_seen}
-                if (mp["numero"], mp["ano"]) in entregues:
+                    entregues = {(numero_canonico(r.numero), r.ano)
+                                 for r in rows_seen}
+                if (numero_canonico(mp["numero"]), mp["ano"]) in entregues:
                     continue
             ementa = _clean_ementa(mp.get("ementa") or "")
             out.append(ProactiveFact(
                 "mp", "mp", key,
-                f"📜 MP {mp['numero']}/{mp['ano']}: {ementa}",
+                f"📜 MP {_num_fmt(mp['numero'])}/{mp['ano']}: {ementa}",
                 date_iso=d.isoformat(),
             ))
         return _Colheita(out, completo, provisorio,
@@ -1052,12 +1058,14 @@ async def collect_mp(
                     rows_seen = await session.scalars(
                         select(DouSeenMP).where(DouSeenMP.user_id == user.id)
                     )
-                    entregues = {(r.numero, r.ano) for r in rows_seen}
-                if (mp.numero, mp.ano) in entregues:
+                    entregues = {(numero_canonico(r.numero), r.ano)
+                                 for r in rows_seen}
+                if (numero_canonico(mp.numero), mp.ano) in entregues:
                     continue
             ementa = _clean_ementa(mp.ementa or mp.titulo)
             out.append(ProactiveFact(
-                "mp", "mp", key, f"📜 MP {mp.numero}/{mp.ano}: {ementa}",
+                "mp", "mp", key,
+                f"📜 MP {_num_fmt(mp.numero)}/{mp.ano}: {ementa}",
                 date_iso=d.isoformat(),
             ))
         if houve_mp:

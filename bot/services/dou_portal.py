@@ -264,7 +264,10 @@ async def checar_dia_portal(d: date, *, controle: date | None = None) -> PortalD
             if not m:
                 # MP detectada sem identidade parseável não pode sumir calada.
                 raise PortalError(f"título de MP não parseável: {titulo!r}")
-            numero, ano = m.group(1), int(m.group(2))
+            # Número CANÔNICO (sem o ponto de milhar do título): é a mesma
+            # forma que o Inlabs e a Câmara usam. Divergir disso quebrou a
+            # conferência em 15/08/2026 — ver dou_monitor.numero_canonico.
+            numero, ano = m.group(1).replace(".", ""), int(m.group(2))
             if (numero, ano) in vistos:
                 continue
             vistos.add((numero, ano))
