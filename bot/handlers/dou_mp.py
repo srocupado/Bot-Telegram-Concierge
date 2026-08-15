@@ -168,6 +168,28 @@ async def _checar_via_portal(bot, session, user, target: date) -> bool:
             parse_mode=None,
         )
         return True
+
+    if dia.sem_edicao:
+        # Dia ABERTO e ainda SEM edição (sábado/domingo/feriado, ou manhã
+        # cedo): é RESPOSTA apurada, não "não consegui checar" — o índice
+        # está vivo (dia-controle respondeu) e simplesmente não há Diário
+        # até agora. Sem baixa: extra tardia ainda pode sair.
+        #
+        # Bug do dono (15/08/2026, sábado): este ramo não existia e o
+        # comando caía no Inlabs; com ele fora, a resposta foi "o portal
+        # também não foi conclusivo" — enquanto a janela das 19h05, pelo
+        # MESMO portal, dizia "sem edição publicada". Duas respostas
+        # contraditórias no mesmo dia, e a errada era a que assustava.
+        await bot.send_message(
+            user.id,
+            f"📄 Pelo portal oficial do DOU: até agora NÃO há edição "
+            f"publicada em {dd} (o índice do DOU está no ar e responde por "
+            "outros dias). Em sábado, domingo e feriado é o normal — só sai "
+            "Diário se houver edição extra. Sigo vigiando nas próximas "
+            "janelas e no briefing de amanhã.",
+            parse_mode=None,
+        )
+        return True
     return False
 
 

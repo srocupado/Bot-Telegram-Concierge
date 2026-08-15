@@ -882,6 +882,22 @@ def test_manual_mp_manda_card_com_botao_sem_gerar(monkeypatch) -> None:
     assert ev["baixas"] == [(alvo, 2, "portal_conclusivo", True)]
 
 
+def test_manual_dia_aberto_sem_edicao_responde_sem_baixa(monkeypatch) -> None:
+    """Sábado 15/08/2026 (dono): a janela das 19h05 disse pelo portal 'sem
+    edição publicada', e o /mp_dou_agora minutos depois disse 'o portal
+    também não foi conclusivo' — contradição, porque o ramo dia ABERTO +
+    sem_edicao não existia e o comando caía no Inlabs (fora). Agora é
+    resposta apurada, sem baixa (extra tardia ainda pode sair)."""
+    ok, ev, _ = _rodar_manual(
+        monkeypatch, dou_portal.PortalDia([], False, sem_edicao=True),
+        dias_atras=0,    # HOJE: dia ainda aberto
+    )
+    assert ok is True, "portal respondeu — não pode cair pro Inlabs"
+    assert any("NÃO há edição" in m for m in ev["msgs"])
+    assert any("Sigo vigiando" in m for m in ev["msgs"])
+    assert ev["baixas"] == [], "dia aberto não recebe baixa"
+
+
 def test_manual_inconclusivo_devolve_pro_caminho_da_fila(monkeypatch) -> None:
     ok, ev, _ = _rodar_manual(monkeypatch, dou_portal.PortalDia([], False))
     assert ok is False and ev["msgs"] == [] and ev["baixas"] == []
