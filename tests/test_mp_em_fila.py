@@ -92,8 +92,9 @@ def test_listar_fila_ignora_chave_corrompida() -> None:
 def test_fmt_alvo() -> None:
     assert _fmt_alvo("all") == "todas as MPs"
     assert _fmt_alvo("") == "todas as MPs"
-    assert _fmt_alvo("1382") == "MP 1382"
-    assert _fmt_alvo("1382,1383") == "MPs 1382, 1383"
+    assert _fmt_alvo("1382") == "MP 1.382"
+    assert _fmt_alvo("1382,1383") == "MPs 1.382, 1.383", (
+        "chave canônica, TELA com milhar (simulação de 16/08/2026)")
 
 
 def test_fmt_fila_vazia() -> None:
@@ -116,7 +117,7 @@ def test_fmt_fila_com_notas_e_dias() -> None:
         "manutencao": True,
     }
     out = _fmt_fila_mp(fila)
-    assert "MP 1382 de 01/08/2026" in out
+    assert "MP 1.382 de 01/08/2026" in out
     assert "30/07/2026 — re-checando a cada janela; desisto (com aviso) em 11 dia(s)" in out
     assert "29/07/2026 — re-checando a cada janela; desisto (com aviso) em 10 dia(s)" in out
     assert "Inlabs em manutenção" in out

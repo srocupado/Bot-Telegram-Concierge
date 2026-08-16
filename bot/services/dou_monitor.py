@@ -1816,8 +1816,9 @@ async def deliver_to_user(
             try:
                 await bot.send_message(
                     user.id,
-                    f"⚠️ Não consegui gerar a nota técnica da MP {mp['numero']}/{mp['ano']} "
-                    "agora. Tente /mp_dou_agora mais tarde.",
+                    f"⚠️ Não consegui gerar a nota técnica da MP "
+                    f"{_num_fmt(mp['numero'])}/{mp['ano']} agora. "
+                    "Tente /mp_dou_agora mais tarde.",
                     parse_mode=None,
                 )
             except Exception:

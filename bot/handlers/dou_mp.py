@@ -92,7 +92,7 @@ async def _checar_via_portal(bot, session, user, target: date) -> bool:
     Inlabs como desempate."""
     from bot.services import dou_portal
     from bot.services.dou_monitor import (
-        PLANALTO_BASE, _dia_encerrado, _planalto_period,
+        PLANALTO_BASE, _dia_encerrado, _num_fmt, _planalto_period,
         format_telegram_message, registrar_checagem_ok,
     )
     from bot.services.proactive import baixa_checagem_manual
@@ -121,7 +121,9 @@ async def _checar_via_portal(bot, session, user, target: date) -> bool:
                 "edicao": mp.edicao,
             }
             kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
-                text=f"📄 Gerar nota técnica da MP {mp.numero}",
+                # _num_fmt: o número interno é canônico ('1385'); a tela
+                # mostra o milhar, igual ao título do card logo acima.
+                text=f"📄 Gerar nota técnica da MP {_num_fmt(mp.numero)}",
                 callback_data=f"doump:y:{target.isoformat()}:{mp.numero}",
             )]])
             await bot.send_message(
@@ -550,10 +552,13 @@ async def cmd_off(message: Message, user: User, session: AsyncSession) -> None:
 
 
 def _fmt_alvo(nums: str) -> str:
-    """'all'→'todas as MPs'; '1382'→'MP 1382'; '1382,1383'→'MPs 1382, 1383'."""
+    """'all'→'todas as MPs'; '1382'→'MP 1.382'; '1382,1383'→'MPs 1.382, 1.383'.
+    Chave interna é canônica (sem ponto); a TELA mostra o milhar, igual aos
+    cards — a fila exibia '1385' cru (simulação de 16/08/2026)."""
+    from bot.services.dou_monitor import _num_fmt
     if not nums or nums == "all":
         return "todas as MPs"
-    partes = [n for n in nums.split(",") if n]
+    partes = [_num_fmt(n) for n in nums.split(",") if n]
     if not partes:
         return "todas as MPs"
     return ("MP " if len(partes) == 1 else "MPs ") + ", ".join(partes)
@@ -701,10 +706,12 @@ async def cb_fila_ok(query: CallbackQuery, user: User, session: AsyncSession) ->
         await marcar_nota_entregue(session, user.id, numero, alvo.year)
     logger.info("fila de notas: baixa explícita do dono em %s (%s)",
                 alvo, ",".join(sorted(numeros)))
+    from bot.services.dou_monitor import _num_fmt
     await query.answer("Fila limpa.")
     await query.message.answer(
         f"✅ Tirei da fila as notas de {alvo.strftime('%d/%m/%Y')} "
-        f"(MP {', '.join(sorted(numeros))}) — você confirmou que recebeu. "
+        f"(MP {', '.join(_num_fmt(n) for n in sorted(numeros))}) — "
+        "você confirmou que recebeu. "
         "Não vou gerar de novo. Se precisar delas depois, "
         f"<code>/mp_dou_agora {alvo.strftime('%d/%m/%Y')}</code> traz os "
         "cards com o botão de nota.",

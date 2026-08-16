@@ -908,11 +908,12 @@ async def _conferir_camara(
             saida = (f"Passou dos {_MP_RETRO_EXPIRA_DIAS} dias da re-checagem "
                      f"automática; pra recuperar, rode "
                      f"<code>/mp_dou_agora {d.strftime('%d/%m/%Y')}</code>.")
+        from bot.services.dou_monitor import _num_fmt
         facts.append(ProactiveFact(
             "mp", "mp_conferencia", key,
-            f"⚠️ <b>MP {mp['numero']}/{mp['ano']}</b> ({d.strftime('%d/%m')}) "
-            f"saiu e você NÃO recebeu — achei conferindo com a Câmara. "
-            f"{ementa} {saida}",
+            f"⚠️ <b>MP {_num_fmt(mp['numero'])}/{mp['ano']}</b> "
+            f"({d.strftime('%d/%m')}) saiu e você NÃO recebeu — achei "
+            f"conferindo com a Câmara. {ementa} {saida}",
             date_iso=None,
         ))
     if faltando and not facts:

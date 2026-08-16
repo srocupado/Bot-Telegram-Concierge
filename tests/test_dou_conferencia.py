@@ -134,7 +134,7 @@ def test_mp_perdida_recuperavel_vira_pendencia(monkeypatch) -> None:
 
     assert f"mp_pendente:{saiu.isoformat()}" in marcadas
     assert [f.kind for f in facts] == ["mp_conferencia"]
-    assert "MP 1381" in facts[0].text and "não recebeu" in facts[0].text.lower()
+    assert "MP 1.381" in facts[0].text and "não recebeu" in facts[0].text.lower()
     assert "fila" in facts[0].text
 
 
