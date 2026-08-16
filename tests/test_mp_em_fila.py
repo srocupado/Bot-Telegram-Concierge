@@ -123,6 +123,27 @@ def test_fmt_fila_com_notas_e_dias() -> None:
     assert "/mp_dou_agora" in out
 
 
+def test_manutencao_sem_nota_na_fila_nao_promete_espera(monkeypatch) -> None:
+    """Dono, 16/08/2026: com só o DIA na fila, o texto dizia 'a fila drena
+    quando ele voltar' — resíduo do desenho antigo. Desde a inversão o
+    portal é a fonte primária e a checagem não espera o Inlabs."""
+    fila = {"notas": [], "dias": [(date(2026, 8, 16), 14)], "manutencao": True}
+    out = _fmt_fila_mp(fila)
+    assert "drena quando" not in out and "voltar" not in out
+    assert "portal oficial" in out and "sem efeito aqui" in out
+
+
+def test_manutencao_com_nota_na_fila_explica_o_que_espera() -> None:
+    """Com NOTA na fila o Inlabs ainda importa — mas só pro TEXTO que o
+    portal não entregou íntegro; a checagem dos dias segue pelo portal."""
+    fila = {"notas": [(date(2026, 8, 14), "1390")], "dias": [],
+            "manutencao": True}
+    out = _fmt_fila_mp(fila)
+    assert "checagem dos dias segue pelo portal" in out
+    assert "texto de nota" in out
+    assert "drena quando" not in out
+
+
 def test_fmt_fila_sem_manutencao_nao_fala_em_inlabs() -> None:
     """Com o Inlabs ONLINE, o texto não pode afirmar 'quando o Inlabs voltar'
     (bug do dono: /mp_fila mentia com o Inlabs de pé)."""

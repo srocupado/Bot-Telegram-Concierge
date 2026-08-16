@@ -571,16 +571,27 @@ def _fmt_fila_mp(fila: dict) -> str:
                 "de nota.")
         if manut:
             base += ("\n\n⚠️ <i>O Inlabs está em manutenção agora, mas não há "
-                     "nada represado.</i>")
+                     "nada represado (a checagem vai pelo portal oficial).</i>")
         return base
 
     linhas = ["📥 <b>Fila do monitor de MP</b>"]
-    # Só afirma "Inlabs" quando há causa APURADA (manutenção declarada). Sem
-    # isso, dizer "quando o Inlabs voltar" mentia com o Inlabs online — a
-    # pendência costuma ser dia em aberto/checagem, não Inlabs fora.
+    # Só afirma "Inlabs" quando há causa APURADA (manutenção declarada) —
+    # e desde a inversão de 11/08/2026 ele NÃO é quem drena a fila: a
+    # checagem dos dias vai pelo PORTAL (fonte primária) e não espera nada.
+    # Dizer "a fila drena quando ele voltar" (texto até 16/08/2026)
+    # prometia dependência que não existe mais; o Inlabs só faz falta pro
+    # TEXTO de uma nota cujo corpo do portal reprovou na sanidade — por
+    # isso a ressalva só aparece quando há NOTA na fila.
     if manut:
-        linhas.append("⚠️ <i>Inlabs em manutenção agora — a fila drena quando "
-                      "ele voltar.</i>")
+        if notas:
+            linhas.append("⚠️ <i>Inlabs em manutenção agora — a checagem dos "
+                          "dias segue pelo portal oficial; só o texto de nota "
+                          "que o portal não entregou íntegro espera por "
+                          "ele.</i>")
+        else:
+            linhas.append("⚠️ <i>Inlabs em manutenção agora — sem efeito aqui: "
+                          "a checagem vai pelo portal oficial (fonte "
+                          "primária).</i>")
     if notas:
         linhas.append("\n📄 <b>Notas técnicas na fila</b>:")
         for d, nums in notas:
