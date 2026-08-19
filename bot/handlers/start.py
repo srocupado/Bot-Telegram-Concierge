@@ -17,9 +17,8 @@ HELP_TEXT = (
     "🤖 <b>Concierge</b>\n\n"
     "<b>Trânsito casa↔trabalho</b>:\n"
     "• <code>/transito_agora casa</code> | <code>/transito_agora trabalho</code> — força consulta agora\n"
-    "• <code>/transito_on</code> / <code>/transito_off</code> — assina/desassina digest diário (seg-sex)\n"
-    "• <code>/transito_at HH:MM</code> — muda horário do digest (sem arg volta ao default)\n"
-    "• <code>/transito_reset</code> — zera marca de envio de hoje\n"
+    "• <code>/transito_on</code> / <code>/transito_off</code> — liga/desliga o vigia de trânsito (seg-sex); a linha diária de trânsito já vem no briefing da manhã\n"
+    "• <code>/transito_at HH:MM</code> — informa seu horário de saída; o vigia observa de 2h antes até 30min depois (sem arg volta ao default)\n"
     "• <code>/transito_alerta_on</code> / <code>/transito_alerta_off</code> — alerta proativo se rota estiver ≥30% acima do habitual\n"
     "• <i>\"que horas é melhor sair pro trabalho?\"</i> — testa várias janelas de saída e diz a melhor pra pegar menos trânsito.\n\n"
     "<b>Medidas Provisórias — pauta do Congresso</b>:\n"
@@ -336,6 +335,9 @@ _HELP_KEYWORDS: dict[str, str] = {
     "acoes": "cotacoes", "fii": "cotacoes", "bolsa": "cotacoes",
     # melhor horário de sair (melhor_horario_sair) — é trânsito
     "melhor horario": "transito", "melhor hora": "transito", "sair": "transito",
+    # /transito_at vira "horário de saída" (16/08/2026, fim do digest 07h20):
+    # a pergunta natural usa o substantivo "saída", que "sair" não casa.
+    "saida": "transito", "vigia": "transito",
     "academia": "academia", "treino": "academia", "malhar": "academia", "malho": "academia",
     # Tradutor tem seção PRÓPRIA (10/08/2026): a pergunta "como uso o
     # tradutor?" devolvia a seção LLM inteira (provider/thinking/reset…) —

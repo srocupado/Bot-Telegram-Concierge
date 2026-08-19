@@ -45,8 +45,11 @@ async def cmd_transito_on(message: Message, user: User, session: AsyncSession) -
     user.traffic_subscribed = True
     await session.commit()
     await message.answer(
-        f"🚗 Inscrito no resumo diário de trânsito casa→trabalho "
-        f"(seg-sex {settings.traffic_hour:02d}:{settings.traffic_minute:02d} BRT)."
+        "🚗 Vigia de trânsito casa→trabalho ativado (seg-sex). O briefing da "
+        "manhã já traz a linha do trânsito; aqui só chega ALERTA quando a rota "
+        "estiver bem acima do habitual perto do seu horário de saída "
+        f"(/transito_at; default {settings.traffic_hour:02d}:"
+        f"{settings.traffic_minute:02d} BRT)."
     )
 
 
@@ -54,7 +57,7 @@ async def cmd_transito_on(message: Message, user: User, session: AsyncSession) -
 async def cmd_transito_off(message: Message, user: User, session: AsyncSession) -> None:
     user.traffic_subscribed = False
     await session.commit()
-    await message.answer("🚗 Resumo diário de trânsito cancelado.")
+    await message.answer("🚗 Vigia de trânsito desativado.")
 
 
 @router.message(Command("transito_alerta_on"))
@@ -97,8 +100,9 @@ async def cmd_transito_at(
         user.traffic_minute = None
         await session.commit()
         await message.answer(
-            f"⏰ Horário do digest de trânsito voltou pro default "
-            f"({settings.traffic_hour:02d}:{settings.traffic_minute:02d} BRT)."
+            f"⏰ Horário de saída voltou pro default "
+            f"({settings.traffic_hour:02d}:{settings.traffic_minute:02d} BRT). "
+            f"O alerta de trânsito vigia de 2h antes até 30min depois dele."
         )
         return
     parsed = _parse_hhmm(arg)
@@ -109,21 +113,10 @@ async def cmd_transito_at(
         )
         return
     user.traffic_hour, user.traffic_minute = parsed
-    user.last_traffic_digest_at = None
     await session.commit()
     await message.answer(
-        f"⏰ Digest de trânsito agendado para {parsed[0]:02d}:{parsed[1]:02d} BRT. "
-        f"Marca de envio de hoje zerada."
-    )
-
-
-@router.message(Command("transito_reset"))
-async def cmd_transito_reset(message: Message, user: User, session: AsyncSession) -> None:
-    user.last_traffic_digest_at = None
-    await session.commit()
-    await message.answer(
-        "✅ Marca de envio de hoje zerada. No próximo tick o digest sai de novo "
-        "(se o horário agendado já passou)."
+        f"⏰ Horário de saída ajustado para {parsed[0]:02d}:{parsed[1]:02d} BRT. "
+        f"O alerta de trânsito vigia de 2h antes até 30min depois dele."
     )
 
 

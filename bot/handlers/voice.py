@@ -72,7 +72,6 @@ from bot.handlers.traffic import (
     cmd_transito_at,
     cmd_transito_off,
     cmd_transito_on,
-    cmd_transito_reset,
 )
 from bot.handlers.upload import cmd_arquivos
 from bot.handlers.viagem import cmd_viagem
@@ -190,7 +189,6 @@ _DISPATCH: dict[str, Callable[..., Any]] = {
     "transito_on": cmd_transito_on,
     "transito_off": cmd_transito_off,
     "transito_at": cmd_transito_at,
-    "transito_reset": cmd_transito_reset,
     "transito_alerta_on": cmd_transito_alerta_on,
     "transito_alerta_off": cmd_transito_alerta_off,
     "congresso_agora": cmd_congress_agora,

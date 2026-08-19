@@ -64,9 +64,10 @@ class User(Base):
     viagem_moeda: Mapped[str | None] = mapped_column(String(16), nullable=True)
     timezone: Mapped[str] = mapped_column(String(64), default="America/Sao_Paulo", nullable=False)
 
-    # Trânsito (replicado do Telegram-Travels)
+    # Trânsito: traffic_hour/minute é o HORÁRIO DE SAÍDA (âncora da janela do
+    # alerta, −2h/+30min) — o digest diário das 07h20 foi removido em
+    # 16/08/2026 (redundante com a linha de trânsito do briefing das 07h05).
     traffic_subscribed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
-    last_traffic_digest_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     traffic_hour: Mapped[int | None] = mapped_column(Integer, nullable=True)
     traffic_minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
     traffic_alert_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1", nullable=False)

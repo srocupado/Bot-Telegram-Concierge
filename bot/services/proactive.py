@@ -1768,8 +1768,9 @@ async def collect_moeda_viagem(user: User) -> list[ProactiveFact]:
 async def collect_transito(
     session: AsyncSession, user: User, now_brt: datetime,
 ) -> list[ProactiveFact]:
-    """Trânsito casa → trabalho pro briefing matinal (dias úteis). Reusa o
-    fetch do digest de trânsito. Sem dedup (leitura fresca a cada manhã).
+    """Trânsito casa → trabalho pro briefing matinal (dias úteis). É a ÚNICA
+    linha diária de trânsito desde 16/08/2026 (o digest das 07h20 foi removido
+    por redundância). Sem dedup (leitura fresca a cada manhã).
 
     Falha e config faltando são DITAS, não engolidas (mesma correção que o
     collect_clima já recebeu — o trânsito ficou de fora dela): briefing sem

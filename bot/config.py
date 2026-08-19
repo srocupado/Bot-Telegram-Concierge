@@ -42,7 +42,11 @@ class Settings(BaseSettings):
     home_coords: str | None = Field(None, alias="HOME_COORDS")
     work_coords: str | None = Field(None, alias="WORK_COORDS")
     route_google_maps_url: str | None = Field(None, alias="ROUTE_GOOGLE_MAPS_URL")
-    traffic_digest_enabled: bool = Field(True, alias="TRAFFIC_DIGEST_ENABLED")
+    # Horário de SAÍDA default (âncora da janela do alerta de trânsito,
+    # −2h/+30min; /transito_at sobrescreve por usuário). O digest das 07h20
+    # que usava esses campos foi removido em 16/08/2026 — redundante com a
+    # linha de trânsito do briefing das 07h05. TRAFFIC_DIGEST_ENABLED morreu
+    # junto (extra="ignore" deixa o .env antigo em paz).
     traffic_hour: int = Field(7, alias="TRAFFIC_HOUR")
     traffic_minute: int = Field(20, alias="TRAFFIC_MINUTE")
 

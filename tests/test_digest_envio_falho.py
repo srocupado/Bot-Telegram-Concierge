@@ -48,11 +48,9 @@ class _DT(datetime):
 @pytest.fixture(autouse=True)
 def _cache_limpo(monkeypatch):
     scheduler._congress_digest_cache.update(key=None, message=None)
-    scheduler._traffic_digest_cache.update(key=None, message=None)
     monkeypatch.setattr(scheduler, "datetime", _DT)
     yield
     scheduler._congress_digest_cache.update(key=None, message=None)
-    scheduler._traffic_digest_cache.update(key=None, message=None)
 
 
 def test_congress_digest_nao_refaz_fetch_quando_o_envio_falha(monkeypatch) -> None:

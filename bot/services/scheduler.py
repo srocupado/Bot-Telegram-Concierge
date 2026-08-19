@@ -27,7 +27,6 @@ from bot.services.traffic import (
     USER_AGENT as TRAFFIC_USER_AGENT,
     TrafficError,
     fetch_traffic,
-    format_traffic_message,
     parse_route_waypoints,
 )
 from bot.services.traffic_baseline import (
@@ -40,8 +39,6 @@ from bot.services.weather import (
     WeatherError,
     chuva_transicao,
     fetch_rain_next_hour,
-    fetch_today_weather,
-    format_weather_line,
 )
 from bot.services.travels.watches import run_travel_alerts
 from bot.utils import as_utc
@@ -51,12 +48,13 @@ logger = logging.getLogger(__name__)
 BRT = ZoneInfo("America/Sao_Paulo")
 CONGRESS_HOUR = 7
 
-# Cache da MENSAGEM pronta dos digests (chave = dia/semana). Com falha de
-# ENVIO, o dia não é marcado (correto: re-tentar entregar) — mas sem o cache
-# o tick seguinte refazia o FETCH inteiro (Google Maps / scrape do Congresso)
-# a cada 60s até meia-noite: ~900 chamadas pagas por dia de pane de envio,
-# sem ninguém saber. O fetch roda 1x; a re-tentativa reusa a mensagem.
-_traffic_digest_cache: dict = {"key": None, "message": None}
+# Cache da MENSAGEM pronta do digest do Congresso (chave = semana). Com falha
+# de ENVIO, a semana não é marcada (correto: re-tentar entregar) — mas sem o
+# cache o tick seguinte refazia o scrape a cada 60s até meia-noite: ~900
+# chamadas por dia de pane de envio, sem ninguém saber. O fetch roda 1x; a
+# re-tentativa reusa a mensagem. (O digest de TRÂNSITO das 07h20 foi removido
+# em 16/08/2026 — redundante com o briefing das 07h05 do proativo; o vigia de
+# alerta e a linha do briefing continuam.)
 _congress_digest_cache: dict = {"key": None, "message": None}
 
 # Minutos após a hora-alvo em que a janela do proativo ainda pode disparar.
@@ -232,142 +230,6 @@ async def run_congress_digest(
             logger.info("congress digest enviado a %d", u.id)
 
 
-async def run_traffic_digest(
-    sessionmaker: async_sessionmaker[AsyncSession],
-    bot: Bot,
-) -> None:
-    if not settings.traffic_digest_enabled:
-        return
-    if not (settings.home_coords and settings.work_coords and settings.google_maps_api_key):
-        logger.warning(
-            "traffic digest skipped: missing config (home_coords/work_coords/google_maps_api_key)"
-        )
-        return
-
-    now_brt = datetime.now(BRT)
-    if now_brt.weekday() > 4:
-        return
-
-    day_start_brt = datetime.combine(now_brt.date(), time(0, 0), tzinfo=BRT)
-    day_start_utc = day_start_brt.astimezone(timezone.utc)
-
-    async with sessionmaker() as session:
-        stmt = select(User).where(
-            User.traffic_subscribed.is_(True),
-            (User.last_traffic_digest_at.is_(None))
-            | (User.last_traffic_digest_at < day_start_utc),
-        )
-        candidates = list((await session.scalars(stmt)).all())
-
-    def _due(u: User) -> bool:
-        h = u.traffic_hour if u.traffic_hour is not None else settings.traffic_hour
-        m = u.traffic_minute if u.traffic_minute is not None else settings.traffic_minute
-        return (now_brt.hour, now_brt.minute) >= (h, m)
-
-    users = [u for u in candidates if _due(u)]
-
-    if not users:
-        return
-
-    cache_key = now_brt.date().isoformat()
-    if _traffic_digest_cache["key"] == cache_key:
-        # Fetch do dia já feito num tick anterior (envio falhou): só re-tenta
-        # entregar, sem nova chamada ao Maps.
-        message = _traffic_digest_cache["message"]
-        for u in users:
-            sent = await _send_html_with_fallback(bot, u.id, message)
-            if sent:
-                async with sessionmaker() as session:
-                    fresh = await session.get(User, u.id)
-                    if fresh is not None:
-                        fresh.last_traffic_digest_at = datetime.now(timezone.utc)
-                        await session.commit()
-                logger.info("traffic digest (cache) enviado a %d", u.id)
-        return
-
-    api_key = settings.google_maps_api_key.get_secret_value()
-    weather_line: str | None = None
-    try:
-        async with httpx.AsyncClient(
-            timeout=20.0,
-            follow_redirects=True,
-            headers={"User-Agent": TRAFFIC_USER_AGENT},
-        ) as client:
-            waypoints: list[str] = []
-            if settings.route_google_maps_url:
-                waypoints = await parse_route_waypoints(
-                    client, settings.route_google_maps_url
-                )
-            traffic_task = fetch_traffic(
-                client,
-                api_key,
-                settings.home_coords,
-                settings.work_coords,
-                waypoints,
-                maps_url=settings.route_google_maps_url or "",
-            )
-            weather_task = fetch_today_weather(client, settings.home_coords)
-            results = await asyncio.gather(
-                traffic_task, weather_task, return_exceptions=True
-            )
-            traffic_result, weather_result = results
-            if isinstance(traffic_result, BaseException):
-                raise traffic_result
-            infos = traffic_result
-            info = infos[0]
-            if isinstance(weather_result, WeatherError):
-                logger.warning("weather fetch failed: %s", weather_result)
-            elif isinstance(weather_result, BaseException):
-                logger.exception(
-                    "weather fetch crashed", exc_info=weather_result
-                )
-            else:
-                weather_line = format_weather_line(weather_result)
-    except Exception as exc:
-        # Falha ≠ silêncio (mesma correção do congresso): avisa e marca o dia,
-        # senão o fetch do Maps era refeito a cada 60s até meia-noite.
-        logger.exception("traffic digest fetch failed")
-        aviso = (
-            "⚠️ Não consegui consultar o trânsito hoje "
-            f"({type(exc).__name__}). Tente /transito_agora mais tarde."
-        )
-        for u in users:
-            await _send_html_with_fallback(bot, u.id, aviso)
-            async with sessionmaker() as session:
-                fresh = await session.get(User, u.id)
-                if fresh is not None:
-                    fresh.last_traffic_digest_at = datetime.now(timezone.utc)
-                    await session.commit()
-        return
-
-    message = format_traffic_message(info, "casa → trabalho")
-    if weather_line:
-        link_marker = "\n\n<a href="
-        idx = message.rfind(link_marker)
-        if idx >= 0:
-            message = message[:idx] + f"\n\n{weather_line}" + message[idx:]
-        else:
-            message = f"{message}\n\n{weather_line}"
-    _traffic_digest_cache.update(key=cache_key, message=message)
-    logger.info(
-        "traffic digest: %d inscritos, %d min via %s%s",
-        len(users),
-        info.duration_minutes,
-        info.summary or "rota direta",
-        " (com clima)" if weather_line else "",
-    )
-
-    for u in users:
-        sent = await _send_html_with_fallback(bot, u.id, message)
-        if sent:
-            async with sessionmaker() as session:
-                fresh = await session.get(User, u.id)
-                if fresh is not None:
-                    fresh.last_traffic_digest_at = datetime.now(timezone.utc)
-                    await session.commit()
-            logger.info("traffic digest enviado a %d", u.id)
-
-
 async def _entregar_lembrete(
     sessionmaker: async_sessionmaker[AsyncSession],
     bot: Bot,
@@ -491,10 +353,14 @@ def _user_traffic_time(u: User) -> tuple[int, int]:
 
 
 def _in_watch_window(now_brt: datetime, u: User) -> bool:
+    # traffic_hour/minute é o HORÁRIO DE SAÍDA do usuário (/transito_at) — a
+    # âncora da janela do vigia. Nasceu como hora do digest das 07h20
+    # (removido em 16/08/2026, redundante com o briefing); o horário ficou
+    # porque o vigia sempre foi ancorado nele.
     h, m = _user_traffic_time(u)
-    digest_dt = now_brt.replace(hour=h, minute=m, second=0, microsecond=0)
-    start = digest_dt - timedelta(hours=TRAFFIC_WATCH_LEAD_HOURS)
-    end = digest_dt + timedelta(minutes=TRAFFIC_WATCH_TAIL_MIN)
+    saida_dt = now_brt.replace(hour=h, minute=m, second=0, microsecond=0)
+    start = saida_dt - timedelta(hours=TRAFFIC_WATCH_LEAD_HOURS)
+    end = saida_dt + timedelta(minutes=TRAFFIC_WATCH_TAIL_MIN)
     return start <= now_brt <= end
 
 
@@ -1038,11 +904,6 @@ async def tick(
         await run_congress_digest(sessionmaker, bot)
     except Exception:
         logger.exception("congress digest crashed")
-
-    try:
-        await run_traffic_digest(sessionmaker, bot)
-    except Exception:
-        logger.exception("traffic digest crashed")
 
     try:
         await run_traffic_watch(sessionmaker, bot)

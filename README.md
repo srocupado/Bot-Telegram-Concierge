@@ -288,9 +288,8 @@ uma vez e agende como shell (*"todo dia 3h roda @silencioso bash
 | Comando | Descrição |
 |---|---|
 | `/transito_agora casa` \| `/transito_agora trabalho` | Força consulta agora (rota preferida + alternativa) |
-| `/transito_on` / `/transito_off` | Assina/desassina o digest diário (seg-sex) |
-| `/transito_at HH:MM` | Muda o horário do digest |
-| `/transito_reset` | Zera marca de envio de hoje |
+| `/transito_on` / `/transito_off` | Liga/desliga o vigia de trânsito (seg-sex); a linha diária já vem no briefing |
+| `/transito_at HH:MM` | Informa o horário de saída (âncora da janela do alerta, −2h/+30min) |
 | `/transito_alerta_on` / `/transito_alerta_off` | Liga/desliga alerta proativo |
 
 ### Medidas Provisórias — pauta do Congresso
