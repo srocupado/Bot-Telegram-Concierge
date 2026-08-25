@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import threading
+import unicodedata
 import time
 import zipfile
 from contextlib import contextmanager
@@ -1011,7 +1012,12 @@ _NOTA_SYSTEM = (
     "- Cite MPs correlatas pelo número e ano quando aplicável.\n"
     "- NÃO mencione quem assinou ou referendou a MP (Presidente, ministros).\n"
     "- Baseie afirmações de contexto APENAS no dossiê de pesquisa e no texto "
-    "fornecidos. NUNCA invente dados, valores ou falas.\n\n"
+    "fornecidos. NUNCA invente dados, valores ou falas.\n"
+    "- A nota fala DA MP, nunca do processo de produção dela: NÃO mencione o "
+    "dossiê, a pesquisa, buscas na web, fontes consultadas, nem a existência "
+    "ou AUSÊNCIA de cobertura jornalística ou de dados. O leitor não sabe que "
+    "esses insumos existem. Informação indisponível simplesmente não entra — "
+    "sem registrar a lacuna ('não há dados/cobertura sobre…' é proibido).\n\n"
     "REGRA DE IMPACTO (a mais importante — não a viole):\n"
     "Para CADA dispositivo, NÃO basta dizer o que mudou no texto da lei. "
     "Você DEVE explicar o EFEITO PRÁTICO da mudança:\n"
@@ -1142,7 +1148,7 @@ def _nota_user_content(mp: dict, dossie: str) -> str:
         f"Ementa: {mp['ementa']}\n"
         f"URL: {mp.get('url_planalto', 'N/A')}\n\n"
         f"=== DOSSIÊ DE PESQUISA (contexto; use só o que tiver fonte) ===\n"
-        f"{dossie or '(pesquisa web indisponível — baseie-se apenas no texto da MP)'}\n\n"
+        f"{dossie or '(pesquisa web indisponível — baseie-se apenas no texto da MP e NÃO mencione essa ausência na nota)'}\n\n"
         f"=== TEXTO INTEGRAL DA MP ===\n"
         # Cap moderado (50k chars ≈ 12k tokens) — cobre a esmagadora maioria
         # das MPs sem inflar o prompt; megapacote (>50k chars de texto legal)
@@ -1150,6 +1156,77 @@ def _nota_user_content(mp: dict, dossie: str) -> str:
         f"{(mp.get('texto_integral') or 'Não disponível')[:50000]}\n\n"
         "Emita a nota técnica seguindo a estrutura de 5 parágrafos."
     )
+
+
+# A nota fala DA MP, nunca do processo de produção dela. Na MP 1.388/2026 o
+# texto entregue trazia "…sem que o dossiê disponibilize, até o momento,
+# cobertura jornalística ou dados quantitativos…" — o leitor não sabe (nem
+# deve saber) que existe um dossiê de pesquisa. A regra de prompt proíbe;
+# este filtro é a rede pra quando o modelo desobedecer: frase que menciona o
+# aparato é aparada — primeiro tentando cortar só a oração final que contém o
+# marcador, senão a frase inteira. Marcadores SEM acento (comparação
+# normalizada); nenhum deles tem uso legítimo numa nota técnica.
+_META_PROCESSO = (
+    "dossie", "pesquisa web", "busca web", "buscas na web", "web search",
+    "cobertura jornalistica", "cobertura de imprensa", "cobertura midiatica",
+    "cobertura noticiosa", "sem cobertura", "fontes consultadas",
+    "material fornecido", "texto fornecido", "nao ha noticias",
+)
+
+# Fim de frase: pontuação seguida de espaço e maiúscula. Abreviações típicas
+# do gênero ("art. 5º", "Lei nº 11.977", "R$ 1.305.000.000,00") não casam
+# porque o que segue o ponto é dígito/minúscula.
+_FIM_DE_FRASE_RE = re.compile(r"(?<=[.!?])\s+(?=[A-ZÀ-Ü])")
+_FRONTEIRAS_DE_ORACAO = (", ", "; ", " — ", " – ")
+
+
+def _sem_acento(s: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", s.casefold())
+                   if not unicodedata.combining(c))
+
+
+def _aparar_frase_meta(frase: str) -> str | None:
+    """Frase limpa volta intacta. Com marcador, tenta preservar o começo
+    legítimo cortando na última fronteira de oração antes do marcador (o caso
+    real: "…reforço financeiro a essa política setorial, sem que o dossiê…").
+    Sem corte viável, None = a frase inteira cai — perder uma oração boa dói
+    menos que entregar meta-comentário ao leitor."""
+    norm = _sem_acento(frase)
+    pos = min((p for p in (norm.find(m) for m in _META_PROCESSO) if p >= 0),
+              default=-1)
+    if pos < 0:
+        return frase
+    corte = max(norm.rfind(sep, 0, pos) for sep in _FRONTEIRAS_DE_ORACAO)
+    if corte >= 30:
+        cabeca = frase[:corte].rstrip(" ,;—–")
+        if not any(m in _sem_acento(cabeca) for m in _META_PROCESSO):
+            return cabeca + "."
+    return None
+
+
+_CAMPOS_NOTA = ("p1_contexto", "p2_dispositivos", "p3_continuacao",
+                "p4_sintese", "p5_fechamento")
+
+
+def _filtrar_meta_processo(nota: dict) -> dict:
+    for campo in _CAMPOS_NOTA:
+        texto = nota.get(campo)
+        if not texto or not isinstance(texto, str):
+            continue
+        frases, mexeu = [], False
+        for frase in _FIM_DE_FRASE_RE.split(texto):
+            aparada = _aparar_frase_meta(frase)
+            if aparada != frase:
+                mexeu = True
+            if aparada is not None:
+                frases.append(aparada)
+        if mexeu:
+            nota[campo] = " ".join(frases).strip()
+            logger.warning(
+                "dou: nota mencionava o processo de pesquisa em %s; trecho aparado",
+                campo,
+            )
+    return nota
 
 
 async def generate_nota_tecnica(
@@ -1162,8 +1239,10 @@ async def generate_nota_tecnica(
     claude-*). Retorna {ementa, p1_contexto, ...} ou None se falhar."""
     prov = (provider or settings.dou_mp_provider).lower()
     if prov == "gemini":
-        return await _gen_nota_gemini(mp, model_override=model)
-    return await _gen_nota_anthropic(mp, model_override=model)
+        nota = await _gen_nota_gemini(mp, model_override=model)
+    else:
+        nota = await _gen_nota_anthropic(mp, model_override=model)
+    return _filtrar_meta_processo(nota) if nota else nota
 
 
 # ── Anthropic (Claude + web_search) ──
