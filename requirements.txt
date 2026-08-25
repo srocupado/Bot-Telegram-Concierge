@@ -15,6 +15,13 @@ python-dateutil==2.9.0
 dateparser==1.2.0
 croniter==6.2.2
 firebase-admin==6.5.0
+# google-api-core 2.35.0 (24/08/2026) passou a percent-encodar valores no
+# path_template.expand: o database do Firestore vira "%28default%29" no campo
+# e "%2528default%2529" no header de rota — o servidor decodifica uma vez e
+# rejeita com "400 Invalid database id %28default%29" (TODA leitura/escrita
+# do financeiro morre). Medido em 25/08 com sonda local comparando 2.34.0 ×
+# 2.35.0. Rever o pin quando sair release que trate "(default)".
+google-api-core==2.34.0
 python-docx==1.1.2
 PyMuPDF==1.24.14
 pypdf==5.1.0
