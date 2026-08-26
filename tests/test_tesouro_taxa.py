@@ -22,9 +22,27 @@ def test_percentual_vira_fracao() -> None:
     assert _taxa_para_fracao(1) == 0.01
 
 
-def test_fracao_ja_normalizada_passa_intacta() -> None:
-    """Se o modelo mandar 0.06 (fração), não pode dividir de novo."""
-    assert _taxa_para_fracao(0.06) == 0.06
+def test_taxa_menor_que_um_tambem_e_percentual() -> None:
+    """Virada de contrato (26/08/2026): a heurística antiga tratava <1 como
+    "fração já normalizada" — e "aportei no Selic a 0,15%" gravava rate=0.15
+    = 15% a.a. (spread real do Tesouro Selic é 0,05–0,2%; a premissa "nenhum
+    título paga menos de 1%" era falsa). A ambiguidade não tem solução por
+    valor: o contrato da tool é % a.a. SEMPRE, e o schema agora diz isso em
+    caixa alta. 0.06 vindo do modelo significa 0,06% — não 6%."""
+    assert _taxa_para_fracao(0.15) == 0.0015
+    assert _taxa_para_fracao(0.06) == 0.0006
+
+
+def test_taxa_fora_da_faixa_estoura_alto() -> None:
+    """Gravar lixo no Firestore que o app lê é pior que recusar: fora de
+    (0, 100] o serviço levanta FinanceiroError e a tool devolve o erro pro
+    modelo confirmar com o usuário."""
+    import pytest
+    from bot.services.financeiro import FinanceiroError
+    with pytest.raises(FinanceiroError):
+        _taxa_para_fracao(200)
+    with pytest.raises(FinanceiroError):
+        _taxa_para_fracao(0)
 
 
 def test_projecao_com_taxa_normalizada_e_sana() -> None:

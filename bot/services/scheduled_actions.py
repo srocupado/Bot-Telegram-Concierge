@@ -189,7 +189,25 @@ async def _run_comando(
         from_user=TgUser(id=user.id, is_bot=False, first_name="agendado"),
         text=texto,
     ).as_(bot)
-    await _invocar(nome, handler, msg, args, user, session)
+    try:
+        await _invocar(nome, handler, msg, args, user, session)
+    except Exception as exc:
+        # Sem esta rede, a exceção subia até o run_reminders, o Reminder não
+        # era consumido e o tick re-executava o comando (com o header acima e
+        # os efeitos colaterais do handler) A CADA 60s pra sempre. Handler que
+        # estoura = ocorrência consumida COM aviso — desistir avisando, nunca
+        # loop mudo.
+        logger.exception("comando agendado /%s falhou", nome)
+        try:
+            await bot.send_message(
+                chat_id,
+                f"⚠️ O comando agendado /{nome} falhou ao executar "
+                f"({type(exc).__name__}). Não vou re-tentar sozinho — rode "
+                "manualmente ou reagende.",
+                parse_mode=None,
+            )
+        except Exception:
+            logger.exception("aviso de falha do comando agendado não entregue")
 
 
 async def _run_chat(

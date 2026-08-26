@@ -134,14 +134,34 @@ def test_ausencia_longa_avisa_o_que_ficou_de_fora(monkeypatch) -> None:
 
 
 def test_aviso_de_lacuna_longa_nao_repete(monkeypatch) -> None:
-    """Dedup por período: sem isso o alarme voltaria em toda janela."""
+    """Dedup por período: sem isso o alarme voltaria em toda janela.
+    A chave carrega o alvo da marca no 4º campo (26/08/2026) — é ele que o
+    pós-envio do run usa pra só avançar a marca com o aviso ENTREGUE."""
     fora = 20
     primeiro = HOJE - timedelta(days=fora)
     ultimo = HOJE - timedelta(days=proactive._MP_RETRO_EXPIRA_DIAS + 1)
-    chave = f"mp_lacuna:lacuna:{primeiro.isoformat()}:{ultimo.isoformat()}"
+    alvo = (HOJE - timedelta(days=1)).isoformat()
+    chave = f"mp_lacuna:lacuna:{primeiro.isoformat()}:{ultimo.isoformat()}:{alvo}"
     marcadas: list[str] = []
     _prep(monkeypatch, marcadas, ja={chave})
 
     facts = _rodar(_user(HOJE - timedelta(days=fora + 1)), HOJE)
 
     assert facts == []
+
+
+def test_lacuna_longa_nao_avanca_a_marca_antes_do_envio(monkeypatch) -> None:
+    """A marca só avança no pós-envio do run (aviso ENTREGUE). Avançar aqui
+    fazia falha de rede engolir o aviso: a lacuna zerava na janela seguinte e
+    os dias nunca verificados sumiam pra sempre."""
+    marcadas: list[str] = []
+    _prep(monkeypatch, marcadas)
+    marca = HOJE - timedelta(days=21)
+    user = _user(marca)
+
+    facts = _rodar(user, HOJE)
+
+    assert [f.kind for f in facts] == ["mp_lacuna"]
+    assert user.dou_ultimo_dia_ok == marca, "marca avançou sem envio confirmado"
+    partes = facts[0].key.split(":")
+    assert len(partes) == 4 and partes[3] == (HOJE - timedelta(days=1)).isoformat()

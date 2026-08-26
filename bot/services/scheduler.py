@@ -207,12 +207,17 @@ async def run_congress_digest(
             "em pauta — veja com /congresso_agora mais tarde."
         )
         for u in users:
-            await _send_html_with_fallback(bot, u.id, aviso)
-            async with sessionmaker() as session:
-                fresh = await session.get(User, u.id)
-                if fresh is not None:
-                    fresh.last_congress_digest_at = datetime.now(timezone.utc)
-                    await session.commit()
+            # A semana só é marcada com o AVISO ENTREGUE (26/08/2026): marcar
+            # incondicional fazia a pane total (Pi sem internet na segunda:
+            # scrape E envio falham juntos) engolir a semana inteira — nem
+            # pauta, nem aviso, e o dedup bloqueava o catch-up. Sem a marca o
+            # tick re-tenta; com a rede fora o scrape falha rápido e barato.
+            if await _send_html_with_fallback(bot, u.id, aviso):
+                async with sessionmaker() as session:
+                    fresh = await session.get(User, u.id)
+                    if fresh is not None:
+                        fresh.last_congress_digest_at = datetime.now(timezone.utc)
+                        await session.commit()
         return
 
     message = format_week_message(items, now_brt.date())

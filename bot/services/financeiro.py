@@ -1103,10 +1103,21 @@ def _taxa_para_fracao(taxa: float) -> float:
     lido como FRAÇÃO por _project_contribution_to_today e pelo app React
     ((1+i)*(1+r)-1). Gravar 6 onde se lê 0.06 multiplicava o aporte por 7 AO
     ANO no patrimônio — e corrompia o dado que o app lê, não só a exibição do
-    bot. Limiar: >=1 é % (divide por 100); <1 já veio como fração. Nenhum
-    título real paga menos de 1% a.a., então não há zona morta na prática."""
+    bot.
+
+    SEMPRE divide por 100 (26/08/2026): o limiar antigo ">=1 é %, <1 já é
+    fração" assumia que nenhum título paga menos de 1% a.a. — mas o spread do
+    Tesouro Selic é 0,05% a 0,2%, e "aportei a 0,15%" gravava rate=0.15 =
+    15% a.a. no Firestore que o app também lê (dado corrompido ~100×). O
+    contrato da tool é % a.a., ponto. Taxa fora de (0, 100] estoura alto em
+    vez de gravar lixo."""
     t = float(taxa)
-    return t / 100.0 if t >= 1 else t
+    if not 0 < t <= 100:
+        raise FinanceiroError(
+            f"taxa {t!r} fora da faixa esperada (0 a 100, em % a.a.). "
+            "Confirme a taxa com o usuário antes de registrar."
+        )
+    return t / 100.0
 
 
 async def registrar_aporte_tesouro(
@@ -1499,9 +1510,13 @@ def _filter_by_days(arr: list[dict], dias: int, today_iso: str) -> list[dict]:
     cutoff = today_d - timedelta(days=dias)
     out = []
     for it in arr:
+        # `date: null` gravado pelo app fazia fromisoformat(None) estourar
+        # TypeError (que o except ValueError não pegava) — e UM item sujo
+        # derrubava o extrato INTEIRO do consultar_lancamentos.
         try:
-            d = datetime.fromisoformat(it.get("date", "")).date()
-        except ValueError:
+            d = datetime.fromisoformat((it.get("date") or "")
+                                       .replace(" ", "T")[:10]).date()
+        except (ValueError, TypeError):
             continue
         if d >= cutoff:
             out.append(it)
@@ -1688,8 +1703,16 @@ async def consultar_lancamentos(
         if escopo_cartao == "ultimos_dias":
             card_items: list[tuple[dict, dict]] = []
             for it in _filter_by_days(all_card, dias, today_iso):
-                amt_total = float(it.get("amount") or 0)
-                installments = int(it.get("installments") or 1)
+                # Campo sujo ("abc", null) não pode derrubar o extrato inteiro
+                # — mesmo tratamento defensivo do _entry_in_bill.
+                try:
+                    amt_total = float(it.get("amount") or 0)
+                except (TypeError, ValueError):
+                    amt_total = 0.0
+                try:
+                    installments = int(it.get("installments") or 1)
+                except (TypeError, ValueError):
+                    installments = 1
                 value = amt_total / installments if installments > 1 else amt_total
                 kind = "recorrente" if it.get("recurring") else (
                     "parcela" if installments > 1 else "avista"

@@ -1071,6 +1071,15 @@ async def _h_registrar_operacao_ativo(args: dict, ctx: ToolContext) -> str:
                 "atrás e 45 dias à frente — se a data veio do usuário, confirme "
                 "com ele o ANO antes de registrar.")
 
+    # Mesma guarda de idempotência dos outros lançamentos (banco/cartão/
+    # tesouro): tool_use duplicado no turno ou retry pós-timeout gravava a
+    # operação DUAS vezes — qty e P&L dobrados no Firestore que o app lê.
+    assin = ("ativo", ctx.user.id, ticker.casefold(), op_type,
+             round(qty_f, 8), round(price_f, 2), data_iso)
+    if _lancamento_repetido(assin):
+        verbo = "compra" if op_type == "buy" else "venda"
+        return _resposta_repetida(
+            ctx, f"{verbo} de {qty_f:g} {ticker.upper()} a R$ {price_f:.2f}")
     try:
         res = await registrar_operacao_ativo(
             ctx.session, ctx.user,
@@ -1081,6 +1090,7 @@ async def _h_registrar_operacao_ativo(args: dict, ctx: ToolContext) -> str:
         return f"erro: {e}"
     except FinanceiroError as e:
         return f"erro: {e}"
+    _registrar_gravacao(assin)
 
     op_id = (res.get("operation") or {}).get("id")
     if op_id:
@@ -2394,7 +2404,7 @@ TOOLS: list[Tool] = [
                 "titulo": {"type": "string", "description": "Nome (ou trecho) do título já cadastrado"},
                 "valor": {"type": "number", "description": "Valor aportado em reais"},
                 "data_iso": {"type": "string", "description": "Data ISO 'YYYY-MM-DD' (default: hoje)"},
-                "taxa": {"type": "number", "description": "Taxa específica do aporte (% a.a.), se mencionada"},
+                "taxa": {"type": "number", "description": "Taxa específica do aporte, SEMPRE em % a.a. (ex.: 6 = 6%; 0.15 = 0,15% — nunca fração), se mencionada"},
             },
             "required": ["titulo", "valor"],
         },

@@ -340,11 +340,16 @@ async def cb_nota_sim(query: CallbackQuery, user: User, session: AsyncSession) -
     # Em BACKGROUND: o pipeline leva minutos e não pode segurar este handler
     # (nem a sessão de banco dele). Ver bot/services/jobs.py.
     from bot.services import jobs
-    chave = _chave_nota(user.id, target)
+    # Chave por ALVO (26/08/2026): com um botão por MP, a chave só por data
+    # fazia o clique na segunda MP do dia ser recusado com "te mando assim
+    # que sair" — e a nota dela nunca nascia. Alvos diferentes rodam em
+    # paralelo (o _SEM_NOTA serializa a geração de fato).
+    chave = _chave_nota(user.id, target, only_numeros)
     bot_ = query.bot
     if not jobs.spawn(chave, lambda: _rodar_nota(bot_, user.id, target, only_numeros)):
         await query.message.answer(
-            "📄 Já estou gerando a nota dessa data — te mando assim que sair.",
+            "📄 Já estou gerando exatamente essa(s) nota(s) — te mando assim "
+            "que sair.",
             parse_mode=None,
         )
         return

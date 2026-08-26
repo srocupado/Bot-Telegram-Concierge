@@ -462,28 +462,34 @@ async def _processar_notas_pendentes(
             continue
         if (hoje - d).days > _NOTA_PENDENTE_EXPIRA_DIAS:
             # Desistir em silêncio contradiz o que o bot prometeu ("te envio
-            # automaticamente"). Avisa antes de largar.
-            await unmark_notified(session, user.id, "nota_pendente", r.key)
-            await _send(bot, user.id, (
+            # automaticamente"). A baixa SÓ acontece com o aviso ENTREGUE
+            # (26/08/2026): dar baixa antes do envio fazia uma falha de rede
+            # engolir a desistência — a entrada sumia e o aviso nunca vinha.
+            ok = await _send(bot, user.id, (
                 f"⚠️ Desisti da nota técnica de {d.strftime('%d/%m')} — "
                 f"{_NOTA_PENDENTE_EXPIRA_DIAS} dias sem conseguir acessar o "
                 "Inlabs. Se ainda quiser, peça de novo com "
                 f"/mp_dou_agora {d.strftime('%d/%m/%Y')}."
             ))
+            if ok:
+                await unmark_notified(session, user.id, "nota_pendente", r.key)
             continue
         numeros = [n for n in nums.split(",") if n and n != "all"] or None
         fila.append((d, numeros, r.key))
     # Pula quem já tem job vivo — a re-tentativa da janela anterior (ou o
     # pedido manual do dono) ainda está rodando. Sem isso a fila inteira
     # emperraria atrás dela: o teto por janela seria gasto num spawn recusado.
+    # Chave por ALVO (mesma regra do botão): pula se o MESMO alvo já roda ou
+    # se um job de dia inteiro ("all") da data está vivo — ele cobre tudo.
     prontas = [
         t for t in sorted(fila, key=lambda t: t[0])
-        if not jobs.job_em_andamento(chave_job_nota(user.id, t[0]))
+        if not (jobs.job_em_andamento(chave_job_nota(user.id, t[0], t[1]))
+                or jobs.job_em_andamento(chave_job_nota(user.id, t[0])))
     ]
     disparadas: list[date] = []
     for d, numeros, key in prontas[:_NOTA_MAX_POR_JANELA]:
         if jobs.spawn(
-            chave_job_nota(user.id, d),
+            chave_job_nota(user.id, d, numeros),
             # Argumentos fixados por default: sem isso a lambda leria o d/key
             # do fim do laço (late binding) e re-tentaria a data errada.
             lambda d=d, numeros=numeros, key=key: _entregar_nota_pendente(
@@ -517,7 +523,11 @@ async def _mp_dias_pendentes(
             await unmark_notified(session, user_id, "mp_pendente", r.key)
             continue
         if (hoje - d).days > _MP_RETRO_EXPIRA_DIAS:
-            await unmark_notified(session, user_id, "mp_pendente", r.key)
+            # A pendência NÃO é baixada aqui (26/08/2026): a baixa acontece no
+            # pós-envio do run (kind mp_desisti), quando o aviso de desistência
+            # foi ENTREGUE. Antes o unmark vinha primeiro e uma falha de envio
+            # sumia com o dia não verificado sem aviso nenhum. Fora do `out`,
+            # o dia expirado não é mais re-checado enquanto o aviso não sai.
             if desistidos is not None:
                 desistidos.append(d)
             continue
@@ -830,27 +840,35 @@ async def _cobrir_lacuna(
     # MP. Avisa uma vez, com as datas, e diz o que fazer.
     facts: list[ProactiveFact] = []
     velhos = [d for d in lacuna if d < limite]
-    if velhos:
-        key = f"lacuna:{velhos[0].isoformat()}:{velhos[-1].isoformat()}"
-        if not await already_notified(session, user.id, "mp_lacuna", key):
-            periodo = (
-                velhos[0].strftime("%d/%m") if len(velhos) == 1
-                else f"{velhos[0].strftime('%d/%m')} a {velhos[-1].strftime('%d/%m')}"
-            )
-            facts.append(ProactiveFact(
-                "mp", "mp_lacuna", key,
-                f"⚠️ <b>Fiquei sem checar o DOU</b> de {periodo} "
-                f"({len(velhos)} dia(s)) — passou dos {_MP_RETRO_EXPIRA_DIAS} "
-                "dias da re-checagem automática. Esses dias NÃO foram "
-                "verificados; se precisar, rode "
-                f"<code>/mp_dou_agora {velhos[0].strftime('%d/%m/%Y')}</code>.",
-                date_iso=None,
-            ))
+    if not velhos:
+        # Tudo virou pendência rastreada (mp_pendente): a marca pode avançar
+        # já — a retroativa cuida dos dias e baixa cada um após entrega.
+        user.dou_ultimo_dia_ok = hoje - timedelta(days=1)
+        await session.commit()
+        return facts
 
-    # A lacuna está contabilizada (na fila ou avisada): a marca avança pra não
-    # re-enfileirar tudo na próxima janela.
-    user.dou_ultimo_dia_ok = hoje - timedelta(days=1)
-    await session.commit()
+    # Dias velhos demais só estão "contabilizados" quando o AVISO chega. A
+    # marca NÃO avança aqui (26/08/2026): avançar antes do envio fazia uma
+    # falha de rede engolir o aviso — a lacuna zerava na janela seguinte e os
+    # dias nunca verificados sumiam pra sempre. O avanço acontece no pós-envio
+    # do run (kind mp_lacuna), que lê o alvo no 4º campo da chave.
+    alvo_marca = (hoje - timedelta(days=1)).isoformat()
+    key = (f"lacuna:{velhos[0].isoformat()}:{velhos[-1].isoformat()}"
+           f":{alvo_marca}")
+    if not await already_notified(session, user.id, "mp_lacuna", key):
+        periodo = (
+            velhos[0].strftime("%d/%m") if len(velhos) == 1
+            else f"{velhos[0].strftime('%d/%m')} a {velhos[-1].strftime('%d/%m')}"
+        )
+        facts.append(ProactiveFact(
+            "mp", "mp_lacuna", key,
+            f"⚠️ <b>Fiquei sem checar o DOU</b> de {periodo} "
+            f"({len(velhos)} dia(s)) — passou dos {_MP_RETRO_EXPIRA_DIAS} "
+            "dias da re-checagem automática. Esses dias NÃO foram "
+            "verificados; se precisar, rode "
+            f"<code>/mp_dou_agora {velhos[0].strftime('%d/%m/%Y')}</code>.",
+            date_iso=None,
+        ))
     return facts
 
 
@@ -1265,6 +1283,8 @@ async def collect_mp(
     for d in desistidos:
         # Aviso explícito ao desistir: sem isto o dia sumia da fila em silêncio
         # e o usuário jamais saberia que aquele DOU nunca foi verificado.
+        # A baixa do mp_pendente acontece no pós-envio do run (só com o aviso
+        # entregue) — ver o bloco mp_desisti lá.
         facts.append(ProactiveFact(
             "mp", "mp_desisti", f"desisti:{d.isoformat()}",
             f"⚠️ Desisti de checar o DOU de {d.strftime('%d/%m')} — "
@@ -1364,7 +1384,7 @@ async def collect_mp(
     # Antes afirmava "Inlabs instável" sempre — e a causa não fica registrada
     # em lugar nenhum, então a frase era chute: seguia dizendo isso com o
     # Inlabs de pé e a nota já sendo gerada na mesma rodada.
-    from bot.services.dou_monitor import chave_job_nota
+    from bot.services.dou_monitor import chave_nota_prefixo
     # Datas cuja ÚLTIMA re-tentativa bateu em manutenção verificada (kind
     # dou_manut) — permite a linha dizer a causa APURADA em vez de otimismo.
     manut_rows = list(await session.scalars(
@@ -1406,7 +1426,7 @@ async def collect_mp(
             # navegador e "fora" soa como bug. Sem promessa de prazo.
             estado = ("<b>na fila de checagem</b> — o Inlabs está instável agora "
                       "(recusando a sessão); checo e envio assim que estabilizar")
-        elif jobs.job_em_andamento(chave_job_nota(user.id, d)):
+        elif jobs.algum_em_andamento(chave_nota_prefixo(user.id, d)):
             estado = _estado_em_andamento(r.key)
         elif pos >= _NOTA_MAX_POR_JANELA:
             estado = (f"aguardando a vez (gero até {_NOTA_MAX_POR_JANELA} por "
@@ -2095,6 +2115,23 @@ async def run_for_user(
                 # com NÚMEROS ficam — são notas reais ainda não entregues.
                 await unmark_notified(session, user.id, "nota_pendente",
                                       f"{dia_iso}:all")
+            # Desistência da retroativa: o dia expirado só sai da fila com o
+            # aviso ENTREGUE (mesma lógica do mp_retro) — envio falho mantém
+            # a pendência e o aviso volta na próxima janela.
+            if f.kind == "mp_desisti":
+                await unmark_notified(session, user.id, "mp_pendente",
+                                      f.key.removeprefix("desisti:"))
+            # Lacuna avisada: a marca d'água só avança com o aviso ENTREGUE
+            # (o alvo vem no 4º campo da chave "lacuna:ini:fim:alvo").
+            if f.kind == "mp_lacuna":
+                partes = f.key.split(":")
+                if len(partes) == 4:
+                    try:
+                        user.dou_ultimo_dia_ok = date.fromisoformat(partes[3])
+                        await session.commit()
+                    except ValueError:
+                        logger.warning("proactive: chave mp_lacuna corrompida: %s",
+                                       f.key)
             # Daqui pra baixo é DEDUP de aviso, e o force pula de propósito:
             # execução de teste não pode silenciar a janela real.
             if force:

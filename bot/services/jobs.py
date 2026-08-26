@@ -39,6 +39,12 @@ def jobs_ativos() -> list[str]:
     return [k for k, t in _jobs.items() if not t.done()]
 
 
+def algum_em_andamento(prefixo: str) -> bool:
+    """True se existe job VIVO cuja chave começa com `prefixo` — pro status da
+    fila de notas enxergar jobs de qualquer alvo do mesmo (usuário, data)."""
+    return any(k.startswith(prefixo) for k, t in _jobs.items() if not t.done())
+
+
 def spawn(chave: str, fabrica: Callable[[], Awaitable[None]]) -> bool:
     """Dispara `fabrica()` em background sob `chave`.
 

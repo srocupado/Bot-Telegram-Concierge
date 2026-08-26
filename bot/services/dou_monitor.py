@@ -482,13 +482,27 @@ def _inlabs_call(do_request, *, tries: int = 3):
     raise last
 
 
-def chave_job_nota(user_id: int, target: date) -> str:
+def chave_job_nota(user_id: int, target: date,
+                   numeros: list[str] | None = None) -> str:
     """Chave de dedup do job da nota, COMPARTILHADA por quem pode dispará-lo:
     o comando/botão manual (`/mp_dou_agora`) e a re-tentativa da fila no
-    proativo. Mesmo usuário + mesma data = um pipeline só; sem isso o tick
-    poderia começar a mesma nota que o dono acabou de pedir no botão, e as
-    duas competiriam pelo mesmo recurso caro (Inlabs + LLM)."""
-    return f"nota:{user_id}:{target.isoformat()}"
+    proativo. Mesmo usuário + mesma data + MESMO ALVO = um pipeline só.
+
+    O alvo entra na chave desde 26/08/2026: com um botão POR MP no card,
+    a chave só por data fazia o segundo clique do dia ("Gerar nota da 1.386"
+    com a da 1.385 em curso) ser recusado com "te mando assim que sair" —
+    promessa falsa: o job vivo era de OUTRA MP e a segunda nota nunca nascia
+    nem virava pendência. Alvos distintos rodam (o _SEM_NOTA serializa a
+    geração); o mesmo alvo continua dedupado."""
+    alvo = ("all" if not numeros
+            else ",".join(sorted(numero_canonico(n) for n in numeros)))
+    return f"nota:{user_id}:{target.isoformat()}:{alvo}"
+
+
+def chave_nota_prefixo(user_id: int, target: date) -> str:
+    """Prefixo comum a TODOS os jobs de nota do (usuário, data) — pro status
+    da fila e pro skip do proativo enxergarem jobs de qualquer alvo."""
+    return f"nota:{user_id}:{target.isoformat()}:"
 
 
 @contextmanager
@@ -1715,11 +1729,26 @@ async def _abrir_outbox(
     if not avisadas:
         return None
     from bot.services.proactive import mark_notified
-    if await _pendencias_da_data(session, user_id, d):
+    # Cobertura por NÚMERO, não por data (26/08/2026): "existe pendência da
+    # data" deixava MP nova descoberta — com "D:1400" na fila, a extra das 18h
+    # trazia a 1401, o outbox não abria pra ela e um restart no meio da
+    # geração matava a nota sem re-tentativa nem aviso (a 1401 já estava em
+    # DouSeenMP e com a Câmara satisfeita). Entrada "all" cobre o dia inteiro
+    # (a re-tentativa dela refaz o dia com force=True).
+    cobertos: set[str] = set()
+    for k in await _pendencias_da_data(session, user_id, d):
+        resto = k.partition(":")[2]
+        if resto in ("", "all"):
+            return None
+        cobertos |= {numero_canonico(n) for n in resto.split(",") if n}
+    descobertas = [mp for mp in avisadas
+                   if numero_canonico(mp["numero"]) not in cobertos]
+    if not descobertas:
         return None
-    chave = f"{d.isoformat()}:{','.join(mp['numero'] for mp in avisadas)}"
+    chave = f"{d.isoformat()}:" + ",".join(
+        sorted(numero_canonico(mp["numero"]) for mp in descobertas))
     await mark_notified(session, user_id, "nota_pendente", chave)
-    logger.info("dou: outbox aberto %s (%d nota[s] a gerar)", chave, len(avisadas))
+    logger.info("dou: outbox aberto %s (%d nota[s] a gerar)", chave, len(descobertas))
     return chave
 
 
@@ -1861,7 +1890,13 @@ async def deliver_to_user(
     ja_vistas = {(r.numero, r.ano) for r in rows}
 
     # 1) avisos imediatos de todas as MPs (não dependem da nota, que é lenta).
+    # MP cujo AVISO falhou entra em `avisos_falhos` (26/08/2026): antes ela só
+    # dava `continue` — fora de `avisadas`, fora de `falhas` — e o caller da
+    # fila via falhas=[] + entregues>0 e baixava a chave inteira: a MP perdia
+    # aviso E nota sem rastro (com a Câmara muda se o proativo já tinha
+    # anunciado). Ela precisa constar em `falhas` pra pendência sobreviver.
     avisadas = []
+    avisos_falhos: list[str] = []
     for mp in novas:
         try:
             await bot.send_message(
@@ -1871,6 +1906,7 @@ async def deliver_to_user(
         except Exception:
             logger.exception("dou: falha ao avisar MP %s/%s ao user %s",
                              mp["numero"], mp["ano"], user.id)
+            avisos_falhos.append(mp["numero"])
             continue
         if (mp["numero"], mp["ano"]) not in ja_vistas:
             await mark_seen(session, user.id, mp)
@@ -1937,6 +1973,9 @@ async def deliver_to_user(
     for mp in avisadas:
         if not await _nota_e_docx(mp):
             falhas.append(mp["numero"])
+    # Aviso que falhou é falha do lote: mantém a pendência viva no caller da
+    # fila e entra na chave de re-tentativa do outbox.
+    falhas += avisos_falhos
 
     await _fechar_outbox(session, user.id, target_date, chave_outbox, falhas)
     # Devolve (entregues, falhas, motivo). O caller da FILA
