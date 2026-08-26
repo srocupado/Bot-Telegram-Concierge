@@ -598,9 +598,19 @@ def _build_system_prompt() -> str:
 
 def _context_block(tz_name: str, memory_context: str | None = None) -> str:
     """Bloco volátil (data/hora + memória) que vai prefixado na mensagem do
-    usuário, fora do system prompt cacheável."""
+    usuário, fora do system prompt cacheável.
+
+    O bloco é DELIMITADO e a mensagem real ganha rótulo próprio (26/08/2026):
+    sem isso, "Consegue fazer um post com essas informações?" chegava colado
+    logo DEPOIS do resumo de memória — e o pronome amarrava no antecedente
+    mais próximo (o perfil: oficina, compressor…) em vez da conversa (a
+    sessão da Câmara respondida no turno anterior). O modelo fazia o que a
+    estrutura da mensagem sugeria."""
     now_local = datetime.now(ZoneInfo(tz_name))
-    block = f"Data/hora atual: {now_local.strftime('%Y-%m-%d %H:%M %A')} ({tz_name})."
+    block = (
+        "[CONTEXTO AUTOMÁTICO — metadados; NÃO é a mensagem do usuário]\n"
+        f"Data/hora atual: {now_local.strftime('%Y-%m-%d %H:%M %A')} ({tz_name})."
+    )
     if memory_context:
         block += (
             "\n\nMEMÓRIA DE CONVERSAS ANTERIORES (resumo automático; use como "
@@ -610,6 +620,12 @@ def _context_block(tz_name: str, memory_context: str | None = None) -> str:
             "tarefa), NÃO afirme que existe: consulte a tool de listagem antes.\n"
             + memory_context
         )
+    block += (
+        "\n[FIM DO CONTEXTO AUTOMÁTICO]\n\n"
+        "MENSAGEM ATUAL DO USUÁRIO (é a ela que você responde; pronomes como "
+        "\"isso\"/\"essas informações\" apontam pra CONVERSA acima, nunca pro "
+        "bloco de contexto):"
+    )
     return block
 
 
