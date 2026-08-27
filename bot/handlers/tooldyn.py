@@ -64,6 +64,14 @@ Regras do projeto (obrigatórias):
   rede (httpx, já disponível).
 - Só stdlib + libs já instaladas no bot (httpx, bs4, sqlalchemy, dateutil).
   NUNCA tocar em segredos/env, banco do bot ou arquivos fora do necessário.
+- LATÊNCIA: a tool roda DENTRO do turno do chat — o dono fica esperando na
+  tela. Alvo: poucos segundos. Trabalho paralelizável (varrer N hosts,
+  consultar N itens) usa asyncio.gather com concorrência alta e timeout
+  CURTO por item; nunca laço sequencial com timeout longo.
+- REDE: o processo do bot ALCANÇA a rede local do dono — unicast TCP/UDP
+  para a LAN funciona (medido: HTTP 200 do gateway 192.168.15.1). O que NÃO
+  atravessa a bridge do Docker é multicast/broadcast (WS-Discovery e afins
+  voltam vazios). Não presuma isolamento por causa do IP 172.x.
 - Escreva também tool_candidata/test_<nome>.py (pytest, OFFLINE — rede
   mockada com monkeypatch) cobrindo o caminho feliz e uma falha, e RODE
   `python -m pytest tool_candidata/ -q` até passar.

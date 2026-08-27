@@ -267,6 +267,34 @@ def test_oferta_de_skill_expirada_aponta_tool_nova(monkeypatch) -> None:
     assert alertas and "/tool_nova" in alertas[0], "expirou sem dizer a saída manual"
 
 
+def test_prompt_do_agente_corrige_as_duas_falhas_medidas() -> None:
+    """Teste real do dono (27/08/2026): pediu 'varre a rede e me lista os
+    IPs' e recebeu um SCRIPT + 'não tenho acesso à sua LAN' — duas falhas
+    somadas: (a) concluiu isolamento por hipótese, com o container tendo
+    acesso comprovado (HTTP 200 do gateway); (b) o prompt era centrado em
+    ARTEFATO, então entregar a ferramenta parecia cumprir o pedido."""
+    from bot.services.agent_runner import _AGENT_SYSTEM_APPEND as p
+
+    # (a) verdade sobre a rede, com a ressalva do multicast
+    assert "ALCANÇA a rede local" in p
+    assert "multicast" in p and "172.x" in p
+    assert "MEÇA antes de declarar" in p
+
+    # (b) resultado é a entrega quando o pedido é por resultado
+    assert "RESULTADO no corpo" in p
+    assert "MEIO, não fim" in p
+
+
+def test_spec_de_tool_dinamica_tem_latencia_e_rede() -> None:
+    """Tool dinâmica roda DENTRO do turno do chat: varredura escrita como
+    laço sequencial trava a conversa por minutos."""
+    from bot.handlers.tooldyn import _SPEC_AGENTE
+
+    assert "LATÊNCIA" in _SPEC_AGENTE and "asyncio.gather" in _SPEC_AGENTE
+    assert "ALCANÇA a rede local" in _SPEC_AGENTE
+    assert "multicast" in _SPEC_AGENTE
+
+
 def test_propor_agente_para_nao_owner_e_recusa_franca(monkeypatch) -> None:
     from bot.services import tools
     monkeypatch.setattr(tools.settings, "owner_telegram_id", 42)
