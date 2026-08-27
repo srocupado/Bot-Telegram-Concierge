@@ -18,7 +18,7 @@ from bot.handlers.chat import _build_system_prompt, inject_context
 from bot.services.chat_memory import memory
 from bot.services.llm.base import ToolContext, make_document_message
 from bot.services.llm.factory import get_provider_for_user
-from bot.services.tools import TOOLS
+from bot.services.tools import tools_do_chat
 from bot.services.viagem import effective_tz
 
 logger = logging.getLogger(__name__)
@@ -64,7 +64,7 @@ async def cmd_pdf(message: Message, user: User, session: AsyncSession) -> None:
         provider = get_provider_for_user(user, vision_provider_name)
         ctx = ToolContext(user=user, session=session, tz=effective_tz(user), user_text=caption or "")
         reply = await provider.chat_with_tools(
-            inject_context(history, effective_tz(user)), tools=TOOLS, ctx=ctx,
+            inject_context(history, effective_tz(user)), tools=tools_do_chat(), ctx=ctx,
             system=_build_system_prompt(),
             max_tokens=4000,
         )

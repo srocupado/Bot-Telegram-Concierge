@@ -14,7 +14,7 @@ from bot.db.models import User
 from bot.services.chat_memory import memory
 from bot.services.llm.base import ToolContext
 from bot.services.llm.factory import get_provider_for_user, modelo_do_user
-from bot.services.tools import TOOLS
+from bot.services.tools import tools_do_chat
 from bot.services.viagem import effective_tz
 from bot.utils import chunk_text
 
@@ -123,16 +123,19 @@ async def deliver_llm_reply(
         memory.append(chat_id, "assistant", ctx.direct_html)
         # Teclado também no caminho verbatim: entrega direta e botão não são
         # excludentes (a lista de MPs vai verbatim E oferece a nota técnica).
-        direct_kb = None
-        if ctx.request_location:
-            from bot.handlers.route import _build_keyboard
-            direct_kb = _build_keyboard()
-        elif ctx.dou_mp_found:
-            from bot.handlers.dou_mp import nota_keyboard
-            direct_kb = nota_keyboard(ctx.dou_mp_found["date_iso"])
-        elif ctx.confirm_clear_shopping:
-            from bot.handlers.shopping import clear_keyboard
-            direct_kb = clear_keyboard()
+        # direct_markup (genérico, setado pela tool) tem precedência sobre os
+        # teclados de fluxo fixo abaixo.
+        direct_kb = getattr(ctx, "direct_markup", None)
+        if direct_kb is None:
+            if ctx.request_location:
+                from bot.handlers.route import _build_keyboard
+                direct_kb = _build_keyboard()
+            elif ctx.dou_mp_found:
+                from bot.handlers.dou_mp import nota_keyboard
+                direct_kb = nota_keyboard(ctx.dou_mp_found["date_iso"])
+            elif ctx.confirm_clear_shopping:
+                from bot.handlers.shopping import clear_keyboard
+                direct_kb = clear_keyboard()
         await send_html_chunked(message, ctx.direct_html, reply_markup=direct_kb)
         return
 
@@ -684,7 +687,7 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
         provider = get_provider_for_user(user)
         ctx = ToolContext(user=user, session=session, tz=effective_tz(user), user_text=user_text)
         reply = await provider.chat_with_tools(
-            inject_context(history, effective_tz(user), summary), tools=TOOLS, ctx=ctx,
+            inject_context(history, effective_tz(user), summary), tools=tools_do_chat(), ctx=ctx,
             system=_build_system_prompt(),
             max_tokens=800,
         )

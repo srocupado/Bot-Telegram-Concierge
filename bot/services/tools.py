@@ -119,6 +119,62 @@ async def _h_executar_agente(args: dict, ctx: ToolContext) -> str:
     return "ok: agente iniciado em background (não escreva nada)"
 
 
+async def _h_propor_agente(args: dict, ctx: ToolContext) -> str:
+    """Demanda fora do catálogo: OFERECE o agente (botão), não executa nada.
+    A execução custa dinheiro (até AGENT_MAX_COST_USD) e minutos — a decisão
+    de gastar é do dono, com um clique."""
+    tarefa = (args.get("tarefa") or "").strip()
+    if not tarefa:
+        return "erro: parâmetro 'tarefa' vazio"
+    if not settings.owner_telegram_id or ctx.user.id != settings.owner_telegram_id:
+        return ("erro: não há tool pra esse pedido e o agente de execução é "
+                "restrito ao dono do bot — diga isso ao usuário com franqueza")
+    from bot.handlers.agent import proposta_keyboard, registrar_proposta
+
+    pid = registrar_proposta(tarefa)
+    resumo = tarefa if len(tarefa) <= 200 else tarefa[:197] + "…"
+    ctx.direct_html = (
+        "🧠 Isso não está no meu catálogo de ferramentas, mas o meu "
+        "<b>agente</b> consegue resolver:\n"
+        f"<i>{_html_escape(resumo)}</i>\n\n"
+        f"Custa até <b>US$ {settings.agent_max_cost_usd:.2f}</b> e leva "
+        "alguns minutos (ele escreve/roda código, pesquisa e entrega "
+        "arquivos). Quer?"
+    )
+    ctx.direct_markup = proposta_keyboard(pid)
+    ctx.short_circuit = True
+    return "ok: proposta com botão enviada ao usuário (não escreva nada)"
+
+
+async def _h_executar_python(args: dict, ctx: ToolContext) -> str:
+    codigo = args.get("codigo") or ""
+    if not codigo.strip():
+        return "erro: parâmetro 'codigo' vazio"
+    # Owner-only: é execução de código arbitrário na máquina do bot — o
+    # sandbox limita CPU/memória/tempo e limpa o env, mas NÃO bloqueia rede.
+    if not settings.owner_telegram_id or ctx.user.id != settings.owner_telegram_id:
+        return "erro: recurso indisponível para este usuário"
+    from bot.services.sandbox import executar_python
+
+    res = await executar_python(codigo)
+    if not res["ok"]:
+        return (f"erro: execução falhou ({res['detalhe']}). Saída:\n"
+                f"{res['saida'] or '(vazia)'}\n"
+                "Corrija o código e tente de novo — ou diga ao usuário o que "
+                "impediu o cálculo.")
+    saida = res["saida"]
+    if not saida:
+        return ("ok: código executado SEM saída — se o resultado interessa, "
+                "reescreva com print() do valor final")
+    # Número calculado vai VERBATIM ao usuário (modelo leve troca dígito ao
+    # transcrever — mesma regra de cotação/extrato). Sem short_circuit: o
+    # modelo recebe a saída pra comentar/encadear.
+    ctx.fallback_text = f"🧮 {saida}"
+    ctx.direct_html = f"🧮 <pre>{_html_escape(saida)}</pre>"
+    return (f"ok: saída (JÁ ENVIADA verbatim ao usuário — não repita números, "
+            f"só comente se necessário):\n{saida}")
+
+
 async def _h_listar_arquivos(_args: dict, ctx: ToolContext) -> str:
     # Owner-only: a pasta é o workspace do agente (recurso do dono).
     if not settings.owner_telegram_id or ctx.user.id != settings.owner_telegram_id:
@@ -149,7 +205,10 @@ async def _h_ajuda(args: dict, ctx: ToolContext) -> str:
     from bot.handlers.start import find_help_sections, help_topic_list
 
     assunto = (args.get("assunto") or "").strip()
-    blocos = find_help_sections(assunto)
+    # Dono enxerga também as seções privadas (agente + cognição) — pros
+    # demais usuários elas nem existem no guia.
+    e_dono = bool(settings.owner_telegram_id) and ctx.user.id == settings.owner_telegram_id
+    blocos = find_help_sections(assunto, incluir_owner=e_dono)
     if not blocos:
         ctx.direct_html = (
             "Posso te explicar como usar qualquer parte do bot 🙂 "
@@ -3158,4 +3217,67 @@ TOOLS: list[Tool] = [
         parameters={"type": "object", "properties": {}},
         handler=_h_listar_arquivos,
     ),
+    Tool(
+        name="executar_python",
+        description=(
+            "Executa código Python AGORA (segundos, sandbox local) e devolve "
+            "a saída — a sua 'calculadora' pra micro-demandas que nenhuma "
+            "outra tool cobre: cálculo não-trivial (juros compostos, "
+            "combinatória, datas), conversão de unidades, parsing/"
+            "transformação de um texto que o usuário colou, estatística de "
+            "uma lista de números. Escreva código COMPLETO que TERMINA em "
+            "print() do resultado final. Sem rede garantida e sem acesso aos "
+            "dados do bot (finanças/lembretes têm tools próprias — use-as). "
+            "NÃO use para: aritmética simples que você faz com confiança, "
+            "tarefas de minutos ou que geram ARQUIVO (isso é o agente — "
+            "executar_agente/propor_agente), nem nada que outra tool já "
+            "resolve. Só bibliotecas da stdlib."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "codigo": {
+                    "type": "string",
+                    "description": "Código Python completo, stdlib apenas, terminando em print() do resultado",
+                },
+            },
+            "required": ["codigo"],
+        },
+        handler=_h_executar_python,
+    ),
+    Tool(
+        name="propor_agente",
+        description=(
+            "ÚLTIMO RECURSO para pedido de AÇÃO que NENHUMA outra tool cobre "
+            "e que o executar_python não resolve (precisa de arquivo gerado, "
+            "raspagem de site específico, análise longa, projeto de código): "
+            "em vez de responder 'não consigo fazer isso', chame esta tool — "
+            "ela OFERECE ao usuário resolver com o agente de execução "
+            "(mostra custo estimado e botão de confirmação; NÃO executa "
+            "nada sozinha). Passe em 'tarefa' a descrição completa e fiel "
+            "do pedido. NÃO use quando o usuário JÁ pediu explicitamente o "
+            "agente ('constrói/programa/cria um script...') — aí é "
+            "executar_agente direto. NÃO use para perguntas de conhecimento "
+            "(responda você mesmo) nem pra pedidos que alguma tool cobre."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "tarefa": {
+                    "type": "string",
+                    "description": "Descrição completa da demanda, fiel ao pedido do usuário",
+                },
+            },
+            "required": ["tarefa"],
+        },
+        handler=_h_propor_agente,
+    ),
 ]
+
+
+def tools_do_chat() -> list[Tool]:
+    """Catálogo efetivo do chat: tools fixas + DINÂMICAS ativas (criadas pelo
+    próprio bot via /tool_nova e aprovadas pelo dono). Recalculado a cada
+    turno — ativação/remoção vale na mensagem seguinte, sem restart."""
+    from bot.services import tools_dinamicas
+    return TOOLS + tools_dinamicas.ativas()

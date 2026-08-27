@@ -219,7 +219,23 @@ AGENT_HELP_TEXT = (
     "&lt;comando&gt;\"</i> (tipo shell). Veja em /lembretes; apaga com "
     "/apagar_lembrete.\n"
     "• Guardrails: confinado a ./workspace, env limpo, 1 tarefa por vez, "
-    "teto de custo por tarefa (+ teto diário pro agendado).\n"
+    "teto de custo por tarefa (+ teto diário pro agendado).\n\n"
+    "<b>Cognição — demandas fora do catálogo</b> (só você):\n"
+    "• Pedido que nenhuma ferramenta cobre? O bot NÃO responde 'não consigo': "
+    "ele <b>oferece o agente</b> com um botão (mostra o custo estimado; nada "
+    "roda sem o seu clique).\n"
+    "• Cálculo/conversão/parsing na hora: o bot escreve e executa Python em "
+    "sandbox local, em segundos — ex.: <i>\"quanto rende 1000 a 1,1% ao mês "
+    "por 5 anos?\"</i>, <i>\"extrai as datas desse texto\"</i>. Resultado vem "
+    "verbatim.\n"
+    "• <code>/tool_nova &lt;o que ela faz&gt;</code> — o bot DESENVOLVE uma "
+    "ferramenta nova (o agente escreve e testa; ex.: <i>/tool_nova consultar "
+    "a tabela FIPE pelo modelo do carro</i>). Ativação SEMPRE passa por você: "
+    "<code>/tool_ativar &lt;nome&gt;</code> valida, mostra o código e espera "
+    "o botão ✅. Aprovada, entra no chat na próxima mensagem e sobrevive a "
+    "deploys.\n"
+    "• <code>/tools_dinamicas</code> lista as ativas · <code>/tool_rm "
+    "&lt;nome&gt;</code> remove (com backup do código no chat).\n"
 )
 
 
@@ -271,6 +287,11 @@ def _parse_help_sections(help_text: str) -> list[tuple[str, str]]:
 
 
 _HELP_SECTIONS: list[tuple[str, str]] = _parse_help_sections(HELP_TEXT)
+# Seções do DONO (agente + cognição): fora do help público, mas o `ajuda`
+# precisa achá-las quando é o próprio dono perguntando — "como crio uma
+# ferramenta?" respondido com "não sei" pro dono era lacuna (o /agente já
+# sofria disso desde sempre; a cognição herdaria).
+_HELP_SECTIONS_OWNER: list[tuple[str, str]] = _parse_help_sections(AGENT_HELP_TEXT)
 
 # palavra-chave (sem acento) → fragmento do TÍTULO da seção a casar.
 _HELP_KEYWORDS: dict[str, str] = {
@@ -338,6 +359,15 @@ _HELP_KEYWORDS: dict[str, str] = {
     # /transito_at vira "horário de saída" (16/08/2026, fim do digest 07h20):
     # a pergunta natural usa o substantivo "saída", que "sair" não casa.
     "saida": "transito", "vigia": "transito",
+    # cognição (27/08/2026): demandas fora do catálogo + tools dinâmicas.
+    # VERBOS além de substantivos (regra do help): "criar ferramenta",
+    # "desenvolver", "automatizar".
+    "ferramenta": "cognicao", "ferramentas": "cognicao",
+    "tool": "cognicao", "tools": "cognicao", "cognicao": "cognicao",
+    "desenvolver": "cognicao", "automatizar": "cognicao",
+    "automatiza": "cognicao", "automacao": "cognicao",
+    "python": "cognicao", "sandbox": "cognicao",
+    "calcular": "cognicao", "calcula": "cognicao", "calculo": "cognicao",
     "academia": "academia", "treino": "academia", "malhar": "academia", "malho": "academia",
     # Tradutor tem seção PRÓPRIA (10/08/2026): a pergunta "como uso o
     # tradutor?" devolvia a seção LLM inteira (provider/thinking/reset…) —
@@ -379,24 +409,30 @@ _HELP_KEYWORDS: dict[str, str] = {
 }
 
 
-def find_help_sections(query: str) -> list[str]:
+def find_help_sections(query: str, *, incluir_owner: bool = False) -> list[str]:
     """Blocos HTML do HELP_TEXT que casam com o assunto perguntado. Casa por
     palavra-chave (LIMITE DE PALAVRA — senão 'mp' casaria dentro de 'co-mp-ras')
-    e também direto contra o título da seção. Vazio se nada bate."""
+    e também direto contra o título da seção. Vazio se nada bate.
+
+    `incluir_owner=True` (o `ajuda` passa quando quem pergunta é o DONO)
+    inclui as seções privadas (agente + cognição) — pra qualquer outro
+    usuário elas nem existem."""
     # `_` é caractere de palavra pro regex, então `\bmp\b` NÃO casa dentro de
     # "/mp_dou_agora" — perguntar pelo comando pelo nome não achava nada.
     # Vira espaço: nenhuma keyword tem underscore, então não quebra as outras.
+    secoes = (_HELP_SECTIONS + _HELP_SECTIONS_OWNER if incluir_owner
+              else _HELP_SECTIONS)
     q = _strip_accents(query or "").replace("_", " ")
     alvos: set[str] = set()
     for kw, alvo in _HELP_KEYWORDS.items():
         if re.search(rf"\b{re.escape(kw)}\b", q):
             alvos.add(alvo)
     if not alvos:  # tenta casar o texto direto contra os títulos
-        for titulo, _bloco in _HELP_SECTIONS:
+        for titulo, _bloco in secoes:
             if _strip_accents(titulo) in q or q in _strip_accents(titulo):
                 alvos.add(_strip_accents(titulo))
     out: list[str] = []
-    for titulo, bloco in _HELP_SECTIONS:
+    for titulo, bloco in secoes:
         nt = _strip_accents(titulo)
         if any(a in nt for a in alvos):
             out.append(bloco)

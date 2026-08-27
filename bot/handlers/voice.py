@@ -53,6 +53,12 @@ from bot.handlers.dou_mp import (
     cmd_off as cmd_mp_dou_off,
     cmd_on as cmd_mp_dou_on,
 )
+from bot.handlers.tooldyn import (
+    cmd_tool_ativar,
+    cmd_tool_nova,
+    cmd_tool_rm,
+    cmd_tools_dinamicas,
+)
 from bot.handlers.translator import cmd_tradutor, cmd_tradutor_provider
 from bot.handlers.reminders import (
     cmd_agendar_comando,
@@ -233,6 +239,10 @@ _DISPATCH: dict[str, Callable[..., Any]] = {
     "agente_status": cmd_agente_status,
     "agente_fim": cmd_agente_fim,
     "agente_config": cmd_agente_config,
+    "tool_nova": cmd_tool_nova,
+    "tool_ativar": cmd_tool_ativar,
+    "tools_dinamicas": cmd_tools_dinamicas,
+    "tool_rm": cmd_tool_rm,
 }
 
 
@@ -532,7 +542,7 @@ async def _dispatch_chat(
 ) -> None:
     """Mesma lógica do handlers/chat.py::free_chat, adaptada para texto vindo de voz."""
     from bot.services.llm.base import ToolContext
-    from bot.services.tools import TOOLS
+    from bot.services.tools import tools_do_chat
 
     # Sessão de continuação do agente ativa? Voz livre continua a tarefa
     # (mesmo comportamento do texto livre, que é capturado pelo router do
@@ -566,7 +576,7 @@ async def _dispatch_chat(
         provider = get_provider_for_user(user)
         ctx = ToolContext(user=user, session=session, tz=effective_tz(user), user_text=text)
         reply = await provider.chat_with_tools(
-            inject_context(history, effective_tz(user), summary), tools=TOOLS, ctx=ctx,
+            inject_context(history, effective_tz(user), summary), tools=tools_do_chat(), ctx=ctx,
             system=_build_system_prompt(),
             max_tokens=600,
         )

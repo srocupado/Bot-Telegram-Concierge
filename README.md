@@ -227,6 +227,16 @@ Só o usuário com `OWNER_TELEGRAM_ID` vê/usa — pros demais o recurso não ex
 | `/agente_config` | Ajustes finos em runtime, sem restart: `modelos` (lista dinâmica da API), `modelo opus\|sonnet\|haiku` (ou id `claude-*`, validado contra a lista viva), `timeout 1800`, `turnos 20`, `custo 5`, `ttl 60`, `padrao` (volta ao `.env`) |
 | agendado (cron) | *"todo dia útil 7h, roda o agente pra..."* — execução recorrente via scheduler; ver [Tarefas e lembretes](#tarefas-e-lembretes) |
 
+### Cognição — demandas fora do catálogo (owner-only)
+| Comando | Descrição |
+|---|---|
+| (automático) | Pedido de ação que nenhuma tool cobre → o bot **oferece o agente** com botão e custo estimado (nada roda sem clique) |
+| (automático) | Cálculo/conversão/parsing na hora → o bot escreve e executa Python em sandbox local (env limpo, rlimits, timeout); resultado verbatim |
+| `/tool_nova <o que faz>` | O agente **desenvolve uma tool nova** (código + teste offline) no workspace |
+| `/tool_ativar <nome>` | Valida em subprocesso, roda o teste, mostra o código e espera o botão ✅ do dono; ativa sem restart e sobrevive a deploys (`/app/data/tools_dinamicas`) |
+| `/tools_dinamicas` | Lista as tools dinâmicas ativas |
+| `/tool_rm <nome>` | Remove (manda o `.py` de backup no chat antes) |
+
 Guardrails: 1 tarefa por vez; env do agente com **whitelist** (nunca vê
 `BOT_TOKEN`/senhas); deny rules de leitura/escrita fora do workspace
 (`/app/data`, `/app/bot`) + hook que bloqueia `Bash` nesses paths;

@@ -342,6 +342,84 @@ def start_background_task(prompt: str, chat_id: int, *, scheduled: bool = False)
     return "started"
 
 
+# --- proposta de agente (tool propor_agente: demanda fora do catálogo) ---
+#
+# A tool NÃO executa nada: registra a tarefa aqui e mostra um botão com o
+# custo — quem decide gastar (até AGENT_MAX_COST_USD e minutos de espera) é
+# o dono, com um clique. Memória de processo com TTL: restart perde as
+# propostas pendentes e o botão avisa pra pedir de novo (barato e honesto —
+# nada de outbox pra uma OFERTA que ainda não custou nada).
+_PROPOSTA_TTL_S = 30 * 60
+_propostas: dict[str, tuple[str, float]] = {}
+
+
+def registrar_proposta(tarefa: str) -> str:
+    import secrets
+    agora = time.monotonic()
+    for k in [k for k, (_, t) in _propostas.items() if agora - t > _PROPOSTA_TTL_S]:
+        del _propostas[k]
+    pid = secrets.token_hex(4)
+    _propostas[pid] = (tarefa, agora)
+    return pid
+
+
+def proposta_keyboard(pid: str):
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🤖 Sim, resolve com o agente",
+                             callback_data=f"agprop:ok:{pid}"),
+        InlineKeyboardButton(text="✖️ Deixa", callback_data=f"agprop:no:{pid}"),
+    ]])
+
+
+@router.callback_query(F.data.startswith("agprop:"))
+async def cb_proposta_agente(query, user: User) -> None:
+    if (not settings.owner_telegram_id
+            or query.from_user.id != settings.owner_telegram_id):
+        await query.answer("recurso do dono do bot", show_alert=True)
+        return
+    try:
+        _, acao, pid = query.data.split(":", 2)
+    except ValueError:
+        await query.answer("botão inválido", show_alert=True)
+        return
+    if acao == "no":
+        _propostas.pop(pid, None)
+        await query.answer("Descartado")
+        try:
+            await query.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return
+    entrada = _propostas.pop(pid, None)
+    if (entrada is None
+            or time.monotonic() - entrada[1] > _PROPOSTA_TTL_S):
+        await query.answer(
+            "Essa proposta expirou (ou o bot reiniciou) — faça o pedido de "
+            "novo que eu ofereço outra vez.", show_alert=True)
+        return
+    status = start_background_task(entrada[0], query.message.chat.id)
+    if status == "started":
+        await query.answer("Agente iniciado")
+        texto = ("🤖 Agente iniciado — vou te mandando o progresso e entrego "
+                 "o resultado quando terminar.")
+    elif status == "busy":
+        # Devolve a proposta pra fila: o clique não pode evaporar a tarefa.
+        _propostas[pid] = entrada
+        await query.answer("Agente ocupado — tenta de novo quando ele terminar",
+                           show_alert=True)
+        return
+    else:
+        await query.answer()
+        texto = ("⚠️ O agente está desabilitado "
+                 "(OWNER_TELEGRAM_ID/ANTHROPIC_API_KEY no .env).")
+    try:
+        await query.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await query.message.answer(texto, parse_mode=None)
+
+
 async def notify_stale_task(bot: Bot) -> None:
     """No startup: se havia tarefa em andamento quando o bot caiu, avisa o owner."""
     stale = runner.pop_stale_state()

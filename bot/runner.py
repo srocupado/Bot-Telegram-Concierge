@@ -17,6 +17,7 @@ from bot.db.models import User
 from bot.db.session import SessionLocal, init_db
 from bot.handlers import agent as agent_handler
 from bot.handlers import chat as chat_handler
+from bot.handlers import tooldyn as tooldyn_handler
 from bot.handlers import congress as congress_handler
 from bot.handlers import dou_mp as dou_mp_handler
 from bot.handlers import translator as translator_handler
@@ -78,6 +79,7 @@ def _build_dispatcher() -> Dispatcher:
     dp.include_router(reminder_callbacks_handler.router)  # botões snooze/done
     dp.include_router(shopping_handler.router)  # botões confirmar limpeza da lista
     dp.include_router(agent_handler.router)  # /agente + continuação (antes do catch-all!)
+    dp.include_router(tooldyn_handler.router)  # tools dinâmicas (/tool_nova etc.)
     dp.include_router(chat_handler.router)  # catch-all texto livre
     return dp
 
@@ -160,6 +162,25 @@ async def main() -> None:
     # aviso ao owner se o restart matou uma tarefa no meio.
     agent_handler.set_bot(bot)
     await agent_handler.notify_stale_task(bot)
+
+    # Tools dinâmicas (criadas via /tool_nova, aprovadas pelo dono): carrega
+    # do volume persistente. Arquivo quebrado NÃO derruba o boot — vira aviso
+    # explícito ao dono (regra: falha nunca é silêncio).
+    from bot.services import tools_dinamicas
+    problemas_td = tools_dinamicas.carregar_todas()
+    if problemas_td and settings.owner_telegram_id:
+        try:
+            await bot.send_message(
+                settings.owner_telegram_id,
+                "⚠️ Tool(s) dinâmica(s) NÃO carregada(s) no boot:\n- "
+                + "\n- ".join(problemas_td)
+                + "\nElas ficam FORA do catálogo até conserto (/tool_nova) "
+                "ou remoção (/tool_rm).",
+                parse_mode=None,
+            )
+        except Exception:
+            logger.warning("aviso de tools dinâmicas quebradas não entregue",
+                           exc_info=True)
 
     await _notify_restart(bot)
 

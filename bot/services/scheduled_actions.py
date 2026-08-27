@@ -25,7 +25,7 @@ from bot.services.congress import (
 )
 from bot.services.llm.base import ToolContext
 from bot.services.llm.factory import get_provider_for_user
-from bot.services.tools import TOOLS
+from bot.services.tools import tools_do_chat
 from bot.services.traffic import (
     USER_AGENT as TRAFFIC_USER_AGENT,
     TrafficError,
@@ -236,7 +236,7 @@ async def _run_chat(
             # tz efetivo TAMBÉM aqui: o ctx acima já usava; o inject_context
             # ficou com o fuso de casa — em viagem, "que horas são"/datas
             # relativas do prompt agendado divergiam do resto do turno.
-            inject_context(history, effective_tz(user), summary), tools=TOOLS, ctx=ctx,
+            inject_context(history, effective_tz(user), summary), tools=tools_do_chat(), ctx=ctx,
             system=_build_system_prompt(),
             max_tokens=800,
         )

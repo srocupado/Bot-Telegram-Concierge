@@ -87,6 +87,10 @@ class ToolContext:
     # Setado por zerar_lista_compras: o handler anexa botões Sim/Cancelar em
     # vez de apagar na hora (evita o LLM zerar a lista sem confirmação).
     confirm_clear_shopping: bool = False
+    # Teclado inline GENÉRICO pra resposta verbatim (direct_html): a tool que
+    # precisa de botão próprio (ex.: propor_agente com "Resolver com o agente")
+    # seta aqui em vez de ganhar mais um flag dedicado no deliver.
+    direct_markup: Any = None
     # Setado por consultar_transito quando a origem não é casa/trabalho explícito:
     # em vez de assumir HOME_COORDS silenciosamente, o handler anexa o teclado
     # "📍 Enviar localização" (mesma UX do /rota) e registra o pending route.
