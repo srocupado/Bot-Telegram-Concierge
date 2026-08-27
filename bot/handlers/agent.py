@@ -398,7 +398,18 @@ async def cb_proposta_agente(query, user: User) -> None:
             "Essa proposta expirou (ou o bot reiniciou) — faça o pedido de "
             "novo que eu ofereço outra vez.", show_alert=True)
         return
-    status = start_background_task(entrada[0], query.message.chat.id)
+    # Higiene de entrega: no primeiro teste real (calendário em PDF), o
+    # coletor de artefatos mandou também o SCRIPT que gerou o PDF — todo
+    # arquivo novo do workspace vira artefato. Diretório com "." na frente
+    # fica fora do snapshot (_snapshot pula dot-dirs), então o pedido é
+    # explícito: auxiliares em .aux/, produto final na raiz.
+    tarefa = (
+        entrada[0]
+        + "\n\n(Entrega: deixe na raiz do workspace SÓ o(s) arquivo(s) "
+        "finais que o usuário pediu; scripts e intermediários crie dentro "
+        "de .aux/ — essa pasta não é entregue.)"
+    )
+    status = start_background_task(tarefa, query.message.chat.id)
     if status == "started":
         await query.answer("Agente iniciado")
         texto = ("🤖 Agente iniciado — vou te mandando o progresso e entrego "

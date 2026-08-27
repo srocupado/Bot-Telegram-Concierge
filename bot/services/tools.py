@@ -93,30 +93,13 @@ logger = logging.getLogger(__name__)
 
 
 async def _h_executar_agente(args: dict, ctx: ToolContext) -> str:
-    tarefa = (args.get("tarefa") or "").strip()
-    if not tarefa:
-        return "erro: parâmetro 'tarefa' vazio"
-    # Owner-only: pra qualquer outro usuário o recurso "não existe".
-    if not settings.owner_telegram_id or ctx.user.id != settings.owner_telegram_id:
-        return "erro: recurso indisponível para este usuário"
-    from bot.handlers.agent import start_background_task
-
-    status = start_background_task(tarefa, ctx.user.id)
-    if status == "disabled":
-        return "erro: agente desabilitado (OWNER_TELEGRAM_ID/ANTHROPIC_API_KEY no .env)"
-    if status == "busy":
-        ctx.direct_html = (
-            "⏳ O agente já está executando uma tarefa. Acompanhe na mensagem "
-            "de status, ou use /agente_parar."
-        )
-        ctx.short_circuit = True
-        return "ok: aviso de ocupado enviado (não escreva nada)"
-    ctx.direct_html = (
-        "🤖 Agente iniciado — vou te mandando o progresso e entrego os "
-        "arquivos quando terminar."
-    )
-    ctx.short_circuit = True
-    return "ok: agente iniciado em background (não escreva nada)"
+    """DESDE 27/08/2026 também passa pelo BOTÃO de confirmação (delega pro
+    fluxo do propor_agente). Motivo medido no primeiro teste real: 'gera um
+    PDF com um calendário' casou com 'CRIAR algo' desta tool e US$ 0,53
+    rodaram sem o portão de custo — o gate não pode depender do modelo
+    escolher a tool certa entre duas parecidas. Início IMEDIATO só nos
+    caminhos de consentimento explícito: /agente e o agendado (cron)."""
+    return await _h_propor_agente(args, ctx)
 
 
 async def _h_propor_agente(args: dict, ctx: ToolContext) -> str:
@@ -3186,6 +3169,8 @@ TOOLS: list[Tool] = [
             "'constrói um script que...', 'cria um app/programa que...', "
             "'escreve um código que...', 'faz uma análise de dados com "
             "código', 'automatiza X com um script'.\n"
+            "A execução NÃO começa na hora: o usuário recebe a proposta com "
+            "custo e um botão de confirmação (mesmo fluxo do propor_agente).\n"
             "NÃO use para pedidos que outras tools já resolvem (lembretes, "
             "finanças, lista de compras, trânsito, viagens, busca simples na "
             "web) nem para perguntas conceituais sobre programação (essas "
@@ -3249,16 +3234,15 @@ TOOLS: list[Tool] = [
         name="propor_agente",
         description=(
             "ÚLTIMO RECURSO para pedido de AÇÃO que NENHUMA outra tool cobre "
-            "e que o executar_python não resolve (precisa de arquivo gerado, "
-            "raspagem de site específico, análise longa, projeto de código): "
-            "em vez de responder 'não consigo fazer isso', chame esta tool — "
-            "ela OFERECE ao usuário resolver com o agente de execução "
-            "(mostra custo estimado e botão de confirmação; NÃO executa "
-            "nada sozinha). Passe em 'tarefa' a descrição completa e fiel "
-            "do pedido. NÃO use quando o usuário JÁ pediu explicitamente o "
-            "agente ('constrói/programa/cria um script...') — aí é "
-            "executar_agente direto. NÃO use para perguntas de conhecimento "
-            "(responda você mesmo) nem pra pedidos que alguma tool cobre."
+            "e que o executar_python não resolve — precisa de ARQUIVO gerado "
+            "('gera um PDF/planilha/relatório'), raspagem de site "
+            "específico, análise longa, projeto de código: em vez de "
+            "responder 'não consigo fazer isso', chame esta tool — ela "
+            "OFERECE ao usuário resolver com o agente de execução (mostra "
+            "custo estimado e botão de confirmação; NÃO executa nada "
+            "sozinha). Passe em 'tarefa' a descrição completa e fiel do "
+            "pedido. NÃO use para perguntas de conhecimento (responda você "
+            "mesmo) nem pra pedidos que alguma tool cobre."
         ),
         parameters={
             "type": "object",

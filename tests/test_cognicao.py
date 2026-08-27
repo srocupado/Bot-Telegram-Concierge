@@ -164,6 +164,52 @@ def test_propor_agente_gera_botao_e_nao_executa(monkeypatch) -> None:
     assert ah._propostas[pid][0] == "raspar o placar do campeonato X"
 
 
+def test_executar_agente_tambem_passa_pelo_botao(monkeypatch) -> None:
+    """Medido no 1º teste real (27/08): 'gera um PDF com um calendário' caiu
+    no executar_agente e US$ 0,53 rodaram SEM o portão de custo — o gate não
+    pode depender de o modelo escolher a tool certa entre duas parecidas.
+    Agora o caminho de tool SEMPRE propõe; imediato é só /agente e cron."""
+    from bot.services import tools
+    from bot.handlers import agent as ah
+
+    monkeypatch.setattr(tools.settings, "owner_telegram_id", 42)
+    disparos: list[str] = []
+    monkeypatch.setattr(ah, "start_background_task",
+                        lambda prompt, chat_id, **kw: disparos.append(prompt) or "started")
+    ctx = SimpleNamespace(user=SimpleNamespace(id=42), direct_html=None,
+                          direct_markup=None, short_circuit=False)
+    out = asyncio.run(tools._h_executar_agente(
+        {"tarefa": "gera um PDF com um calendário"}, ctx))
+    assert out.startswith("ok:") and disparos == []
+    assert ctx.direct_markup is not None, "executar_agente sem botão = custo sem consentimento"
+
+
+def test_clique_na_proposta_pede_produto_final_limpo(monkeypatch) -> None:
+    """A tarefa disparada pelo botão leva a instrução de deixar auxiliares em
+    .aux/ — senão o script que gerou o PDF vem junto como artefato."""
+    from bot.handlers import agent as ah
+    import asyncio as aio
+
+    monkeypatch.setattr(ah.settings, "owner_telegram_id", 42)
+    disparos: list[str] = []
+    monkeypatch.setattr(ah, "start_background_task",
+                        lambda prompt, chat_id, **kw: disparos.append(prompt) or "started")
+    pid = ah.registrar_proposta("gera um PDF X")
+
+    class _Msg:
+        chat = SimpleNamespace(id=42)
+        async def edit_reply_markup(self, reply_markup=None): pass
+        async def answer(self, *a, **kw): pass
+
+    q = SimpleNamespace(data=f"agprop:ok:{pid}",
+                        from_user=SimpleNamespace(id=42), message=_Msg())
+    async def _ans(*a, **kw): pass
+    q.answer = _ans
+    aio.run(ah.cb_proposta_agente(q, SimpleNamespace(id=42)))
+    assert len(disparos) == 1 and disparos[0].startswith("gera um PDF X")
+    assert ".aux/" in disparos[0]
+
+
 def test_propor_agente_para_nao_owner_e_recusa_franca(monkeypatch) -> None:
     from bot.services import tools
     monkeypatch.setattr(tools.settings, "owner_telegram_id", 42)
