@@ -113,8 +113,23 @@ async def cmd_tool_nova(message: Message, command: CommandObject, user: User) ->
 
 @router.message(Command("tool_ativar"))
 async def cmd_tool_ativar(message: Message, command: CommandObject, user: User) -> None:
+    """Wrapper que garante RESPOSTA. Falha inesperada aqui virava silêncio
+    puro (o aiogram loga o traceback e o dono fica sem nada na tela) — foi
+    exatamente o que aconteceu em 27/08/2026 com a legenda em Markdown."""
     if not _e_owner(user.id):
         return
+    try:
+        await _tool_ativar(message, command)
+    except Exception as exc:
+        logger.exception("/tool_ativar falhou")
+        await message.answer(
+            f"❌ Falha inesperada no /tool_ativar ({type(exc).__name__}: {exc}). "
+            "NADA foi ativado. O log do container tem o traceback completo.",
+            parse_mode=None,
+        )
+
+
+async def _tool_ativar(message: Message, command: CommandObject) -> None:
     nome = (command.args or "").strip().lower().removesuffix(".py")
     if not nome:
         await message.answer("Uso: /tool_ativar <nome>", parse_mode=None)
@@ -126,6 +141,12 @@ async def cmd_tool_ativar(message: Message, command: CommandObject, user: User) 
             "gera lá; confira o nome que o agente informou.", parse_mode=None,
         )
         return
+    # Sinal IMEDIATO: validação + teste levam até ~2min e o silêncio parecia
+    # comando morto (dono, 27/08/2026).
+    await message.answer(
+        f"🔎 Validando '{nome}' (import isolado + teste da candidata). "
+        "Pode levar até 2 minutos…", parse_mode=None,
+    )
     ok, detalhe = await td.validar_em_subprocesso(origem)
     if not ok:
         await message.answer(
@@ -149,13 +170,21 @@ async def cmd_tool_ativar(message: Message, command: CommandObject, user: User) 
         try:
             out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
             saida = out_b.decode("utf-8", errors="replace")[-600:]
-            if proc.returncode != 0:
+            if "No module named pytest" in saida:
+                # Executor ausente ≠ teste reprovado: culpar o teste aqui
+                # mandaria o dono caçar bug onde não há (o pytest sai da
+                # imagem a cada rebuild se não estiver no Dockerfile).
+                aviso_teste = ("⚠️ pytest ausente na imagem — teste NÃO "
+                               "verificado")
+                logger.warning("tool_ativar: pytest ausente; teste não rodou")
+            elif proc.returncode != 0:
                 await message.answer(
                     f"❌ O TESTE da candidata falhou (nada foi ativado):\n{saida}",
                     parse_mode=None,
                 )
                 return
-            aviso_teste = "✅ teste passou"
+            else:
+                aviso_teste = "✅ teste passou"
         except asyncio.TimeoutError:
             proc.kill()
             await message.answer("❌ Teste não terminou em 120s — nada ativado.",
@@ -166,10 +195,15 @@ async def cmd_tool_ativar(message: Message, command: CommandObject, user: User) 
     td.DIR_PENDENTES.mkdir(parents=True, exist_ok=True)
     pendente = td.DIR_PENDENTES / f"{nome}.py"
     shutil.copy2(origem, pendente)
+    # parse_mode=None OBRIGATÓRIO: o bot usa Markdown por padrão e o nome da
+    # tool contém underscore por contrato ([a-z0-9_]) — 'onvif_scan' abria um
+    # itálico que nunca fechava, o Telegram recusava a mensagem inteira e o
+    # handler morria ANTES dos botões (bug real do dono, 27/08/2026).
     await message.answer_document(
         FSInputFile(pendente, filename=f"{nome}.py"),
         caption=(f"🔎 Código da tool '{nome}' ({aviso_teste}). LEIA antes de "
                  "aprovar: ela roda com os poderes do bot."),
+        parse_mode=None,
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="✅ Aprovar e ativar", callback_data=f"dyn:ok:{nome}"),
@@ -197,7 +231,8 @@ async def cb_tool_dinamica(query, user: User) -> None:
         pendente.unlink(missing_ok=True)
         await query.answer("Descartada")
         try:
-            await query.message.edit_text(f"❌ Tool '{nome}' descartada.")
+            await query.message.edit_text(f"❌ Tool '{nome}' descartada.",
+                                          parse_mode=None)
         except Exception:
             pass
         return
@@ -216,7 +251,8 @@ async def cb_tool_dinamica(query, user: User) -> None:
     try:
         await query.message.edit_text(
             f"✅ Tool '{nome}' ATIVA — já vale na próxima mensagem do chat. "
-            f"Veja com /tools_dinamicas; remova com /tool_rm {nome}.")
+            f"Veja com /tools_dinamicas; remova com /tool_rm {nome}.",
+            parse_mode=None)
     except Exception:
         pass
 
@@ -257,6 +293,7 @@ async def cmd_tool_rm(message: Message, command: CommandObject, user: User) -> N
         await message.answer_document(
             FSInputFile(path, filename=f"{nome}.py"),
             caption=f"Backup da tool '{nome}' (removida).",
+            parse_mode=None,
         )
     except Exception:
         logger.exception("tool_rm: backup não enviado — removendo mesmo assim")

@@ -295,6 +295,61 @@ def test_spec_de_tool_dinamica_tem_latencia_e_rede() -> None:
     assert "multicast" in _SPEC_AGENTE
 
 
+def test_tooldyn_nunca_envia_com_markdown_ligado() -> None:
+    """Bug real (dono, 27/08/2026): a legenda do documento no /tool_ativar
+    foi enviada com o Markdown padrão do bot e o '_' de 'onvif_scan' abriu
+    um itálico sem fim — Telegram recusou, o handler morreu antes dos botões
+    e o dono não recebeu NADA. Nome de tool tem underscore POR CONTRATO
+    ([a-z0-9_]), então todo envio deste arquivo precisa de parse_mode=None.
+    Guarda estática: pega a classe inteira, não só o caso que estourou."""
+    import ast
+    from pathlib import Path
+
+    fonte = Path("bot/handlers/tooldyn.py").read_text(encoding="utf-8")
+    arvore = ast.parse(fonte)
+    faltando = []
+    for node in ast.walk(arvore):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr not in ("answer", "answer_document", "edit_text"):
+            continue
+        # `query.answer(...)` é o TOAST do botão (CallbackQuery.answer): texto
+        # puro, sem parse_mode. Já `query.message.answer(...)` é mensagem de
+        # verdade e entra na regra.
+        alvo = node.func.value
+        if isinstance(alvo, ast.Name) and alvo.id == "query" and node.func.attr == "answer":
+            continue
+        kw = {k.arg for k in node.keywords}
+        if "parse_mode" not in kw:
+            faltando.append(f"{node.func.attr} (linha {node.lineno})")
+    assert not faltando, (
+        "envio sem parse_mode em tooldyn.py — nome de tool com '_' quebra o "
+        f"Markdown e mata o handler: {faltando}")
+
+
+def test_tool_ativar_responde_mesmo_com_falha_inesperada(monkeypatch) -> None:
+    """Exceção no meio virava silêncio puro (aiogram loga, o dono não vê
+    nada). Agora vira mensagem — desistir calado é o que o projeto proíbe."""
+    from bot.handlers import tooldyn
+
+    monkeypatch.setattr(tooldyn.settings, "owner_telegram_id", 42)
+
+    async def _explode(_message, _command):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(tooldyn, "_tool_ativar", _explode)
+    respostas = []
+
+    class _Msg:
+        async def answer(self, texto, **kw):
+            respostas.append(texto)
+
+    cmd = SimpleNamespace(args="onvif_scan")
+    asyncio.run(tooldyn.cmd_tool_ativar(_Msg(), cmd, SimpleNamespace(id=42)))
+    assert respostas and "Falha inesperada" in respostas[0]
+    assert "NADA foi ativado" in respostas[0]
+
+
 def test_propor_agente_para_nao_owner_e_recusa_franca(monkeypatch) -> None:
     from bot.services import tools
     monkeypatch.setattr(tools.settings, "owner_telegram_id", 42)

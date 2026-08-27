@@ -33,6 +33,14 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
+# pytest na IMAGEM (não em requirements.txt, que é produção): o agente
+# escreve teste junto com toda tool nova (/tool_nova) e o /tool_ativar roda
+# esse teste antes de deixar o dono aprovar. Sem isto o agente gastava
+# turnos instalando na marra E a instalação sumia no rebuild seguinte —
+# aí /tool_ativar reprovaria toda candidata com "o teste falhou", culpando
+# o teste quando faltava o executor (medido em 27/08/2026).
+RUN pip install --no-cache-dir pytest==8.3.4 pytest-asyncio==0.24.0
+
 COPY bot ./bot
 
 RUN mkdir -p /app/data /app/workspace
