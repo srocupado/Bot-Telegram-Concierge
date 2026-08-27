@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.models import User
 from bot.services.tasks import create_task, list_open_tasks, mark_done
+from bot.handlers._send import answer_md
 from bot.utils import as_utc
 
 router = Router(name=__name__)
@@ -34,12 +35,17 @@ async def cmd_tarefas(message: Message, user: User, session: AsyncSession) -> No
         return
     now = datetime.now(timezone.utc)
     lines = ["📋 *Tarefas abertas*\n"]
+    planas = ["📋 Tarefas abertas\n"]
     for t in tasks:
         # SQLite devolve created_at naive (DateTime(timezone=True) não preserva
         # tz); as_utc normaliza pra subtrair de `now` (aware) sem TypeError.
         age = _humanize_age(now - as_utc(t.created_at))
         lines.append(f"• #{t.id} — {t.text}  _(há {age})_")
-    await message.answer("\n".join(lines), parse_mode="Markdown")
+        planas.append(f"• #{t.id} — {t.text}  (há {age})")
+    # Fallback obrigatório: UMA tarefa com '_' ou '*' no texto ("revisar
+    # função get_user") derrubava a listagem INTEIRA — e ela seguia quebrada
+    # enquanto a tarefa existisse.
+    await answer_md(message, "\n".join(lines), plano="\n".join(planas))
 
 
 @router.message(Command("feito"))

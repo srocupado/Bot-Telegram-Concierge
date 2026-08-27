@@ -8,6 +8,7 @@ from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db.models import User
+from bot.handlers._send import answer_md
 from bot.services.reminders import (
     ReminderParseError,
     create_reminder,
@@ -44,10 +45,13 @@ async def cmd_lembrar(
 
     rem = await create_reminder(session, user.id, clean_text, due_utc)
     local = due_utc.astimezone(ZoneInfo(effective_tz(user)))
-    await message.answer(
-        f"🔔 *{clean_text}*\n"
-        f"   marcado para {local.strftime('%d/%m %H:%M')} _(#{rem.id})_",
-        parse_mode="Markdown",
+    # O lembrete JÁ foi gravado: se a confirmação falhar, o dono acha que
+    # não funcionou e repete — duplicata. Por isso o envio tem fallback.
+    quando = local.strftime("%d/%m %H:%M")
+    await answer_md(
+        message,
+        f"🔔 *{clean_text}*\n   marcado para {quando} _(#{rem.id})_",
+        plano=f"🔔 {clean_text}\n   marcado para {quando} (#{rem.id})",
     )
 
 
@@ -169,4 +173,10 @@ async def cmd_apagar_lembrete(
     if rem is None:
         await message.answer(f"🤷 Lembrete #{rid} não encontrado (ou já enviado).")
         return
-    await message.answer(f"🗑️ Lembrete #{rid} apagado: _{rem.text}_", parse_mode="Markdown")
+    # Apagado é irreversível: confirmação que não chega deixa o dono sem
+    # saber se o lembrete ainda existe.
+    await answer_md(
+        message,
+        f"🗑️ Lembrete #{rid} apagado: _{rem.text}_",
+        plano=f"🗑️ Lembrete #{rid} apagado: {rem.text}",
+    )
