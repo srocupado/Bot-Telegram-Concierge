@@ -210,6 +210,63 @@ def test_clique_na_proposta_pede_produto_final_limpo(monkeypatch) -> None:
     assert ".aux/" in disparos[0]
 
 
+def test_oferta_de_skill_apos_sucesso_dispara_tool_nova(monkeypatch) -> None:
+    """Ciclo A→C (dono, 27/08): demanda resolvida via botão → pergunta 'quer
+    permanente?' → clique dispara o agente com o SPEC de tool, semeado com o
+    pedido original e mandando reaproveitar a solução do workspace."""
+    from bot.handlers import agent as ah
+
+    monkeypatch.setattr(ah.settings, "owner_telegram_id", 42)
+    disparos: list[str] = []
+    monkeypatch.setattr(ah, "start_background_task",
+                        lambda prompt, chat_id, **kw: disparos.append(prompt) or "started")
+
+    class _Bot:
+        def __init__(self):
+            self.msgs = []
+
+        async def send_message(self, chat_id, text, **kw):
+            self.msgs.append((text, kw.get("reply_markup")))
+
+    bot = _Bot()
+    asyncio.run(ah._oferecer_skill(bot, 42, "consultar tabela FIPE do gol"))
+    texto, kb = bot.msgs[0]
+    assert "permanente" in texto and kb is not None
+
+    class _Msg:
+        chat = SimpleNamespace(id=42)
+        async def edit_reply_markup(self, reply_markup=None): pass
+        async def answer(self, *a, **kw): pass
+
+    q = SimpleNamespace(data=kb.inline_keyboard[0][0].callback_data,
+                        from_user=SimpleNamespace(id=42), message=_Msg())
+    async def _ans(*a, **kw): pass
+    q.answer = _ans
+    asyncio.run(ah.cb_skill(q, SimpleNamespace(id=42)))
+    assert len(disparos) == 1
+    assert "consultar tabela FIPE do gol" in disparos[0]
+    assert "REAPROVEITE" in disparos[0], "a tool deve nascer da solução já feita"
+    assert "TOOL_NOME" in disparos[0], "tem que ser o SPEC de tool dinâmica"
+
+
+def test_oferta_de_skill_expirada_aponta_tool_nova(monkeypatch) -> None:
+    from bot.handlers import agent as ah
+    monkeypatch.setattr(ah.settings, "owner_telegram_id", 42)
+    alertas: list[str] = []
+
+    class _Msg:
+        chat = SimpleNamespace(id=42)
+        async def edit_reply_markup(self, reply_markup=None): pass
+        async def answer(self, *a, **kw): pass
+
+    q = SimpleNamespace(data="agskill:ok:deadbeef",
+                        from_user=SimpleNamespace(id=42), message=_Msg())
+    async def _ans(texto=None, **kw): alertas.append(texto or "")
+    q.answer = _ans
+    asyncio.run(ah.cb_skill(q, SimpleNamespace(id=42)))
+    assert alertas and "/tool_nova" in alertas[0], "expirou sem dizer a saída manual"
+
+
 def test_propor_agente_para_nao_owner_e_recusa_franca(monkeypatch) -> None:
     from bot.services import tools
     monkeypatch.setattr(tools.settings, "owner_telegram_id", 42)

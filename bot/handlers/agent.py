@@ -269,6 +269,15 @@ async def _run_and_report(
         if reporter.message_id is not None:
             delivered.add(reporter.message_id)
         _store_session(result.session_id if result.ok else None, delivered)
+    # Fechamento do ciclo A→C (pedido do dono, 27/08/2026): demanda pontual
+    # resolvida pelo botão da proposta é a hora certa de oferecer "quer isso
+    # permanente?" — a solução acabou de nascer no workspace e a tool pode
+    # reaproveitá-la. Só no sucesso; falha limpa a oferta em silêncio.
+    global _skill_demanda_pendente
+    demanda = _skill_demanda_pendente
+    _skill_demanda_pendente = None
+    if demanda and result.ok and not scheduled:
+        await _oferecer_skill(bot, chat_id, demanda)
 
 
 def try_continuation(message: Message, user: User, text: str) -> bool:
@@ -342,6 +351,102 @@ def start_background_task(prompt: str, chat_id: int, *, scheduled: bool = False)
     return "started"
 
 
+# --- oferta de habilidade permanente (ciclo A→C) ---
+#
+# Slot ÚNICO (o runner é 1 tarefa por vez): a demanda da proposta clicada
+# fica aqui até a tarefa terminar; no sucesso vira a pergunta com botões.
+_skill_demanda_pendente: str | None = None
+# pid → (demanda, ts) das ofertas já perguntadas, mesmo TTL das propostas.
+_skill_ofertas: dict[str, tuple[str, float]] = {}
+
+
+def _registrar_skill_oferta(demanda: str) -> str:
+    import secrets
+    agora = time.monotonic()
+    for k in [k for k, (_, t) in _skill_ofertas.items() if agora - t > _PROPOSTA_TTL_S]:
+        del _skill_ofertas[k]
+    pid = secrets.token_hex(4)
+    _skill_ofertas[pid] = (demanda, agora)
+    return pid
+
+
+async def _oferecer_skill(bot: Bot, chat_id: int, demanda: str) -> None:
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    pid = _registrar_skill_oferta(demanda)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🧩 Sim, criar a tool",
+                             callback_data=f"agskill:ok:{pid}"),
+        InlineKeyboardButton(text="✖️ Só desta vez",
+                             callback_data=f"agskill:no:{pid}"),
+    ]])
+    try:
+        await bot.send_message(
+            chat_id,
+            "💡 Quer que isso vire uma HABILIDADE permanente? Eu transformo a "
+            "solução numa tool do chat — resolve de graça e em segundos nas "
+            "próximas vezes (você aprova o código antes de ativar).",
+            reply_markup=kb, parse_mode=None,
+        )
+    except Exception:
+        logger.warning("oferta de skill não entregue", exc_info=True)
+
+
+@router.callback_query(F.data.startswith("agskill:"))
+async def cb_skill(query, user: User) -> None:
+    if (not settings.owner_telegram_id
+            or query.from_user.id != settings.owner_telegram_id):
+        await query.answer("recurso do dono do bot", show_alert=True)
+        return
+    try:
+        _, acao, pid = query.data.split(":", 2)
+    except ValueError:
+        await query.answer("botão inválido", show_alert=True)
+        return
+    if acao == "no":
+        _skill_ofertas.pop(pid, None)
+        await query.answer("Ok, fica só desta vez")
+        try:
+            await query.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return
+    entrada = _skill_ofertas.pop(pid, None)
+    if entrada is None or time.monotonic() - entrada[1] > _PROPOSTA_TTL_S:
+        await query.answer(
+            "Essa oferta expirou (ou o bot reiniciou) — dá pra criar do mesmo "
+            "jeito com /tool_nova <o que ela faz>.", show_alert=True)
+        return
+    from bot.handlers.tooldyn import _SPEC_AGENTE
+    prompt = _SPEC_AGENTE.format(pedido=entrada[0]) + (
+        "\n\nOBS: você acabou de resolver esse pedido pontualmente nesta "
+        "sessão do workspace — REAPROVEITE a solução que já existe (raiz ou "
+        ".aux/) em vez de começar do zero."
+    )
+    status = start_background_task(prompt, query.message.chat.id)
+    if status == "busy":
+        _skill_ofertas[pid] = entrada
+        await query.answer("Agente ocupado — clica de novo quando ele terminar",
+                           show_alert=True)
+        return
+    if status != "started":
+        await query.answer()
+        await query.message.answer(
+            "⚠️ O agente está desabilitado (OWNER_TELEGRAM_ID/ANTHROPIC_API_KEY).",
+            parse_mode=None)
+        return
+    await query.answer("Criando a tool")
+    try:
+        await query.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await query.message.answer(
+        "🛠️ Agente criando a tool a partir da solução de agora. Quando ele "
+        "avisar o nome, ative com /tool_ativar <nome> — você lê o código e "
+        "aprova no botão antes de valer.",
+        parse_mode=None,
+    )
+
+
 # --- proposta de agente (tool propor_agente: demanda fora do catálogo) ---
 #
 # A tool NÃO executa nada: registra a tarefa aqui e mostra um botão com o
@@ -411,6 +516,11 @@ async def cb_proposta_agente(query, user: User) -> None:
     )
     status = start_background_task(tarefa, query.message.chat.id)
     if status == "started":
+        # Arma a oferta A→C: no fim (com sucesso) o bot pergunta se a
+        # demanda vira habilidade permanente. Guarda o pedido ORIGINAL,
+        # sem o apêndice de higiene de artefatos.
+        global _skill_demanda_pendente
+        _skill_demanda_pendente = entrada[0]
         await query.answer("Agente iniciado")
         texto = ("🤖 Agente iniciado — vou te mandando o progresso e entrego "
                  "o resultado quando terminar.")
