@@ -1673,10 +1673,12 @@ async def collect_fds(
         from bot.services import cinema as _cinema
         try:
             label, nomes = await _cinema.filmes_em_cartaz(nome_cinema)
-            corpo = "\n".join(f"• {n}" for n in nomes[:12])
-            extra = f"\n… e mais {len(nomes) - 12} filme(s)" if len(nomes) > 12 else ""
+            # Mostra TODOS: a lista de um cinema é curta (~15-20 filmes) e cortar
+            # pra esconder 2 gerava um "… e mais 2 filme(s)" pior que a lista
+            # inteira (feedback do dono).
+            corpo = "\n".join(f"• {n}" for n in nomes)
             facts.append(ProactiveFact(
-                "fds", "fds_cinema", key, f"🎬 Em cartaz no {label}:\n{corpo}{extra}",
+                "fds", "fds_cinema", key, f"🎬 Em cartaz no {label}:\n{corpo}",
             ))
         except Exception as exc:
             # CinemaError tem mensagem limpa (sem token/URL); outras, só o tipo.
