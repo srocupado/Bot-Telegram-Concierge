@@ -21,7 +21,11 @@ import pytest
 from bot.services import dou_monitor
 from bot.services.dou_monitor import BRT, DouError, MPList
 
-D = date(2026, 8, 3)
+# HOJE, não data fixa: `registrar_checagem_ok` poda `_ultima_ok` acima de
+# _ULTIMA_OK_RETENCAO_DIAS (30). Com `date(2026, 8, 3)` cravado, o registro
+# era gravado e podado na mesma chamada a partir de 03/09/2026 — a suíte ficou
+# vermelha sozinha (varredura de 04/09). Mesmo padrão dos outros testes do DOU.
+D = datetime.now(BRT).date()
 
 
 def _limpar() -> None:
