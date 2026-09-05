@@ -263,6 +263,13 @@ async def _entregar_nota_pendente(
                 logger.info("nota pendente %s: dia em aberto (%s), mantida na fila",
                             key, motivo)
                 return
+            if motivo == "sem_pasta_inlabs":
+                # Inlabs sem a pasta e portal mudo: NÃO é definitivo (a pasta
+                # da MP 1.382 atrasou 9 dias). Mantém na fila, calado — a
+                # re-tentativa vai portal-primeiro; a Câmara é a rede.
+                logger.info("nota pendente %s: Inlabs sem a pasta, portal "
+                            "inconclusivo — mantida na fila", key)
+                return
             if motivo in ("sem_edicao", "sem_mp"):
                 # Desfecho DEFINITIVO sem MP: tira da fila e DIZ o que houve —
                 # some em silêncio contradiz o "te envio automaticamente".
@@ -549,8 +556,10 @@ async def baixa_checagem_manual(
     uma nota_pendente da mesma data era re-gerada em DUPLICATA (force=True).
 
     Conclusiva = evidência positiva, mesma régua da retroativa (_Colheita.baixa):
-    - motivo 'sem_mp'/'sem_edicao': o deliver_to_user só os devolve com fetch
-      COMPLETO e dia FECHADO — houve DOU sem MP / não houve edição, definitivo;
+    - motivo 'sem_mp'/'sem_edicao': fetch COMPLETO e dia FECHADO — houve DOU
+      sem MP / não houve edição, definitivo ('sem_edicao' vem do PORTAL com
+      dia-controle vivo). 'sem_pasta_inlabs' (Inlabs sem a pasta, portal mudo)
+      NÃO entra aqui de propósito: pasta ausente é atraso possível, não prova;
     - entregues>0 sem falha de nota, com o dia fechado E checagem completa
       recente na memória do processo (só checagem completa entra em
       _ultima_ok; o fetch desta entrega acabou de rodar ou veio do cache de
@@ -958,11 +967,18 @@ class _Colheita:
     provisorio: bool    # 404 numa seção com o dia ainda aberto
     sem_edicao: bool = False   # nenhuma fonte de Seção 1 na listagem do dia
     mps_no_dia: int = 0        # MPs no DOU do dia (BRUTO, antes de dedup)
+    # True SÓ quando o "sem edição" veio do INLABS (portal mudo/inconclusivo):
+    # pasta ausente lá não é evidência positiva — a da MP 1.382 (extra de
+    # 01/08/2026) só apareceu em 10/08. O do portal (controle vivo) continua
+    # valendo baixa e NÃO seta isto.
+    inlabs_sem_pasta: bool = False
 
     @property
     def baixa(self) -> bool:
-        """Se o dia pode ser dado como checado. Um lugar só decide isso."""
-        return self.completo and not self.provisorio
+        """Se o dia pode ser dado como checado. Um lugar só decide isso.
+        Inlabs sem a pasta, sem o portal confirmar, NÃO baixa: o dia segue
+        pendente (portal-primeiro nas próximas janelas; Câmara como rede)."""
+        return self.completo and not self.provisorio and not self.inlabs_sem_pasta
 
 
 async def collect_mp(
@@ -1016,8 +1032,9 @@ async def collect_mp(
                 f"📜 MP {_num_fmt(mp['numero'])}/{mp['ano']}: {ementa}",
                 date_iso=d.isoformat(),
             ))
-        return _Colheita(out, completo, provisorio,
-                         bool(getattr(mps, "sem_edicao", False)), len(mps))
+        sem_edicao_inlabs = bool(getattr(mps, "sem_edicao", False))
+        return _Colheita(out, completo, provisorio, sem_edicao_inlabs, len(mps),
+                         inlabs_sem_pasta=sem_edicao_inlabs)
 
     # ANTES de varrer: dias que o bot nunca olhou viram pendência (marca
     # d'água). Sem isso, o que ele perdeu enquanto esteve fora é invisível.
@@ -1140,8 +1157,10 @@ async def collect_mp(
                 logger.warning("proactive: %s veio INCOMPLETO; mantendo pendência", d)
                 failed.append(d)
             else:
-                # Só 404 com o dia aberto: pendência SEM aviso (não houve
-                # falha — a seção pode simplesmente ainda não ter saído).
+                # Sem baixa e sem falha: pendência SEM aviso. Dois casos —
+                # 404 com o dia aberto (a seção pode ainda não ter saído) e
+                # dia FECHADO em que só o Inlabs respondeu, sem a pasta
+                # (inlabs_sem_pasta): evidência fraca, o portal decide depois.
                 provisorios.append(d)
         except Exception as exc:
             logger.warning("proactive: fetch_mps(%s) falhou: %s", d, exc)

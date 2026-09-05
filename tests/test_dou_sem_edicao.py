@@ -108,8 +108,11 @@ def _deliver_motivo(monkeypatch, mps):
     ))
 
 
-def test_motivo_sem_edicao(monkeypatch) -> None:
-    assert _deliver_motivo(monkeypatch, _mplist(sem_edicao=True)) == (0, [], "sem_edicao")
+def test_motivo_inlabs_sem_pasta_nao_e_sem_edicao(monkeypatch) -> None:
+    """Dia FECHADO e o Inlabs sem a pasta/Seção 1: motivo próprio, de
+    evidência FRACA. 'sem_edicao' é do portal (dia-controle vivo) — a pasta da
+    MP 1.382 (extra de 01/08/2026) só apareceu no Inlabs em 10/08."""
+    assert _deliver_motivo(monkeypatch, _mplist(sem_edicao=True)) == (0, [], "sem_pasta_inlabs")
 
 
 def test_motivo_sem_mp(monkeypatch) -> None:
@@ -152,6 +155,10 @@ def test_texto_sem_mp_distingue_os_casos() -> None:
         assert msg == "Nenhuma MP nova no Diário Oficial de 02/08/2026.", motivo
         assert "✅" not in msg
         assert "extra" not in msg.lower()
+    # Inlabs sem a pasta + portal mudo: não pode CRAVAR "não houve edição".
+    fraco = texto_sem_mp("sem_pasta_inlabs", d)
+    assert "Não houve edição" not in fraco
+    assert "fila" in fraco and "02/08/2026" in fraco
 
 
 # ──────────────── fila: resolve o dia sem edição com aviso ────────────────
@@ -234,3 +241,63 @@ def test_fila_sem_mp_tira_e_avisa(reg, monkeypatch) -> None:
     _rodar_fila(monkeypatch, "sem_mp")
     assert ("unmark", "nota_pendente", KEY) in reg["log"]
     assert "Nenhuma MP nova no Diário Oficial" in reg["enviado"][0]
+
+
+def test_fila_inlabs_sem_pasta_mantem_e_cala(reg, monkeypatch) -> None:
+    """S1 da varredura de 04/09/2026: Inlabs sem a pasta com o portal mudo
+    dava baixa na fila como se fosse 'não houve edição'. Evidência fraca →
+    fica na fila (re-tentativa vai portal-primeiro), sem prometer nada."""
+    _rodar_fila(monkeypatch, "sem_pasta_inlabs")
+    assert ("unmark", "nota_pendente", KEY) not in reg["log"], "não pode dar baixa"
+    assert reg["enviado"] == []
+
+
+# ───────── proativo: dia fechado, portal mudo, Inlabs sem pasta → pendência ─────────
+
+class _FakeSession:
+    def __init__(self, *respostas):
+        self._respostas = list(respostas)
+
+    async def scalars(self, _stmt):
+        return list(self._respostas.pop(0)) if self._respostas else []
+
+    async def commit(self):
+        return None
+
+
+def test_collect_mp_inlabs_sem_pasta_dia_fechado_nao_da_baixa(monkeypatch) -> None:
+    """Caminho automático do mesmo S1: `_Colheita.baixa` ignorava a origem do
+    'sem edição' e um dia FECHADO ficava checado só porque o Inlabs não tinha a
+    pasta (portal inconclusivo). Agora vira pendência SEM alarme (não é falha)
+    e sem 'checagem retroativa concluída'."""
+    fechado = datetime.now(BRT).date() - timedelta(days=3)
+    marcadas: list[tuple[str, str]] = []
+
+    async def _fetch(_d):
+        return _mplist(sem_edicao=True)          # fechado → provisorio=False
+
+    async def _false(*a, **kw):
+        return False
+
+    async def _mark(_session, _uid, kind, key):
+        marcadas.append((kind, key))
+
+    async def _none(*a, **kw):
+        return None
+
+    monkeypatch.setattr(dou_monitor, "fetch_mps", _fetch)
+    monkeypatch.setattr(proactive.settings, "dou_portal_fallback", False)  # portal mudo
+    monkeypatch.setattr(proactive, "already_notified", _false)
+    monkeypatch.setattr(proactive, "mark_notified", _mark)
+    monkeypatch.setattr(proactive, "unmark_notified", _none)
+    user = SimpleNamespace(id=77, dou_mp_subscribed=True, is_authorized=True,
+                           dou_ultimo_dia_ok=None)
+
+    facts = asyncio.run(proactive.collect_mp(_FakeSession([], []), user, [fechado]))
+
+    assert ("mp_pendente", fechado.isoformat()) in marcadas, (
+        "dia fechado sem pasta no Inlabs recebeu baixa — MP atrasada some calada"
+    )
+    kinds = [f.kind for f in facts]
+    assert "mp_retro" not in kinds, "não pode declarar 'checagem concluída'"
+    assert "mp_fail" not in kinds, "não é falha: é pendência silenciosa"

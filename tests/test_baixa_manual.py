@@ -192,6 +192,29 @@ def test_marca_dagua_nao_pula_dia_nao_checado() -> None:
     assert marca == marca_antiga, "marca pulou por cima de dias não checados"
 
 
+def test_inlabs_sem_pasta_nao_e_conclusivo() -> None:
+    """S1 da varredura de 04/09/2026: /mp_dou_agora de dia FECHADO, com o
+    portal mudo, caía no Inlabs; 'raiz sem pasta' virava 'sem_edicao' e a
+    baixa manual tratava como conclusivo. Pasta ausente no Inlabs é atraso
+    possível (MP 1.382: 9 dias), não prova — a pendência tem que ficar."""
+    d = _dia_fechado()
+    engine, sm = _sm()
+
+    async def _main():
+        await _setup(sm, engine, marca=None, pendencias=[
+            ("mp_pendente", d.isoformat()),
+            ("nota_pendente", f"{d.isoformat()}:all"),
+        ])
+        async with sm() as s:
+            user = await s.get(User, UID)
+            ok = await baixa_checagem_manual(s, user, d, 0, [], "sem_pasta_inlabs")
+        return ok, await _kinds_restantes(sm)
+
+    ok, restantes = asyncio.run(_main())
+    assert ok is False, "Inlabs sem a pasta (portal mudo) deu baixa"
+    assert len(restantes) == 2, "as duas pendências do dia tinham que ficar"
+
+
 def test_help_menciona_a_baixa_e_fila_roteia_pra_secao() -> None:
     """Regra do projeto: feature nova documentada no help, com matching
     verificado por frase real."""

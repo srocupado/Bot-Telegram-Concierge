@@ -1786,6 +1786,13 @@ def texto_sem_mp(motivo: str | None, target: date) -> str:
     if motivo == "sem_edicao":
         return (f"📭 Não houve edição do Diário Oficial em {dia} "
                 "(dia sem publicação — fim de semana/feriado).")
+    if motivo == "sem_pasta_inlabs":
+        # Só o Inlabs respondeu (portal mudo) e ele não tem a pasta do dia.
+        # Não afirma "não houve edição": a pasta pode estar atrasada (caso
+        # da MP 1.382, 9 dias). Diz o que foi apurado e que o dia fica na fila.
+        return (f"📭 O Inlabs não tem a pasta/edição de {dia} e o portal "
+                "oficial não confirmou nada — pode ser só atraso do Inlabs. "
+                "Deixo o dia na fila até uma fonte concluir.")
     if motivo == "provisorio":
         return (f"⏳ O Diário Oficial de {dia} ainda pode sair (dia em aberto). "
                 "Re-checo sozinho e te aviso se vier MP.")
@@ -1840,8 +1847,9 @@ async def deliver_to_user(
     e não deve regerar todas.
 
     Retorna (entregues, falhas, motivo): `motivo` é None quando houve entrega;
-    quando entregues==0, diz POR QUÊ — "sem_edicao" (dia fechado sem Diário:
-    domingo/feriado), "sem_mp" (houve DOU fechado, nenhuma MP), "sem_mp_extra"
+    quando entregues==0, diz POR QUÊ — "sem_pasta_inlabs" (dia fechado e o
+    Inlabs sem a pasta/Seção 1: evidência FRACA, não dá baixa — "sem_edicao"
+    é reservado ao portal), "sem_mp" (houve DOU fechado, nenhuma MP), "sem_mp_extra"
     (DOU saiu sem MP mas o dia segue aberto — extra ainda pode trazer MP),
     "provisorio" (nada saiu ainda, dia aberto) ou "incompleto" (uma fonte
     falhou). O caller usa isso pra responder com precisão em vez de um "nenhuma
@@ -1872,7 +1880,14 @@ async def deliver_to_user(
         #       . dia fechado → 'sem_mp' (saiu sem MP, definitivo);
         #  - sem edição (sem_edicao=True):
         #       . dia aberto  → 'provisorio' (nada saiu ainda, pode sair);
-        #       . dia fechado → 'sem_edicao' (domingo/feriado, não houve Diário).
+        #       . dia fechado → 'sem_pasta_inlabs': o Inlabs não tem pasta/Seção 1
+        #                        pro dia. NÃO é 'sem_edicao' (esse é do PORTAL, com
+        #                        controle vivo = evidência positiva): a pasta da MP
+        #                        1.382 (extra de 01/08/2026) só apareceu no Inlabs
+        #                        em 10/08 — ausência aqui é atraso possível, não
+        #                        prova. Este motivo NÃO dá baixa em caminho nenhum
+        #                        (fila, retroativa, manual); o dia fica pendente
+        #                        até o portal concluir.
         # A confusão do bug (03/08): edição normal saiu sem MP e o DO1E ainda não
         # tinha saído → provisorio dizia "o DOU ainda pode sair", com o DOU já no ar.
         if _incompleto:
@@ -1882,7 +1897,7 @@ async def deliver_to_user(
         elif _provisorio:
             motivo = "provisorio"
         else:
-            motivo = "sem_edicao"
+            motivo = "sem_pasta_inlabs"
         return 0, [], motivo
 
     # set de já-vistas pra não duplicar linhas no banco quando force=True.
