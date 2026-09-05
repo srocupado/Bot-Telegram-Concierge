@@ -649,8 +649,12 @@ async def _h_registrar_treino(args: dict, ctx: ToolContext) -> str:
     return f"ok (repasse): {msg}"
 
 
-async def _h_consultar_treinos(_args: dict, ctx: ToolContext) -> str:
-    summary = await summary_current_week(ctx.session, ctx.user.id, ctx.tz)
+async def _h_consultar_treinos(args: dict, ctx: ToolContext) -> str:
+    semana = (args.get("semana") or "atual").strip().lower()
+    semanas_atras = 1 if semana in ("passada", "anterior", "última", "ultima") else 0
+    summary = await summary_current_week(
+        ctx.session, ctx.user.id, ctx.tz, semanas_atras=semanas_atras,
+    )
     # Saída idêntica entre providers: o handler envia format_summary verbatim
     # (mesmo padrão usado em consultar_congresso e consultar_transito casa↔trabalho).
     # Sem isso, modelos como gemini-2.5-flash reescrevem o resumo em prosa.
@@ -2180,13 +2184,28 @@ TOOLS: list[Tool] = [
     Tool(
         name="consultar_treinos",
         description=(
-            "Retorna resumo da semana atual de academia (domingo → sábado): "
-            "treinos por dia, totais por grupo e cardio acumulado. Histórico "
-            "é descartado todo domingo, então só mostra a semana corrente. "
-            "Use quando o usuário perguntar sobre rotina, malhação, semana "
-            "de academia, quantos dias treinou, etc."
+            "Retorna resumo de uma semana de academia (domingo → sábado): "
+            "treinos por dia, totais por grupo, cardio acumulado E comparação "
+            "com a semana anterior (sempre até o mesmo dia da semana). O banco "
+            "guarda a semana corrente e a anterior. Use quando o usuário "
+            "perguntar sobre rotina, malhação, semana de academia, quantos "
+            "dias treinou, se está melhor/pior que na semana passada, etc."
         ),
-        parameters={"type": "object", "properties": {}},
+        parameters={
+            "type": "object",
+            "properties": {
+                "semana": {
+                    "type": "string",
+                    "enum": ["atual", "passada"],
+                    "description": (
+                        "Qual semana resumir: 'atual' (default) ou 'passada'. "
+                        "Use 'passada' só quando o usuário pedir explicitamente "
+                        "o resumo DA semana passada — pra comparar, 'atual' já "
+                        "traz a comparação pronta."
+                    ),
+                },
+            },
+        },
         handler=_h_consultar_treinos,
     ),
     Tool(

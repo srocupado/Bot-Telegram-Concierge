@@ -126,10 +126,15 @@ HELP_TEXT = (
     "<i>\"ontem treinei costas\"</i> — bot registra.\n"
     "• Categorias: <code>peito</code>, <code>costas</code>, <code>pernas</code>, <code>cardio</code>. "
     "Subdivisões (supino/panturrilha/esteira) são normalizadas; ombros/braço/abdomen não entram.\n"
-    "• <i>\"como tá minha semana de academia?\"</i> → resumo dom → sab.\n"
+    "• <i>\"como tá minha semana de academia?\"</i> → resumo dom → sab, já com a "
+    "comparação: <i>\"Até qui: 3 treinos (semana passada até qui: 2) ↑ +1\"</i>.\n"
+    "• <i>\"treinei mais que semana passada?\"</i> → a comparação é sempre ATÉ O MESMO "
+    "DIA (quinta contra quinta), pra semana pela metade não parecer pior que semana cheia.\n"
+    "• <i>\"como foi minha semana passada?\"</i> → resumo da semana anterior inteira.\n"
     "• <i>\"apaga o treino de hoje\"</i> / <i>\"errei, não treinei isso ontem\"</i> "
     "→ limpa os registros do dia pra você regravar.\n"
-    "• Histórico zera todo domingo — só a semana corrente fica.\n\n"
+    "• O banco guarda a semana corrente e a anterior; o mais velho que isso é "
+    "descartado no domingo.\n\n"
     "<b>Gerenciador financeiro</b> (Firestore):\n"
     "• <code>/financeiro_setup</code> — configura service account (envie JSON) e UID do Firebase.\n"
     "• <i>\"lança 250 no cartão de crédito, mercado, hoje\"</i> → cria compra no cartão.\n"
@@ -372,6 +377,7 @@ _HELP_KEYWORDS: dict[str, str] = {
     "python": "cognicao", "sandbox": "cognicao",
     "calcular": "cognicao", "calcula": "cognicao", "calculo": "cognicao",
     "academia": "academia", "treino": "academia", "malhar": "academia", "malho": "academia",
+    "treinei": "academia", "treinar": "academia", "treinos": "academia",
     # Tradutor tem seção PRÓPRIA (10/08/2026): a pergunta "como uso o
     # tradutor?" devolvia a seção LLM inteira (provider/thinking/reset…) —
     # informação demais pra pergunta de menos.

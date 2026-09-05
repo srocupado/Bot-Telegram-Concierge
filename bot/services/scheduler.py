@@ -793,11 +793,11 @@ async def run_proactive(
 
 
 async def run_workout_purge(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
-    """Zera registros de academia anteriores ao domingo atual.
+    """Descarta registros de academia mais velhos que a semana ANTERIOR.
 
-    Roda no domingo às 00:01 BRT. Defesa em profundidade: a consulta
-    semanal já filtra por week_start, então mesmo se essa purge falhar
-    o usuário só vê a semana corrente.
+    Roda no domingo às 00:01 BRT. Defesa em profundidade: a consulta já
+    filtra pelo intervalo da semana pedida, então mesmo se essa purge falhar
+    o usuário vê só o que pediu (o excesso fica no banco, sem aparecer).
     """
     from bot.services.workouts import purge_old_weeks
 

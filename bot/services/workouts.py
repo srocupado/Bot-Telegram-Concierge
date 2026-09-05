@@ -1,7 +1,14 @@
-"""Tracker de academia. Registro semanal com purge automática no domingo.
+"""Tracker de academia. Guarda a semana corrente e a ANTERIOR — purge no
+domingo apaga o que for mais velho que isso.
 
 Convenção de semana: domingo 00:00 → sábado 23:59 (mesma do calendário
 brasileiro padrão). Categorias canônicas: peito, costas, pernas, cardio.
+
+A semana anterior fica no banco (escolha do dono, 04/09/2026) pra responder
+"estou melhor ou pior que semana passada?". A comparação é sempre ATÉ O MESMO
+DIA da semana: quinta contra quinta. Comparar uma semana pela metade com uma
+semana cheia diria "pior" com 3 treinos contra 5 quando ainda faltam 3 dias —
+número que engana é pior que número nenhum.
 """
 from __future__ import annotations
 
@@ -18,6 +25,12 @@ logger = logging.getLogger(__name__)
 
 CANONICAL_GROUPS = {"peito", "costas", "pernas", "cardio"}
 _DIAS_PT = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
+_ORDEM_GRUPOS = ["peito", "costas", "pernas", "cardio"]
+
+# Semanas mantidas no banco: a corrente + a anterior. O custo de guardar tudo
+# seria de dezenas de KB/ano — o recorte é escolha de desenho do dono, não
+# limitação técnica.
+SEMANAS_RETIDAS = 2
 
 
 def week_start(now_local: datetime) -> date:
@@ -94,22 +107,8 @@ async def log_workout(
     return log
 
 
-async def summary_current_week(
-    session: AsyncSession, user_id: int, tz_name: str,
-) -> dict:
-    tz = ZoneInfo(tz_name)
-    now_local = datetime.now(tz)
-    start = week_start(now_local)
-    end = start + timedelta(days=6)
-
-    stmt = select(WorkoutLog).where(
-        WorkoutLog.user_id == user_id,
-        WorkoutLog.date >= start,
-        WorkoutLog.date <= end,
-    ).order_by(WorkoutLog.date, WorkoutLog.id)
-    rows = list((await session.scalars(stmt)).all())
-
-    # Agrupa por dia. Pode haver várias entradas no mesmo dia.
+def _mapa_por_dia(rows) -> dict[date, dict]:
+    """Agrupa as linhas por dia (várias sessões no mesmo dia se fundem)."""
     by_day: dict[date, dict] = {}
     for r in rows:
         d = by_day.setdefault(r.date, {"groups": [], "cardio_min": 0})
@@ -119,41 +118,104 @@ async def summary_current_week(
                 d["groups"].append(g)
         if r.cardio_minutes:
             d["cardio_min"] += r.cardio_minutes
+    return by_day
+
+
+def _totais(by_day: dict[date, dict], start: date, dias: int) -> dict:
+    """Totais dos `dias` PRIMEIROS dias da semana que começa em `start`.
+
+    O recorte por `dias` é o que torna a comparação honesta: a semana corrente
+    entra só até hoje, e a anterior entra até o MESMO dia."""
+    por_grupo = {g: 0 for g in _ORDEM_GRUPOS}
+    dias_treinou = 0
+    cardio_total = 0
+    for offset in range(dias):
+        info = by_day.get(start + timedelta(days=offset))
+        if not info or not info["groups"]:
+            continue
+        dias_treinou += 1
+        for g in _ORDEM_GRUPOS:
+            if g in info["groups"]:
+                por_grupo[g] += 1
+        cardio_total += info["cardio_min"] or 0
+    return {"dias_treinou": dias_treinou, "por_grupo": por_grupo,
+            "cardio_min_total": cardio_total}
+
+
+async def summary_current_week(
+    session: AsyncSession, user_id: int, tz_name: str, *, semanas_atras: int = 0,
+    agora: datetime | None = None,
+) -> dict:
+    """Resumo de uma semana (0 = corrente, 1 = passada) com comparação contra
+    a semana imediatamente anterior a ela, recortada no mesmo ponto.
+
+    `agora` injetável (mesmo padrão de `_dia_encerrado`): o recorte parcial
+    depende do DIA DA SEMANA, então testá-lo com o relógio real só exercitaria
+    o caso de hoje — e passaria a falhar sozinho conforme a semana vira."""
+    tz = ZoneInfo(tz_name)
+    now_local = agora.astimezone(tz) if agora is not None else datetime.now(tz)
+    start = week_start(now_local) - timedelta(days=7 * semanas_atras)
+    end = start + timedelta(days=6)
+    ant_start = start - timedelta(days=7)
+
+    # Uma query só cobrindo as DUAS semanas (a alvo e a de comparação).
+    stmt = select(WorkoutLog).where(
+        WorkoutLog.user_id == user_id,
+        WorkoutLog.date >= ant_start,
+        WorkoutLog.date <= end,
+    ).order_by(WorkoutLog.date, WorkoutLog.id)
+    rows = list((await session.scalars(stmt)).all())
+    by_day = _mapa_por_dia(rows)
 
     por_dia: list[tuple[date, list[str], int | None]] = []
-    por_grupo: dict[str, int] = {"peito": 0, "costas": 0, "pernas": 0, "cardio": 0}
-    cardio_min_total = 0
-    dias_treinou = 0
-
     for offset in range(7):
         d = start + timedelta(days=offset)
         info = by_day.get(d)
         if info is None or not info["groups"]:
             por_dia.append((d, [], None))
             continue
-        groups_norm = [g for g in ["peito", "costas", "pernas", "cardio"] if g in info["groups"]]
-        cardio_min = info["cardio_min"] or None
-        por_dia.append((d, groups_norm, cardio_min))
-        dias_treinou += 1
-        for g in groups_norm:
-            por_grupo[g] += 1
-        if cardio_min:
-            cardio_min_total += cardio_min
+        groups_norm = [g for g in _ORDEM_GRUPOS if g in info["groups"]]
+        por_dia.append((d, groups_norm, info["cardio_min"] or None))
 
+    cheia = _totais(by_day, start, 7)
     hoje = now_local.date()
-    dias_passados = (hoje - start).days + 1  # inclui hoje
-    dias_restantes = max(0, 6 - (hoje - start).days)  # depois de hoje
+    # Semana já encerrada compara cheia×cheia; a corrente, só até hoje.
+    if hoje > end:
+        dias_corte = 7
+    else:
+        dias_corte = max(1, min(7, (hoje - start).days + 1))
+    dia_corte = start + timedelta(days=dias_corte - 1)
+
+    # Sem NENHUM registro na semana anterior não dá pra comparar: "0 treinos"
+    # ali pode ser "não treinou" OU "não temos o dado" (purge/primeira semana
+    # do recurso). Afirmar seria inventar — a linha some e diz por quê.
+    tem_anterior = any(ant_start <= r.date < start for r in rows)
+    comparacao = {
+        "dias": dias_corte,
+        "parcial": dias_corte < 7,
+        "rotulo": _DIAS_PT[dia_corte.weekday()],
+        "tem_anterior": tem_anterior,
+        "atual": _totais(by_day, start, dias_corte),
+        "anterior": _totais(by_day, ant_start, dias_corte),
+        "inicio_anterior": ant_start,
+    }
+
+    passada = semanas_atras > 0
     return {
         "inicio": start,
         "fim": end,
-        "hoje": hoje,
-        "dias_passados": dias_passados,
-        "dias_restantes": dias_restantes,
-        "dias_treinou": dias_treinou,
-        "dias_descansou": 7 - dias_treinou,
-        "por_grupo": por_grupo,
-        "cardio_min_total": cardio_min_total,
+        # Semana passada não tem "hoje" dentro dela: sem isso o resumo
+        # imprimia "📅 Hoje: <data fora do intervalo>" e marcava tudo errado.
+        "hoje": None if passada else hoje,
+        "passada": passada,
+        "dias_passados": (hoje - start).days + 1,
+        "dias_restantes": max(0, 6 - (hoje - start).days),
+        "dias_treinou": cheia["dias_treinou"],
+        "dias_descansou": 7 - cheia["dias_treinou"],
+        "por_grupo": cheia["por_grupo"],
+        "cardio_min_total": cheia["cardio_min_total"],
         "por_dia": por_dia,
+        "comparacao": comparacao,
     }
 
 
@@ -168,8 +230,9 @@ def format_summary(summary: dict) -> str:
     inicio = summary["inicio"]
     fim = summary["fim"]
     hoje = summary.get("hoje")
+    titulo = "Semana passada" if summary.get("passada") else "Semana"
     lines = [
-        f"🏋️ Semana {inicio.strftime('%d/%m')} (dom) → {fim.strftime('%d/%m')} (sáb) "
+        f"🏋️ {titulo} {inicio.strftime('%d/%m')} (dom) → {fim.strftime('%d/%m')} (sáb) "
         f"— {summary['dias_treinou']} treinos, {summary['dias_descansou']} dias sem treino"
     ]
     if hoje is not None:
@@ -204,16 +267,46 @@ def format_summary(summary: dict) -> str:
         extras.append(" · ".join(pg_items))
     if extras:
         lines.append(" · ".join(extras))
+    lines += _linhas_comparacao(summary.get("comparacao"))
     return "\n".join(lines)
 
 
+def _linhas_comparacao(comp: dict | None) -> list[str]:
+    """Comparação com a semana anterior, sempre no MESMO recorte de dias."""
+    if not comp:
+        return []
+    if not comp["tem_anterior"]:
+        return ["📊 Sem registro da semana anterior pra comparar."]
+    atual, ant = comp["atual"], comp["anterior"]
+    if comp["parcial"]:
+        escopo, ref = f"Até {comp['rotulo']}", f"semana passada até {comp['rotulo']}"
+    else:
+        escopo, ref = "Na semana", "semana passada"
+    delta = atual["dias_treinou"] - ant["dias_treinou"]
+    if delta > 0:
+        marca = f"↑ +{delta}"
+    elif delta < 0:
+        marca = f"↓ {delta}"
+    else:
+        marca = "→ igual"
+    plural = "treino" if atual["dias_treinou"] == 1 else "treinos"
+    out = [f"📊 {escopo}: {atual['dias_treinou']} {plural} "
+           f"({ref}: {ant['dias_treinou']}) {marca}"]
+    if atual["cardio_min_total"] or ant["cardio_min_total"]:
+        out.append(f"🔥 Cardio: {atual['cardio_min_total']}min "
+                   f"({ref}: {ant['cardio_min_total']}min)")
+    return out
+
+
 async def purge_old_weeks(session: AsyncSession, tz_name: str) -> int:
-    """Deleta entradas com date < domingo da semana corrente."""
+    """Deleta o que for mais velho que as SEMANAS_RETIDAS últimas semanas
+    (corrente + anterior). A anterior FICA — é ela que sustenta o
+    'melhor/pior que semana passada'."""
     tz = ZoneInfo(tz_name)
     now_local = datetime.now(tz)
-    start = week_start(now_local)
+    corte = week_start(now_local) - timedelta(days=7 * (SEMANAS_RETIDAS - 1))
     result = await session.execute(
-        delete(WorkoutLog).where(WorkoutLog.date < start)
+        delete(WorkoutLog).where(WorkoutLog.date < corte)
     )
     await session.commit()
     return result.rowcount or 0

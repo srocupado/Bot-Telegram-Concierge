@@ -298,8 +298,9 @@ class ProactiveNotice(Base):
 class WorkoutLog(Base):
     """Registro de treino do dia. Categorias canônicas: peito, costas,
     pernas, cardio. `groups` é CSV (ex: 'peito,cardio'). Várias entradas
-    por dia são permitidas (sessões separadas). Purge semanal apaga
-    entradas anteriores ao domingo da semana corrente.
+    por dia são permitidas (sessões separadas). Purge semanal mantém a
+    semana corrente E a anterior (workouts.SEMANAS_RETIDAS) — é a anterior
+    que sustenta o "melhor/pior que semana passada".
     """
 
     __tablename__ = "workout_logs"
