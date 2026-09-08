@@ -82,6 +82,11 @@ class User(Base):
     # Integração gerenciador-financeiro (Firestore)
     firebase_uid: Mapped[str | None] = mapped_column(String(64), nullable=True)
     awaiting_firebase_json_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Janela aberta por /financeiro_restaurar pra capturar o PRÓXIMO JSON
+    # enviado (ex.: artifact baixado do GitHub). Separada da janela da service
+    # account de propósito: sem isso um JSON enviado logo após o setup poderia
+    # ser lido como pedido de restore — e restore sobrescreve o financeiro.
+    awaiting_finance_restore_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Monitor de MPs no Diário Oficial (Inlabs/DOU)
     dou_mp_subscribed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)

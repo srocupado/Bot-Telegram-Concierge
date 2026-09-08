@@ -142,6 +142,17 @@ class Settings(BaseSettings):
     serpapi_key: SecretStr | None = Field(None, alias="SERPAPI_KEY")
     travels_alert_hour: int = Field(8, alias="TRAVELS_ALERT_HOUR")
 
+    # Backup do gerenciador-financeiro (Firestore) feito pelo BOT, em paralelo
+    # com o workflow nightly-backup do repo do gerenciador. Horário diferente
+    # do Actions de propósito: ele cai entre 07h e 10h BRT (fila de agendados
+    # do GitHub), então 04h dá duas fotos por dia, não duas no mesmo momento.
+    finance_backup_enabled: bool = Field(True, alias="FINANCE_BACKUP_ENABLED")
+    finance_backup_hour: int = Field(4, alias="FINANCE_BACKUP_HOUR")
+    # Fica em data/ (volume ./data do compose) pra sobreviver a rebuild do
+    # container e entrar no scripts/backup.sh que vai pro disco externo.
+    finance_backup_dir: str = Field("/app/data/backups/financeiro", alias="FINANCE_BACKUP_DIR")
+    finance_backup_retention_days: int = Field(30, alias="FINANCE_BACKUP_RETENTION_DAYS")
+
     # Scheduler
     scheduler_tick_seconds: int = Field(60, alias="SCHEDULER_TICK_SECONDS")
     timezone: str = Field("America/Sao_Paulo", alias="TIMEZONE")

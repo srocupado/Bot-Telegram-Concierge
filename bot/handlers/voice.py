@@ -37,6 +37,9 @@ from bot.handlers.agent import (
     cmd_agente_status,
 )
 from bot.handlers.financeiro import cmd_setup as cmd_financeiro_setup
+from bot.handlers.finance_backup import cmd_backup as cmd_financeiro_backup
+from bot.handlers.finance_backup import cmd_listar as cmd_financeiro_backups
+from bot.handlers.finance_backup import cmd_restaurar as cmd_financeiro_restaurar
 from bot.handlers.ping import cmd_ping
 from bot.handlers.proactive import (
     cmd_agora as cmd_proativo_agora,
@@ -232,6 +235,11 @@ _DISPATCH: dict[str, Callable[..., Any]] = {
     "reset_memoria": cmd_reset_memoria,
     "arquivos": cmd_arquivos,
     "financeiro_setup": cmd_financeiro_setup,
+    # Restaurar por voz é seguro: o comando só monta a PRÉVIA — sobrescrever
+    # exige apertar o botão de confirmação, que voz nenhuma aperta.
+    "financeiro_backup": cmd_financeiro_backup,
+    "financeiro_backups": cmd_financeiro_backups,
+    "financeiro_restaurar": cmd_financeiro_restaurar,
     "start": cmd_start,
     "help": cmd_help,
     "agente": cmd_agente,

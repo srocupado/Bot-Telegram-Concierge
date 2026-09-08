@@ -38,8 +38,12 @@ src.close()
 dst.close()
 PY
 
-# Empacota só o snapshot (não o .db ao vivo + sidecars).
-tar czf "$OUT" -C "$DATA_DIR" "$TMP_NAME"
+# Empacota o snapshot (não o .db ao vivo + sidecars) e, se existirem, os
+# backups do gerenciador-financeiro que o bot gera todo dia — assim a cópia
+# do Firestore também chega ao disco externo, não só ao cartão do Pi.
+EXTRA=()
+[[ -d "$DATA_DIR/backups" ]] && EXTRA+=("backups")
+tar czf "$OUT" -C "$DATA_DIR" "$TMP_NAME" ${EXTRA[@]+"${EXTRA[@]}"}
 rm -f "$DATA_DIR/$TMP_NAME"
 
 find "$BACKUP_DIR" -name 'concierge-*.tgz' -mtime "+$RETENTION_DAYS" -delete

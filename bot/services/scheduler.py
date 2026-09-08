@@ -811,6 +811,85 @@ async def run_workout_purge(sessionmaker: async_sessionmaker[AsyncSession]) -> N
             logger.info("purged %d old workout_logs", n)
 
 
+async def _alvo_aviso_financeiro(session: AsyncSession) -> User | None:
+    """Quem recebe aviso de falha do backup. A service account é GLOBAL (uma
+    por bot), então o backup é um só — mas alguém precisa ser avisado. Dono,
+    se configurado; senão o primeiro autorizado com firebase_uid."""
+    if settings.owner_telegram_id:
+        u = await session.get(User, settings.owner_telegram_id)
+        if u is not None and u.is_authorized:
+            return u
+    return await session.scalar(
+        select(User).where(
+            User.is_authorized.is_(True), User.firebase_uid.isnot(None),
+        ).order_by(User.id).limit(1)
+    )
+
+
+async def run_finance_backup(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    bot: Bot,
+) -> None:
+    """Backup diário do Firestore do gerenciador, em paralelo com o Actions.
+
+    Janela larga (hora-alvo até +4h) pelo mesmo motivo do resumo de
+    fechamento: um deploy ou uma queda exatamente na hora cheia não pode
+    custar o backup DO DIA. O dedup por data (ProactiveNotice) é o que
+    garante um arquivo só.
+
+    Falha AVISA (1x/dia) em vez de virar silêncio: backup que parou de rodar
+    e ninguém soube é indistinguível de backup em dia até a hora de
+    restaurar — que é a pior hora possível pra descobrir.
+    """
+    if not settings.finance_backup_enabled:
+        return
+
+    from bot.services.finance_backup import run_backup
+    from bot.services.financeiro import NotConfiguredError
+    from bot.services.proactive import already_notified, mark_notified
+
+    now_brt = datetime.now(BRT)
+    inicio = settings.finance_backup_hour
+    if not (inicio <= now_brt.hour < inicio + 4):
+        return
+
+    hoje = now_brt.date()
+    today_key = hoje.isoformat()
+    async with sessionmaker() as session:
+        alvo = await _alvo_aviso_financeiro(session)
+        if alvo is None:
+            return  # ninguém configurado: não há financeiro pra copiar
+        if await already_notified(session, alvo.id, "fin_backup", today_key):
+            return
+
+        try:
+            arquivo, payload = await run_backup(session, hoje=hoje)
+        except NotConfiguredError:
+            return  # sem service account não há o que copiar; não é falha
+        except Exception:
+            logger.exception("backup do financeiro falhou")
+            if not await already_notified(session, alvo.id, "fin_backup_fail", today_key):
+                aviso = (
+                    "⚠️ <b>Backup do financeiro falhou hoje</b>\n\n"
+                    "Não consegui ler o Firestore pra gerar a cópia local. "
+                    "Re-tento nos próximos ticks até "
+                    f"{min(inicio + 4, 23)}h.\n\n"
+                    "O backup do GitHub (workflow <code>nightly-backup</code>) é "
+                    "independente e pode ter rodado normalmente — confira em "
+                    "Actions antes de se preocupar.\n"
+                    "Pra tentar na mão: <code>/financeiro_backup</code>"
+                )
+                if await _send_html_with_fallback(bot, alvo.id, aviso):
+                    await mark_notified(session, alvo.id, "fin_backup_fail", today_key)
+            return
+
+        await mark_notified(session, alvo.id, "fin_backup", today_key)
+        logger.info(
+            "backup do financeiro: %s (%d usuário(s), %d bytes)",
+            arquivo.name, payload.get("count", 0), arquivo.stat().st_size,
+        )
+
+
 def _parse_dia_mes(s: str) -> tuple[int, int] | None:
     """'DD/MM' ou 'DD-MM' → (dia, mês). None se inválido."""
     parts = (s or "").strip().replace("-", "/").split("/")
@@ -939,6 +1018,11 @@ async def tick(
         await run_card_closing_summary(sessionmaker, bot)
     except Exception:
         logger.exception("card closing summary crashed")
+
+    try:
+        await run_finance_backup(sessionmaker, bot)
+    except Exception:
+        logger.exception("finance backup crashed")
 
     try:
         await run_proactive(sessionmaker, bot)

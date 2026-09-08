@@ -141,7 +141,16 @@ HELP_TEXT = (
     "• <i>\"paguei conta de luz 180\"</i> / <i>\"recebi 5 mil de salário\"</i> → lançamento no banco.\n"
     "• <i>\"aportei 1000 no Tesouro IPCA+ 2035\"</i> → contribuição em título existente.\n"
     "• <i>\"como tá meu cartão esse mês?\"</i> → consulta os últimos lançamentos.\n"
-    "• <i>\"qual meu saldo?\"</i> / <i>\"quanto tá a fatura em aberto?\"</i> → saldo bancário atual e total da fatura do ciclo.\n\n"
+    "• <i>\"qual meu saldo?\"</i> / <i>\"quanto tá a fatura em aberto?\"</i> → saldo bancário atual e total da fatura do ciclo.\n"
+    "• <code>/financeiro_backup</code> — copia o Firestore agora e manda o JSON aqui. "
+    "Um automático roda todo dia de madrugada, em paralelo com o backup do GitHub "
+    "(os dois falham por motivos diferentes; ter os dois é de propósito).\n"
+    "• <code>/financeiro_backups</code> — lista as cópias locais (retenção de 30 dias).\n"
+    "• <code>/financeiro_restaurar</code> — restaura o financeiro de uma cópia. "
+    "Sem argumento ele abre uma janela de 10 min pra você <b>enviar o JSON</b> "
+    "(serve o artifact do GitHub ou o \"Exportar JSON\" do app); com o nome do "
+    "arquivo, usa um backup local. Mostra o que vai escrever e pede confirmação; "
+    "antes de sobrescrever guarda uma foto do estado atual pra dar pra voltar atrás.\n\n"
     "<b>Desfazer</b>:\n"
     "• <i>\"desfaz\"</i> / <i>\"errei, cancela isso\"</i> → desfaz o último lançamento/tarefa/lembrete/item criado pelo bot. Encadeia (chama de novo desfaz o anterior).\n\n"
     "<b>Agendamento recorrente</b>:\n"
@@ -346,6 +355,13 @@ _HELP_KEYWORDS: dict[str, str] = {
     "gastei": "gerenciador financeiro", "gastar": "gerenciador financeiro",
     "gastando": "gerenciador financeiro",
     "saldo": "gerenciador financeiro", "extrato": "gerenciador financeiro",
+    # backup/restore do financeiro. VERBOS junto dos substantivos: "como faço
+    # backup?" e "quero restaurar" são as duas formas reais de perguntar.
+    "backup": "gerenciador financeiro", "backups": "gerenciador financeiro",
+    "restaurar": "gerenciador financeiro", "restaura": "gerenciador financeiro",
+    "restore": "gerenciador financeiro", "restaurado": "gerenciador financeiro",
+    "copia": "gerenciador financeiro", "recuperar": "gerenciador financeiro",
+    "perdi": "gerenciador financeiro",
     # câmara — comissões/pautas (consultar_pauta_camara / varrer_comissoes_partido)
     "comissao": "camara", "comissoes": "camara", "camara": "camara",
     "deliberativa": "camara", "relatoria": "camara", "autoria": "camara",

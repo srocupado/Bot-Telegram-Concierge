@@ -92,6 +92,11 @@ async def _ensure_columns(conn) -> None:
             "ALTER TABLE users ADD COLUMN awaiting_firebase_json_until DATETIME"
         )
         logger.info("migrated: added users.awaiting_firebase_json_until")
+    if "awaiting_finance_restore_until" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE users ADD COLUMN awaiting_finance_restore_until DATETIME"
+        )
+        logger.info("migrated: added users.awaiting_finance_restore_until")
     if "dou_mp_subscribed" not in cols:
         await conn.exec_driver_sql(
             "ALTER TABLE users ADD COLUMN dou_mp_subscribed BOOLEAN NOT NULL DEFAULT 0"

@@ -323,6 +323,11 @@ uma vez e agende como shell (*"todo dia 3h roda @silencioso bash
 | Comando | Descrição |
 |---|---|
 | `/financeiro_setup` | Configura a service account (envie o JSON) e o UID do Firebase |
+| `/financeiro_backup` | Copia o Firestore agora, grava local e manda o JSON no chat |
+| `/financeiro_backups` | Lista as cópias locais |
+| `/financeiro_restaurar [nome]` | Restaura de um backup local; sem argumento, abre 10 min pra você enviar o JSON |
+
+> **Backup/restore** — ver [Backup do gerenciador financeiro](#backup-do-gerenciador-financeiro).
 
 > O resto é por voz/texto. Saldo: *"qual meu saldo?"*, *"quanto sobrou esse
 > mês?"* → devolve o cabeçalho **Visão Geral** do app (saldo bancário atual,
@@ -954,6 +959,47 @@ sudo crontab -e
 
 Para restaurar: descompactar o `.tgz`, renomear o `.concierge-backup-tmp.db`
 para `concierge.db` e colocar dentro de `./data/`.
+
+O `.tgz` leva junto `data/backups/` quando existe — ou seja, os backups do
+gerenciador financeiro (abaixo) também chegam ao disco externo.
+
+### Backup do gerenciador financeiro
+
+O bot copia a coleção `users` do Firestore todo dia às **04:00 BRT**
+(`FINANCE_BACKUP_HOUR`) para `data/backups/financeiro/financeiro-AAAA-MM-DD.json`,
+com retenção de 30 dias (`FINANCE_BACKUP_RETENTION_DAYS`).
+
+Isso roda **em paralelo** com o workflow `nightly-backup` do repo
+[srocupado/gerenciador-financeiro](https://github.com/srocupado/gerenciador-financeiro),
+de propósito — os dois morrem por motivos diferentes:
+
+| | morre quando |
+|---|---|
+| Actions | repo público sem commit há 60 dias, cota, secret revogado |
+| Bot | disco cheio, container parado, Pi desligado |
+
+Horários diferentes também (o Actions cai entre 07h e 10h BRT por causa da
+fila de agendados do GitHub), o que dá **duas fotos por dia** em vez de duas
+no mesmo instante. Se o backup do bot falhar, ele **avisa no Telegram** 1x por
+dia — falha de backup em silêncio é indistinguível de backup em dia até a hora
+de restaurar.
+
+**Formato idêntico ao do `backup.mjs`** (`{exportedAt, project, count, users}`),
+então um artifact baixado do GitHub restaura pelo bot e um arquivo do bot serve
+pro "Importar JSON" do app.
+
+**Restaurar** (`/financeiro_restaurar`): mostra a contagem por seção e pede
+confirmação num botão; antes de escrever, grava uma foto do estado atual
+(`-pre-restore-`) pra dar como desfazer. A escrita usa `update` e **não**
+`set(merge=True)`: o merge do Firestore é profundo em mapas, então uma seção
+que existe hoje e não existe no backup sobreviveria — você pediria a foto de
+ontem e receberia um híbrido das duas.
+
+Aceita as três formas de arquivo (envelope do backup, doc de um usuário, ou o
+`state` cru do "Exportar JSON" do app) e **recusa** o que não reconhece. Isso
+fecha o modo de falha do import do app, que faz `setState(JSON.parse(f))` sem
+validar: entregar o envelope lá dá "Dados importados com sucesso" e tela
+zerada.
 
 ## Modelo de dados
 

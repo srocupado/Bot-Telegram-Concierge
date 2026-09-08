@@ -134,8 +134,12 @@ async def cmd_setup(
             parse_mode="HTML",
         )
 
-    # Ativa janela de espera pra capturar o próximo JSON enviado.
+    # Ativa janela de espera pra capturar o próximo JSON enviado. Fecha a
+    # janela de restore junto: com as duas abertas, o mesmo JSON seria
+    # disputado por dois handlers e a ordem dos routers decidiria em silêncio
+    # se o arquivo vira credencial ou SOBRESCREVE o financeiro.
     user.awaiting_firebase_json_until = datetime.now(timezone.utc) + AWAITING_WINDOW
+    user.awaiting_finance_restore_until = None
     await session.commit()
 
 
