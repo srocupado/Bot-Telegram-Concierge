@@ -384,6 +384,86 @@ def test_falha_avisa_uma_vez_e_continua_tentando(monkeypatch) -> None:
     assert "/financeiro_backup" in aviso, "não disse como tentar na mão"
 
 
+# ───────────── estreia 08/09/2026: o que o dono tropeçou de fato ─────────────
+
+def test_caminho_da_pasta_nao_e_confundido_com_backup() -> None:
+    """O dono digitou `/financeiro_restaurar /app/data/backups/financeiro`
+    porque a mensagem de sucesso imprimia a PASTA logo abaixo do nome do
+    arquivo. A recusa está certa — o perigo seria o basename da pasta
+    ("financeiro") casar com alguma coisa."""
+    write_backup(_envelope(_STATE), hoje=date(2026, 9, 8))
+    assert resolve_backup("/app/data/backups/financeiro") is None
+    assert resolve_backup("financeiro") is None
+    # e o caminho COMPLETO do arquivo continua funcionando (basename)
+    assert resolve_backup("/app/data/backups/financeiro/financeiro-2026-09-08.json")
+
+
+def test_sucesso_do_backup_nao_imprime_a_pasta_solta() -> None:
+    """Regressão da causa: nome de arquivo e pasta colados convidavam a
+    copiar o errado."""
+    import inspect
+    from bot.handlers import finance_backup as h
+
+    src = inspect.getsource(h.cmd_backup)
+    assert "arquivo.parent" not in src, "voltou a imprimir a pasta como argumento"
+    assert "/financeiro_restaurar" in src, "não diz como restaurar"
+
+
+def test_nome_errado_devolve_os_botoes_em_vez_de_outro_comando() -> None:
+    import inspect
+    from bot.handlers import finance_backup as h
+
+    src = inspect.getsource(h.cmd_restaurar)
+    assert "_escolha_keyboard" in src, "erro de nome não oferece a lista clicável"
+
+
+def test_botao_de_escolha_cabe_no_callback_data() -> None:
+    """callback_data do Telegram tem teto de 64 BYTES; estourar faz o botão
+    falhar só na hora do clique."""
+    from bot.handlers.finance_backup import _escolha_keyboard
+
+    nome = "financeiro-2026-09-08-pre-restore-201455.json"  # o mais longo
+    kb = _escolha_keyboard([nome])
+    dado = kb.inline_keyboard[0][0].callback_data
+    assert dado == f"finprev:{nome}"
+    assert len(dado.encode()) <= 64, f"{len(dado.encode())} bytes"
+
+
+def test_escolher_no_botao_nao_escreve_nada() -> None:
+    """O botão de ESCOLHA só abre a prévia; sobrescrever continua exigindo o
+    segundo botão. Um clique só não pode restaurar."""
+    import inspect
+    from bot.handlers import finance_backup as h
+
+    src = inspect.getsource(h.cb_prever)
+    assert "restore_state" not in src
+    assert "_preview" in src
+
+
+# ──────────── backup pega N usuários, restore escreve em 1 ────────────
+
+def test_backup_multiusuario_restaura_o_uid_certo() -> None:
+    """A conta do dono tem 2 usuários (ele e a esposa). O restore tem que
+    pegar o state DELE, não o do outro."""
+    meu = {"bankTransactions": [{"id": "meu"}]}
+    outro = {"bankTransactions": [{"id": "outro"}]}
+    env = {"count": 2, "users": {UID: {"state": meu}, "esposa": {"state": outro}}}
+    assert extract_state(env, UID) == meu
+
+
+def test_aviso_de_multiusuario_diz_que_o_outro_nao_e_restaurado() -> None:
+    """'2 usuário(s)' no backup dá a impressão de que restaurar devolve os
+    dois. O outro fica intacto — não destruído, mas também não recuperado.
+    Silêncio aqui seria falsa sensação de cobertura."""
+    from types import SimpleNamespace
+    from bot.handlers.finance_backup import _nota_multiusuario
+
+    txt = _nota_multiusuario(2, SimpleNamespace(firebase_uid=UID))
+    assert "2 usuários" in txt
+    assert UID in txt, "não diz em qual UID escreve"
+    assert "ficam como estão" in txt, "não diz o que acontece com os outros"
+
+
 # ─────────────────────────────── help (regra do projeto) ─────────────────────
 
 @pytest.mark.parametrize("frase", [

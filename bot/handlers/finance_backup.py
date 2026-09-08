@@ -66,6 +66,30 @@ def _fmt_bytes(n: int) -> str:
     return f"{n / 1024:.1f} KB" if n < 1024 * 1024 else f"{n / 1024 / 1024:.1f} MB"
 
 
+def _nota_multiusuario(n_users: int, user: User) -> str:
+    """O backup pega a coleção INTEIRA; o restore escreve num uid só.
+
+    Sem dizer isso, "2 usuário(s)" no backup vira a impressão de que restaurar
+    devolve os dois — e o outro ficaria intacto (não destruído, mas também não
+    recuperado) sem ninguém perceber."""
+    return (
+        f"ℹ️ A cópia tem os <b>{n_users} usuários</b> da conta, mas o restore "
+        f"escreve só no seu UID (<code>{user.firebase_uid}</code>). Os demais "
+        "ficam como estão — quem quiser restaurar o próprio precisa rodar o "
+        "comando na conta dele.\n\n"
+    )
+
+
+def _escolha_keyboard(nomes: list[str]) -> InlineKeyboardMarkup:
+    """Um botão por backup. Digitar nome de arquivo no Telegram é onde o
+    erro nasce (o dono colou o caminho da PASTA); com botão não há o que
+    digitar. callback_data cabe: prefixo + nome dão ~54 dos 64 bytes."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"📄 {n}", callback_data=f"finprev:{n}")]
+        for n in nomes
+    ] + [[InlineKeyboardButton(text="Cancelar", callback_data="finrest:n")]])
+
+
 def _confirm_keyboard(nome: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="♻️ Restaurar", callback_data=f"finrest:{nome}"),
@@ -96,11 +120,17 @@ async def cmd_backup(message: Message, user: User, session: AsyncSession) -> Non
         return
 
     tamanho = arquivo.stat().st_size
+    n_users = int(payload.get("count") or 0)
+    # A pasta NÃO é impressa como se fosse argumento: o dono passou
+    # `/financeiro_restaurar /app/data/backups/financeiro` justamente porque
+    # a linha "Guardado em <pasta>" ficava colada no nome do arquivo.
     await aviso.edit_text(
         f"✅ Backup gerado: <code>{arquivo.name}</code>\n"
-        f"{payload.get('count', 0)} usuário(s) · {_fmt_bytes(tamanho)}\n\n"
-        f"Guardado em <code>{arquivo.parent}</code> "
-        f"(retenção {settings.finance_backup_retention_days} dias).",
+        f"{n_users} usuário(s) no Firestore · {_fmt_bytes(tamanho)} · "
+        f"retenção {settings.finance_backup_retention_days} dias\n\n"
+        + (_nota_multiusuario(n_users, user) if n_users > 1 else "")
+        + "Pra restaurar: <code>/financeiro_restaurar</code> (sem argumento) "
+        "e escolha no botão.",
         parse_mode="HTML",
     )
     if tamanho <= MAX_TELEGRAM_BYTES:
@@ -136,7 +166,8 @@ async def cmd_listar(message: Message, user: User) -> None:
         linhas.append(f"\n<i>… e mais {len(backups) - 20}.</i>")
     linhas.append(
         f"\nRetenção: {settings.finance_backup_retention_days} dias. "
-        "Restaurar: <code>/financeiro_restaurar &lt;nome&gt;</code>"
+        "Restaurar: <code>/financeiro_restaurar</code> — sem argumento, "
+        "que ele mostra os botões."
     )
     await message.answer("\n".join(linhas), parse_mode="HTML")
 
@@ -150,11 +181,14 @@ async def _preview(message: Message, user: User, nome: str, payload: object) -> 
     except BackupError as e:
         await message.answer(f"❌ {e}", parse_mode=None)
         return
+    n_users = len(payload.get("users") or {}) if isinstance(payload, dict) else 1
     await message.answer(
         "♻️ <b>Restaurar o financeiro</b>\n\n"
         f"Arquivo: <code>{nome}</code>\n"
+        f"Escreve em: <code>{user.firebase_uid}</code>\n"
         f"Conteúdo: {resumo_state(state)}\n\n"
-        "⚠️ Isto <b>sobrescreve</b> o financeiro atual no Firestore — o app "
+        + (_nota_multiusuario(n_users, user) if n_users > 1 else "")
+        + "⚠️ Isto <b>sobrescreve</b> o financeiro atual no Firestore — o app "
         "vai refletir a mudança em todos os dispositivos. Antes de escrever "
         "eu gravo uma foto do estado de agora, então dá pra voltar atrás.",
         parse_mode="HTML",
@@ -183,8 +217,7 @@ async def cmd_restaurar(
 
     nome = (command.args or "").strip()
     if not nome:
-        backups = list_backups()
-        recentes = "\n".join(f"• <code>{b.nome}</code>" for b in backups[:5])
+        recentes = [b.nome for b in list_backups()[:5]]
         # Fecha a janela da service account (ver financeiro.py): duas janelas
         # abertas fariam a ordem dos routers decidir, em silêncio, se o JSON
         # enviado vira credencial ou sobrescreve o financeiro.
@@ -195,24 +228,30 @@ async def cmd_restaurar(
         await session.commit()
         await message.answer(
             "♻️ <b>Restaurar o financeiro</b>\n\n"
-            "Duas formas:\n"
-            "1. <code>/financeiro_restaurar &lt;nome do arquivo&gt;</code> — "
-            "de um backup local.\n"
-            "2. <b>Envie o JSON agora</b> como documento — serve o artifact do "
+            + ("Escolha um backup local no botão abaixo,\nou " if recentes
+               else "")
+            + "<b>envie o JSON agora</b> como documento — serve o artifact do "
             "GitHub (<code>gerenciador-backup.json</code>) ou o "
-            "\"Exportar JSON\" do app. Janela de 10 minutos.\n\n"
-            + (f"Backups locais mais recentes:\n{recentes}" if recentes
-               else "<i>Nenhum backup local ainda.</i>"),
+            "\"Exportar JSON\" do app. Janela de 10 minutos.",
             parse_mode="HTML",
+            reply_markup=_escolha_keyboard(recentes) if recentes else None,
         )
         return
 
     caminho = resolve_backup(nome)
     if caminho is None:
+        # Mostra a lista AQUI em vez de mandar rodar outro comando: quem
+        # errou o nome já está com o dedo no teclado. E o erro típico é
+        # passar a PASTA (foi o que aconteceu na estreia), não um nome
+        # parecido — logo, repetir "veja a lista" não ajudava em nada.
+        nomes = [b.nome for b in list_backups()[:5]]
         await message.answer(
-            f"❌ Não achei <code>{nome}</code> nos backups locais. "
-            "Veja a lista com <code>/financeiro_backups</code>.",
+            f"❌ <code>{nome}</code> não é um backup local.\n"
+            + ("Escolha um destes:" if nomes
+               else "E não há nenhum ainda — gere com "
+                    "<code>/financeiro_backup</code>."),
             parse_mode="HTML",
+            reply_markup=_escolha_keyboard(nomes) if nomes else None,
         )
         return
     try:
@@ -285,6 +324,39 @@ async def on_restore_document(
         payload, hoje=agora.date(), sufixo=f"-upload-{agora.strftime('%H%M%S')}"
     )
     await _preview(message, user, caminho.name, payload)
+
+
+@router.callback_query(F.data.startswith("finprev:"))
+async def cb_prever(query: CallbackQuery, user: User) -> None:
+    """Botão de escolha → prévia. NÃO escreve nada: o passo destrutivo
+    continua sendo o segundo botão, depois de ver o que tem no arquivo."""
+    if not user.is_authorized or not _is_owner(user):
+        await query.answer()
+        return
+    nome = (query.data or "").split(":", 1)[1]
+    try:
+        await query.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    caminho = resolve_backup(nome)
+    if caminho is None:
+        await query.answer("Arquivo sumiu.")
+        await query.message.answer(
+            f"❌ <code>{nome}</code> não está mais nos backups locais.",
+            parse_mode="HTML",
+        )
+        return
+    await query.answer()
+    try:
+        payload = json.loads(caminho.read_text(encoding="utf-8"))
+    except Exception:
+        await query.message.answer(
+            f"❌ <code>{nome}</code> não é JSON válido — arquivo corrompido. "
+            "Não vou restaurar a partir dele.",
+            parse_mode="HTML",
+        )
+        return
+    await _preview(query.message, user, caminho.name, payload)
 
 
 @router.callback_query(F.data == "finrest:n")
