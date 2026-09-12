@@ -38,7 +38,9 @@ HELP_TEXT = (
     "• Por voz/texto: <i>\"saiu MP nova hoje?\"</i> → lista número + ementa\n"
     "• Cobre edição normal E extra — inclusive a edição extra de sábado/feriado que o DOU publica SÓ em PDF (sem o XML). O bot lê a pasta do dia, extrai o texto do PDF e entrega a MP normalmente\n"
     "• <b>Conferência automática</b> (1x/dia, no briefing): o bot compara o que te entregou com a lista oficial de MPs da Câmara. Se alguma escapou (Inlabs fora do ar, dia em que o bot ficou desligado), ele avisa QUAL escapou e busca sozinho no DOU pra te mandar com a nota. Dia que ele não conseguiu checar vira pendência e é re-tentado por 14 dias — e se desistir, ele DIZ; nunca vira silêncio\n"
-    "• <b>Portal público como verificador PRIMÁRIO</b>: toda checagem (janelas, retroativa e <code>/mp_dou_agora</code>) consulta primeiro o portal oficial (in.gov.br) — MP achada é avisada (card + botão de nota; a nota usa o texto do próprio portal), e dia fechado com evidência positiva (\"houve DOU sem MP\" ou \"não houve edição\") recebe baixa na hora. O Inlabs virou desempate: só é consultado quando o portal não conclui. Cobre inclusive edição extra retroativa (foi assim que a MP 1.382, da extra de 01/08 que o Inlabs só materializou 9 dias depois, foi detectada)\n\n"
+    "• <b>Portal público como verificador PRIMÁRIO</b>: toda checagem (janelas, retroativa e <code>/mp_dou_agora</code>) consulta primeiro o portal oficial (in.gov.br) — MP achada é avisada (card + botão de nota; a nota usa o texto do próprio portal), e dia fechado com evidência positiva (\"houve DOU sem MP\" ou \"não houve edição\") recebe baixa na hora. O Inlabs virou desempate: só é consultado quando o portal não conclui. Cobre inclusive edição extra retroativa (foi assim que a MP 1.382, da extra de 01/08 que o Inlabs só materializou 9 dias depois, foi detectada)\n"
+    "• <b>Rede do Planalto</b>: a cada janela o bot pergunta <i>\"existe MP com número acima da última que entreguei?\"</i> direto no planalto.gov.br. Como a numeração é sequencial e a URL é fixa, isso não depende do índice do DOU — pega MP de <b>edição extra</b> que o portal não indexa, e pega até de dia que já recebeu baixa. Foi o buraco por onde a MP 1.391 (extra de 11/09/2026) passou: o portal tinha o despacho que a encaminhava ao Congresso, mas não a MP, e respondeu \"houve DOU e NENHUMA MP\"\n"
+    "• <b>Despacho como pista</b>: o bot também lê o <i>\"Encaminhamento ao Congresso Nacional do texto da Medida Provisória nº X\"</i> no índice — quando ele aparece, a MP existe, mesmo que o índice não a traga. E dia que teve edição EXTRA sem MP encontrada <b>não recebe baixa</b>: o bot diz que não dá pra afirmar, em vez de dizer que não houve MP\n\n"
     "<b>Agente proativo</b> (opt-in):\n"
     "• <code>/proativo_on</code> / <code>/proativo_off</code> — liga/desliga avisos automáticos (vencimentos chegando, briefing matinal, MP nova, lembretes de hábito)\n"
     "• <code>/proativo</code> — status e janelas\n"
@@ -336,6 +338,10 @@ _HELP_KEYWORDS: dict[str, str] = {
     "inlabs": "diario oficial", "pendencia": "diario oficial",
     "portal": "diario oficial",
     "extra": "diario oficial", "sabado": "diario oficial",
+    # Rede do Planalto (12/09/2026): o dono pergunta pela FONTE quando
+    # desconfia da captura ("de onde ele tira a MP?", "olha o planalto?").
+    "planalto": "diario oficial", "despacho": "diario oficial",
+    "encaminhamento": "diario oficial", "perdeu": "diario oficial",
     "feriado": "diario oficial", "pdf": "diario oficial",
     "fila": "diario oficial", "aguardando": "diario oficial",
     "represada": "diario oficial", "gerando": "diario oficial",

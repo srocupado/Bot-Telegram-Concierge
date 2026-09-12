@@ -13,6 +13,22 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _rede_planalto_desligada():
+    """A sonda do Planalto fala com planalto.gov.br de verdade. A suíte roda
+    OFFLINE antes de todo push (regra do projeto), então ela fica desligada
+    por padrão e quem a exercita liga explicitamente — ver
+    test_dou_planalto.py, que a testa com a rede dublada."""
+    try:
+        from bot.config import settings
+        anterior = settings.dou_planalto_enabled
+        settings.dou_planalto_enabled = False
+        yield
+        settings.dou_planalto_enabled = anterior
+    except Exception:
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_inlabs_sessao():
     """A sessão do Inlabs é cache module-level (reuso de cookie entre fetches).
     Sem resetar, um teste que loga vaza o cookie pro próximo — que aí pula o

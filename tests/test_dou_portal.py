@@ -858,10 +858,31 @@ def test_manual_sem_edicao_da_baixa_na_hora(monkeypatch) -> None:
 
 
 def test_manual_edicao_sem_mp_da_baixa(monkeypatch) -> None:
+    """Sem edição extra no índice, "sem MP" segue conclusivo e dá baixa.
+
+    A frase mudou em 12/09/2026: dizia "houve DOU em DD e NENHUMA Medida
+    Provisória" — certeza que a fonte não sustenta, porque a sonda que
+    confirma a edição olha `secao="do1"` (a REGULAR). Agora ela DIZ em que se
+    apoia: edição indexada, sem extra. O caso com extra tem teste próprio em
+    test_dou_planalto.py."""
     ok, ev, alvo = _rodar_manual(monkeypatch, dou_portal.PortalDia([], True))
     assert ok is True
-    assert any("NENHUMA Medida Provisória" in m for m in ev["msgs"])
+    msg = next(m for m in ev["msgs"] if "portal oficial" in m)
+    assert "sem edição extra" in msg, f"não disse em que se apoia: {msg!r}"
+    assert "não há Medida Provisória" in msg
     assert ev["baixas"] == [(alvo, 0, "sem_mp", None)]
+
+
+def test_manual_extra_sem_mp_nao_afirma_nem_baixa(monkeypatch) -> None:
+    """O caso da MP 1.391: extra no índice e zero MP. Nem afirma ausência,
+    nem tira o dia da fila — foi a baixa daqui que apagou a MP perdida."""
+    ok, ev, _alvo = _rodar_manual(
+        monkeypatch, dou_portal.PortalDia([], True, extras_sem_mp=True))
+    assert ok is True
+    msg = next(m for m in ev["msgs"] if "portal oficial" in m)
+    assert "EXTRA" in msg and "não cobre" in msg
+    assert "NENHUMA" not in msg, "voltou a afirmar ausência"
+    assert ev["baixas"] == [], "deu baixa num dia que não dá pra concluir"
 
 
 def test_manual_mp_manda_card_com_botao_sem_gerar(monkeypatch) -> None:

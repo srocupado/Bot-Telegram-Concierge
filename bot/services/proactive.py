@@ -972,13 +972,21 @@ class _Colheita:
     # 01/08/2026) só apareceu em 10/08. O do portal (controle vivo) continua
     # valendo baixa e NÃO seta isto.
     inlabs_sem_pasta: bool = False
+    # True quando o índice do portal tem edição EXTRA no dia e ZERO MP. Foi
+    # como a MP 1.391 (extra de 11/09/2026) se perdeu em silêncio: a sonda que
+    # confirma a edição olha `secao="do1"` (a REGULAR) e o veredito "sem MP"
+    # era estendido às extras, que o índice não cobre. Dia fica pendente.
+    extras_sem_mp: bool = False
 
     @property
     def baixa(self) -> bool:
         """Se o dia pode ser dado como checado. Um lugar só decide isso.
         Inlabs sem a pasta, sem o portal confirmar, NÃO baixa: o dia segue
-        pendente (portal-primeiro nas próximas janelas; Câmara como rede)."""
-        return self.completo and not self.provisorio and not self.inlabs_sem_pasta
+        pendente (portal-primeiro nas próximas janelas; Câmara como rede).
+        Extra no índice sem MP também não baixa — mesma lógica: evidência
+        que não cobre o universo sobre o qual se quer concluir."""
+        return (self.completo and not self.provisorio
+                and not self.inlabs_sem_pasta and not self.extras_sem_mp)
 
 
 async def collect_mp(
@@ -1107,7 +1115,8 @@ async def collect_mp(
         if houve_mp:
             return _Colheita(out, True, not fechado, False, len(dia_portal.mps))
         if dia_portal.edicao_confirmada:
-            return _Colheita([], True, not fechado, False, 0)
+            return _Colheita([], True, not fechado, False, 0,
+                             extras_sem_mp=dia_portal.extras_sem_mp)
         if dia_portal.sem_edicao:
             return _Colheita([], True, not fechado, True, 0)
         logger.info("proactive: portal sem índice p/ %s (inconclusivo)", d)
@@ -1117,6 +1126,80 @@ async def collect_mp(
             "nem haver edição)."
         )
         return None
+
+    async def _rede_planalto() -> list[ProactiveFact]:
+        """Rede principal: 'existe MP depois da última que entreguei?'
+
+        Independe de data, de edição e da fila de dias — por isso pega MP de
+        edição extra que o índice do portal não cobre, e pega até de dia que
+        já recebeu baixa. Foi o que faltou na MP 1.391 (extra de 11/09/2026):
+        o portal respondeu 'houve DOU e NENHUMA MP' e o dia fechou.
+
+        Falha do Planalto só loga: esta é uma rede ADICIONAL, e o veredito de
+        cada dia continua com o portal (que agora não baixa dia com extra sem
+        MP). Transformar instabilidade do Planalto em aviso ao dono a cada
+        janela seria ruído sem informação nova."""
+        nonlocal entregues
+        # Antes de QUALQUER query: desligada, esta função não pode alterar a
+        # sequência de consultas que o resto do collect_mp faz.
+        if not settings.dou_planalto_enabled:
+            return []
+        from bot.services import dou_planalto
+
+        rows = await session.scalars(
+            select(DouSeenMP).where(DouSeenMP.user_id == user.id)
+        )
+        numeros_vistos: list[tuple[int, int]] = []
+        for r in rows:
+            try:
+                numeros_vistos.append((int(numero_canonico(r.numero)), r.ano))
+            except (TypeError, ValueError):
+                continue
+        if not numeros_vistos:
+            # Sem nenhuma MP entregue não há régua pra "a próxima" — sondar do
+            # zero varreria o histórico inteiro. O caminho por dia cobre.
+            return []
+        ultimo, ano_ultimo = max(numeros_vistos)
+        try:
+            novas = await dou_planalto.sondar_novas(
+                ultimo, [hoje_.year, ano_ultimo],
+            )
+        except Exception as exc:
+            logger.warning("proactive: sonda do Planalto falhou (%s)", exc)
+            return []
+
+        achados: list[ProactiveFact] = []
+        for mp in novas:
+            key = f"{mp.numero}/{mp.ano}"
+            if key in seen:
+                continue
+            seen.add(key)
+            if not force and await already_notified(session, user.id, "mp", key):
+                continue
+            if not force:
+                if entregues is None:
+                    rows_seen = await session.scalars(
+                        select(DouSeenMP).where(DouSeenMP.user_id == user.id)
+                    )
+                    entregues = {(numero_canonico(r.numero), r.ano)
+                                 for r in rows_seen}
+                if (numero_canonico(mp.numero), mp.ano) in entregues:
+                    continue
+            # date_iso vem da PRÓPRIA MP (regra do projeto: identidade e data
+            # saem do ato, não da requisição). É essa data que o botão da nota
+            # usa depois pra reencontrar a MP no portal.
+            quando = mp.data_publicacao or hoje_.isoformat()
+            logger.info("proactive: MP %s achada pela rede do Planalto "
+                        "(publicada %s)", key, quando)
+            achados.append(ProactiveFact(
+                "mp", "mp", key,
+                f"📜 MP {_num_fmt(mp.numero)}/{mp.ano}: "
+                f"{_clean_ementa(mp.ementa or mp.titulo)}",
+                date_iso=quando,
+            ))
+        return achados
+
+    facts += await _rede_planalto()
 
     ok_dates: set[date] = set()
     inlabs_fora = False   # fetch RAISOU este run → Inlabs inacessível agora

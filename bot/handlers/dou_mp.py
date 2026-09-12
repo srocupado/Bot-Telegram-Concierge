@@ -141,14 +141,32 @@ async def _checar_via_portal(bot, session, user, target: date) -> bool:
                 logger.exception("baixa pós-portal falhou (%s)", target)
         return True
 
+    # Edição EXTRA no índice e zero MP: o índice NÃO cobre MP de extra de
+    # forma confiável (MP 1.391, extra de 11/09/2026: o portal tinha o
+    # despacho que a encaminha, não a MP). Aqui não se afirma ausência nem se
+    # dá baixa — afirmar "NENHUMA MP" com essa evidência foi o que fez o dono
+    # confirmar a perda achando que estava conferindo.
+    if fechado and dia.edicao_confirmada and dia.extras_sem_mp:
+        await bot.send_message(
+            user.id,
+            f"📄 Pelo portal oficial do DOU: a edição de {dd} está no índice "
+            "e não achei MP nela — mas o dia teve edição EXTRA, e o índice "
+            "não cobre MP de extra de forma confiável.\n\n"
+            "Não vou afirmar que não houve MP: o dia continua na fila e é "
+            "re-checado nas próximas janelas.",
+            parse_mode=None,
+        )
+        return True
+
     if fechado and (dia.edicao_confirmada or dia.sem_edicao):
         if dia.sem_edicao:
             texto = (f"📄 Verifiquei pelo portal oficial do DOU: não houve "
                      f"edição nem MP indexada em {dd}.")
             motivo = "sem_edicao"
         else:
-            texto = (f"📄 Verifiquei pelo portal oficial do DOU: houve DOU em "
-                     f"{dd} e NENHUMA Medida Provisória.")
+            texto = (f"📄 Verifiquei pelo portal oficial do DOU: a edição de "
+                     f"{dd} está indexada, sem edição extra, e não há "
+                     f"Medida Provisória nela.")
             motivo = "sem_mp"
         baixado = False
         try:

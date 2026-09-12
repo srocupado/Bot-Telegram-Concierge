@@ -100,6 +100,11 @@ class Settings(BaseSettings):
     # TUDO para Inlabs-somente — não desligue sem motivo forte. O nome
     # "fallback" é histórico (o portal nasceu como reserva em 06/08/2026).
     dou_portal_fallback: bool = Field(True, alias="DOU_PORTAL_FALLBACK")
+    # Rede de captura pelo Planalto: "existe MP depois da última entregue?".
+    # Independe do índice do DOU, que não cobre MP de edição extra — foi assim
+    # que a MP 1.391 (11/09/2026) se perdeu em silêncio. Kill switch caso o
+    # planalto.gov.br fique instável a ponto de atrapalhar a janela proativa.
+    dou_planalto_enabled: bool = Field(True, alias="DOU_PLANALTO_ENABLED")
     # Resumo de fim de semana (dono, 09/08/2026): na última janela proativa de
     # sexta — clima de sáb/dom, lembretes do fds e filmes em cartaz no Cinemark.
     # Este é só o PADRÃO; a troca do dia a dia é pelo comando /fds_cinema

@@ -27,6 +27,7 @@ silenciosa, que aqui seria falso negativo de MP.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import re
@@ -92,6 +93,13 @@ class PortalDia:
     # estrutura de prova do "raiz sem a pasta" no Inlabs). Nunca True sem
     # controle vivo. Combinado com dia fechado, autoriza baixa.
     sem_edicao: bool = False
+    # True = o índice do dia TEM edição extra mas nenhuma MP foi encontrada.
+    # Nesse caso "sem MP" NÃO é conclusivo: a sonda que confirma a edição olha
+    # `secao="do1"` (a REGULAR), e o índice comprovadamente não cobre a MP das
+    # extras — em 11/09/2026 a MP 1.391 saiu em DO1_EXTRA e a busca por
+    # artType="Medida Provisória" devolveu ZERO. Quem dá baixa tem de olhar
+    # este campo, senão fabrica "NENHUMA MP" a partir de índice incompleto.
+    extras_sem_mp: bool = False
 
 
 _PARAMS_RE = re.compile(
@@ -104,6 +112,20 @@ _TAGS_RE = re.compile(r"<[^>]+>")
 _MP_TITULO_RE = re.compile(
     r"MEDIDA\s+PROVIS[ÓO]RIA\s+N[ºO°]\s*([\d.]+)\s*,?\s*DE\b.*?\bDE\s*(\d{4})",
     re.IGNORECASE | re.DOTALL,
+)
+# MP citada no DESPACHO que a encaminha ao Congresso. É a rede que faltava:
+# em 11/09/2026 o índice do portal NÃO tinha a MP 1.391 (extra), mas tinha
+# esta mensagem — e o filtro por artType a descartava como ruído.
+#
+# A frase inteira é exigida de propósito. Casar só "Medida Provisória nº X"
+# transformaria QUALQUER portaria que cita uma MP antiga numa MP nova do dia
+# — inventar MP é tão grave quanto perder uma.
+_DESPACHO_MP_RE = re.compile(
+    r"Encaminhamento\s+ao\s+Congresso\s+Nacional\s+do\s+texto\s+da\s+"
+    r"Medida\s+Provis[óo]ria\s+n[ºo°\.\s]*(?P<num>[\d.]+)\s*,\s*de\s+"
+    r"(?P<dia>\d{1,2})\s+de\s+(?P<mes>[A-Za-zÇçÃãÕõÁáÉéÍíÓóÚúÂâÊêÔô]+)\s+de\s+"
+    r"(?P<ano>\d{4})",
+    re.IGNORECASE,
 )
 _EMENTA_RE = re.compile(r'<p class="ementa"[^>]*>(.*?)</p>', re.DOTALL)
 _IDENTIFICA_RE = re.compile(r'<p class="identifica"[^>]*>(.*?)</p>', re.DOTALL)
@@ -282,13 +304,57 @@ async def checar_dia_portal(d: date, *, controle: date | None = None) -> PortalD
                 edicao=("Extra" if "EXTRA" in (it.get("pubName") or "").upper()
                         else "Normal"),
             ))
+        # SEGUNDA REDE: MP citada no despacho de encaminhamento ao Congresso.
+        # Roda sempre (não só quando `mps` está vazio): num dia com 2 MPs na
+        # edição normal e 1 na extra, parar na primeira leva a perder a extra.
+        # O número/ano/data saem do DESPACHO; ementa e texto, do Planalto —
+        # que é onde a MP de fato está quando o índice não a tem.
+        tem_extra = any("EXTRA" in (it.get("pubName") or "").upper()
+                        for it in itens)
+        for it in itens:
+            m = _DESPACHO_MP_RE.search(_limpo(it.get("content") or ""))
+            if not m:
+                continue
+            numero, ano = m.group("num").replace(".", ""), int(m.group("ano"))
+            if (numero, ano) in vistos:
+                continue
+            from bot.services import dou_planalto
+            try:
+                mp = await dou_planalto.buscar_mp(numero, ano)
+            except Exception as exc:
+                # Planalto fora não pode virar "não existe": a MP foi citada
+                # num despacho oficial, então ela EXISTE. Erro alto mantém o
+                # dia inconclusivo e o caller preserva a pendência.
+                raise PortalError(
+                    f"despacho cita MP {numero}/{ano} mas o Planalto não "
+                    f"respondeu ({exc}) — dia inconclusivo"
+                ) from exc
+            if mp is None:
+                logger.warning(
+                    "portal: despacho de %s cita MP %s/%s sem página no "
+                    "Planalto — seguindo sem ela", d.isoformat(), numero, ano,
+                )
+                continue
+            vistos.add((numero, ano))
+            # A edição real vem do ÍNDICE (o Planalto não a conhece). PortalMP
+            # é frozen: replace, não atribuição — e rotular extra como
+            # "Normal" já mentiu pro prompt da nota uma vez (MP 1.382).
+            mp = dataclasses.replace(
+                mp,
+                edicao=("Extra" if "EXTRA" in (it.get("pubName") or "").upper()
+                        else "Normal"),
+            )
+            logger.info("portal DOU: MP %s/%s achada pelo DESPACHO em %s (%s)",
+                        numero, ano, d.isoformat(), it.get("pubName"))
+            mps.append(mp)
+
         if mps:
             logger.info("portal DOU: %d MP(s) em %s", len(mps), d.isoformat())
             return PortalDia(mps, True)
         # 0 MPs: edição existe no índice? (separa "sem MP" de "índice fora")
         for sonda in ("portaria", "despacho"):
             if await _buscar(client, sonda, d, secao="do1"):
-                return PortalDia([], True)
+                return PortalDia([], True, extras_sem_mp=tem_extra)
         # Índice vazio pra `d`. Com um dia de CONTROLE respondendo, a
         # ausência é positiva: não houve DO1 regular nem MP indexada em `d`.
         if controle is not None:

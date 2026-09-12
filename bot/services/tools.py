@@ -1429,6 +1429,7 @@ async def _h_consultar_mp_dou(args: dict, ctx: ToolContext) -> str:
     # itens = (numero, ano, ementa); None = portal não concluiu.
     itens: list[tuple[str, int, str]] | None = None
     portal_tentado = False
+    extras_inconclusivo = False
     if settings.dou_portal_fallback:
         from bot.services import dou_portal
         portal_tentado = True
@@ -1440,6 +1441,17 @@ async def _h_consultar_mp_dou(args: dict, ctx: ToolContext) -> str:
                 itens = [(mp.numero, mp.ano, mp.ementa or mp.titulo)
                          for mp in dia.mps]
                 registrar_checagem_ok(target, len(dia.mps))
+            elif dia.edicao_confirmada and dia.extras_sem_mp:
+                # Extra no índice e zero MP: o índice não cobre MP de extra de
+                # forma confiável (MP 1.391, 11/09/2026). Deixa `itens=None`
+                # de propósito — cai no aviso de inconclusivo lá embaixo, em
+                # vez de virar "📭 Nenhuma MP publicada", que é o falso
+                # negativo que fez o dono confirmar a perda achando que
+                # estava conferindo.
+                extras_inconclusivo = True
+                logger.info("consultar_mp_dou: %s tem edição extra e 0 MP "
+                            "no índice — inconclusivo, não afirmo ausência",
+                            target)
             elif dia.edicao_confirmada or dia.sem_edicao:
                 itens = []
                 registrar_checagem_ok(target, 0)
@@ -1454,10 +1466,22 @@ async def _h_consultar_mp_dou(args: dict, ctx: ToolContext) -> str:
             # manutenção" em "nenhuma MP publicada" (falso negativo perigoso —
             # visto em produção num agendado pós-restart). "Não consegui
             # checar" ≠ "não houve MP".
-            aviso = (f"⚠️ Não consegui checar o DOU — portal público "
-                     f"inconclusivo e Inlabs: {e}"
-                     if portal_tentado else
-                     f"⚠️ Não consegui checar o DOU: {e}")
+            if extras_inconclusivo:
+                # Caso específico e MUITO mais informativo que "não consegui
+                # checar": sabemos o que houve e por que não dá pra concluir.
+                aviso = (
+                    f"⚠️ Não dá pra afirmar sobre "
+                    f"{target.strftime('%d/%m/%Y')}: a edição está indexada, "
+                    "não achei MP nela, mas o dia teve edição EXTRA — e o "
+                    "índice do portal não cobre MP de extra de forma "
+                    "confiável. Deixo o dia na fila em vez de dizer que não "
+                    "houve MP."
+                )
+            else:
+                aviso = (f"⚠️ Não consegui checar o DOU — portal público "
+                         f"inconclusivo e Inlabs: {e}"
+                         if portal_tentado else
+                         f"⚠️ Não consegui checar o DOU: {e}")
             ctx.fallback_text = aviso
             ctx.direct_html = _html_escape(aviso)
             ctx.short_circuit = True

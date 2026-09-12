@@ -692,7 +692,35 @@ DOU_MP_PROVIDER=gemini          # gemini (mais barato) | anthropic
 DOU_MP_GEMINI_MODEL=gemini-3.5-flash         # geração nova, estável
 DOU_MP_GEMINI_MODEL_FALLBACK=gemini-3.1-flash-lite  # rede pra 503/JSON truncado
 DOU_MP_WEB_RESEARCH=true        # pesquisa de contexto via busca web
+DOU_PORTAL_FALLBACK=true        # portal in.gov.br como verificador primário
+DOU_PLANALTO_ENABLED=true       # rede de captura sequencial no Planalto
 ```
+
+#### Três redes, porque índice não é realidade
+
+O portal do in.gov.br é o **verificador primário**, mas ele indexa por
+`artType` — e MP publicada em **edição extra** pode não entrar como
+`"Medida Provisória"`. Em 11/09/2026 a busca por MP em 11/09 devolveu **zero**
+enquanto a MP 1.391 existia; o portal, fonte única desde a saída do Inlabs,
+respondeu *"houve DOU e NENHUMA Medida Provisória"* e o dia recebeu baixa. MP
+perdida em silêncio.
+
+As redes que fecham isso, em ordem de confiabilidade:
+
+| rede | pergunta que faz | pega o quê |
+|---|---|---|
+| **Planalto** (`DOU_PLANALTO_ENABLED`) | *existe MP com número acima da última entregue?* | tudo — não depende de data, edição ou fila de dias |
+| **Despacho** no índice | *o índice tem "Encaminhamento ao Congresso Nacional do texto da MP nº X"?* | MP citada em ato oficial que o índice não traz |
+| **Portal** por `artType` | *há MP indexada no dia D?* | o caso comum |
+
+A rede do Planalto funciona porque a numeração de MP é sequencial e a URL é
+determinística (`/ccivil_03/_ato<quadriênio>/<ano>/mpv/mpv<n>.htm`): existir é
+`200`, não existir é `404`. Isso troca *inferir ausência de um índice
+incompleto* por **evidência positiva de existência** — e recupera MP mesmo de
+dia que já foi dado como checado.
+
+Como consequência, **dia com edição extra e zero MP não recebe mais baixa**: o
+bot diz que não dá pra afirmar, em vez de afirmar que não houve MP.
 
 Reusa `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` conforme o provider. A detecção
 de MP nova roda dentro do **agente proativo** (assine com `/mp_dou_on`); a nota
