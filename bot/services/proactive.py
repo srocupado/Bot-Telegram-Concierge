@@ -426,8 +426,8 @@ async def _tentar_nota_via_portal(
     for mp in pendentes:
         dc = dou_portal.mp_dict_para_nota(mp, d)
         if dc is None:
-            logger.info("nota pendente %s: texto do portal reprovado na "
-                        "sanidade (MP %s) — fica pro Inlabs", key, mp.numero)
+            logger.info("nota pendente %s: sem texto íntegro nem no portal "
+                        "nem no Planalto (MP %s) — fica na fila", key, mp.numero)
             completou = False
             continue
         try:

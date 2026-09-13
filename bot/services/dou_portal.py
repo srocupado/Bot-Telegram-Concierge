@@ -218,7 +218,7 @@ async def _materia(client: httpx.AsyncClient, url_title: str) -> tuple[str | Non
     else:
         logger.warning(
             "portal: corpo da matéria reprovado na sanidade (%s: identifica=%s "
-            "parágrafos=%d) — nota vai esperar o Inlabs",
+            "parágrafos=%d) — tentando o texto no Planalto",
             url_title, bool(ident), len(pars),
         )
     return ementa, texto
@@ -296,6 +296,33 @@ async def checar_dia_portal(d: date, *, controle: date | None = None) -> PortalD
             ementa = texto = None
             if len(mps) < _MAX_EMENTAS:
                 ementa, texto = await _materia(client, it.get("urlTitle") or "")
+                if not texto:
+                    # PLANO B DO TEXTO: corpo do portal reprovado na régua de
+                    # sanidade. Antes a nota ficava esperando o Inlabs — era o
+                    # último trabalho exclusivo dele. O Planalto tem o ato
+                    # íntegro na mesma URL determinística da rede de captura.
+                    #
+                    # Falha aqui NÃO estoura: a MP já foi detectada, só o texto
+                    # falta. Erro alto transformaria "nota adiada" em "dia não
+                    # verificado", que é bem pior. Sem texto, segue o caminho
+                    # antigo (fila; Inlabs se houver credencial).
+                    from bot.services import dou_planalto
+                    try:
+                        alt = await dou_planalto.buscar_mp(numero, ano)
+                    except Exception as exc:
+                        logger.warning(
+                            "portal: Planalto não respondeu pro texto da MP "
+                            "%s/%s (%s) — nota segue na fila", numero, ano, exc,
+                        )
+                        alt = None
+                    if alt is not None and alt.texto:
+                        logger.info(
+                            "portal: texto da MP %s/%s veio do PLANALTO "
+                            "(corpo do portal reprovado na sanidade)",
+                            numero, ano,
+                        )
+                        texto = alt.texto
+                        ementa = ementa or alt.ementa
             mps.append(PortalMP(
                 numero=numero, ano=ano, titulo=titulo, ementa=ementa,
                 url=MATERIA_URL.format(url_title=it.get("urlTitle") or ""),

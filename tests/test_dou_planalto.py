@@ -259,3 +259,53 @@ def test_extra_sem_mp_nao_da_baixa() -> None:
     """O elo que fechou o dia 11/09 e apagou a MP da fila."""
     assert _Colheita([], True, False, False, 0, extras_sem_mp=True).baixa is False
     assert _Colheita([], True, False, False, 0, extras_sem_mp=False).baixa is True
+
+
+# ────────── Planalto como plano B do TEXTO da nota (13/09/2026) ──────────
+# Era o último trabalho exclusivo do Inlabs: quando o corpo da matéria no
+# portal reprovava na régua de sanidade, a nota ficava esperando por ele
+# ("nota vai esperar o Inlabs", dou_portal). O Planalto tem o ato íntegro na
+# mesma URL determinística da rede de captura.
+
+def _item_mp_indexada(numero="1.391"):
+    return {
+        "title": f"MEDIDA PROVISÓRIA Nº {numero}, DE 11 DE SETEMBRO DE 2026",
+        "artType": "Medida Provisória",
+        "pubName": "DO1",
+        "pubDate": "11/09/2026",
+        "urlTitle": "medida-provisoria-n-1391",
+        "content": "",
+    }
+
+
+@respx.mock
+def test_corpo_reprovado_no_portal_busca_texto_no_planalto() -> None:
+    respx.get(url__startswith=dou_portal.BUSCA_URL).mock(
+        return_value=httpx.Response(200, text=_pagina_busca([_item_mp_indexada()])))
+    # Matéria do portal sem corpo aproveitável (o caso que reprovava na régua).
+    respx.get(url__startswith=dou_portal.MATERIA_URL.format(url_title="")).mock(
+        return_value=httpx.Response(200, text="<html><body></body></html>"))
+    respx.get(_url(1391)).mock(return_value=httpx.Response(200, content=_pagina_mp()))
+
+    dia = asyncio.run(dou_portal.checar_dia_portal(date(2026, 9, 11)))
+    assert len(dia.mps) == 1
+    mp = dia.mps[0]
+    assert mp.texto, "nota continuaria esperando o Inlabs"
+    assert "subvenção econômica" in mp.texto
+    # E o dict que alimenta o pipeline da nota deixa de vir None.
+    assert dou_portal.mp_dict_para_nota(mp, date(2026, 9, 11)) is not None
+
+
+@respx.mock
+def test_planalto_fora_nao_derruba_a_deteccao_da_mp() -> None:
+    """Aqui a MP JÁ foi detectada — só o texto falta. Estourar transformaria
+    'nota adiada' em 'dia não verificado', que é bem pior."""
+    respx.get(url__startswith=dou_portal.BUSCA_URL).mock(
+        return_value=httpx.Response(200, text=_pagina_busca([_item_mp_indexada()])))
+    respx.get(url__startswith=dou_portal.MATERIA_URL.format(url_title="")).mock(
+        return_value=httpx.Response(200, text="<html><body></body></html>"))
+    respx.get(_url(1391)).mock(side_effect=httpx.ConnectError("fora"))
+
+    dia = asyncio.run(dou_portal.checar_dia_portal(date(2026, 9, 11)))
+    assert [m.numero for m in dia.mps] == ["1391"], "perdeu a MP por falta de texto"
+    assert dia.mps[0].texto is None, "inventou texto"
