@@ -147,7 +147,11 @@ HELP_TEXT = (
     "• <code>/financeiro_backup</code> — copia o Firestore agora e manda o JSON aqui. "
     "Um automático roda todo dia de madrugada, em paralelo com o backup do GitHub "
     "(os dois falham por motivos diferentes; ter os dois é de propósito).\n"
-    "• <code>/financeiro_backups</code> — lista as cópias locais (retenção de 30 dias).\n"
+    # Lê do config: número cravado no texto vira mentira no dia em que a
+    # retenção muda — e esta linha já nasceu dizendo 30 quando virou 5.
+    f"• <code>/financeiro_backups</code> — lista as cópias locais (retenção de "
+    f"{settings.finance_backup_retention_days} dias; o backup do GitHub guarda "
+    "30, e cada .tgz do disco externo leva a pasta junto).\n"
     "• <code>/financeiro_restaurar</code> — restaura o financeiro de uma cópia. "
     "Sem argumento ele abre uma janela de 10 min pra você <b>enviar o JSON</b> "
     "(serve o artifact do GitHub ou o \"Exportar JSON\" do app); com o nome do "

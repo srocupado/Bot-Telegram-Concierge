@@ -156,7 +156,12 @@ class Settings(BaseSettings):
     # Fica em data/ (volume ./data do compose) pra sobreviver a rebuild do
     # container e entrar no scripts/backup.sh que vai pro disco externo.
     finance_backup_dir: str = Field("/app/data/backups/financeiro", alias="FINANCE_BACKUP_DIR")
-    finance_backup_retention_days: int = Field(30, alias="FINANCE_BACKUP_RETENTION_DAYS")
+    # 5 dias (dono, 13/09/2026). O cartão do Pi é o recurso escasso, e a
+    # cobertura longa já existe fora: o artifact do Actions guarda 30 dias, e
+    # cada .tgz do scripts/backup.sh (14 dias no disco externo) leva dentro a
+    # pasta data/backups/ como ela estava naquele dia. Ou seja, 5 dias aqui
+    # não é 5 dias de histórico — é 5 dias de cópia QUENTE.
+    finance_backup_retention_days: int = Field(5, alias="FINANCE_BACKUP_RETENTION_DAYS")
 
     # Scheduler
     scheduler_tick_seconds: int = Field(60, alias="SCHEDULER_TICK_SECONDS")

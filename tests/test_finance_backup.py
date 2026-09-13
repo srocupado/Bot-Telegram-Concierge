@@ -18,7 +18,7 @@ Os três modos de falha que estes testes existem pra travar:
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -479,3 +479,42 @@ def test_help_roteia_backup_e_restore(frase: str) -> None:
     assert "/financeiro_restaurar" in HELP_TEXT
     secoes = find_help_sections(frase)
     assert any("financeiro" in s.lower() for s in secoes), f"{frase!r} não achou"
+
+
+# ─────────────── retenção: 5 dias (dono, 13/09/2026) ───────────────
+
+def test_retencao_padrao_e_de_cinco_dias() -> None:
+    """O default vale de verdade: o .env do Pi não traz a variável, então é
+    ele que governa. Já apareceu como 30 na tela e 5 no config."""
+    from bot.config import Settings
+    assert Settings(BOT_TOKEN="t", ACCESS_PASSWORD="p"
+                    ).finance_backup_retention_days == 5
+
+
+def test_cinco_dias_guardam_seis_arquivos_diarios(monkeypatch) -> None:
+    """'5 dias' mantém HOJE + 5 anteriores = 6 arquivos. O corte é
+    `(hoje - d).days > limite`, então o de exatamente 5 dias SOBREVIVE —
+    dizer "5 arquivos" ao dono seria errar por um."""
+    monkeypatch.setattr(fb.settings, "finance_backup_retention_days", 5)
+    hoje = date(2026, 9, 13)
+    for i in range(9):                     # 13/09 até 05/09
+        write_backup(_envelope(_STATE), hoje=hoje - timedelta(days=i))
+    assert purge_old(hoje=hoje) == 3       # 08/09 fica; 07, 06 e 05 saem
+    restantes = [b.nome for b in list_backups()]
+    assert len(restantes) == 6
+    assert restantes[0] == "financeiro-2026-09-13.json"
+    assert restantes[-1] == "financeiro-2026-09-08.json"
+
+
+def test_help_le_a_retencao_do_config() -> None:
+    """A linha do help é montada a partir do settings — número cravado no
+    texto vira mentira no dia em que a retenção muda (e já virou: dizia 30).
+
+    Compara com o DEFAULT recém-construído, não com `settings` do processo: a
+    fixture deste arquivo monkeypatcha a retenção, e ler o valor patchado
+    faria o teste conferir o help contra ele mesmo."""
+    from bot.config import Settings
+    from bot.handlers.start import HELP_TEXT
+    padrao = Settings(BOT_TOKEN="t", ACCESS_PASSWORD="p"
+                      ).finance_backup_retention_days
+    assert f"retenção de {padrao} dias" in HELP_TEXT

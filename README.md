@@ -995,7 +995,9 @@ gerenciador financeiro (abaixo) também chegam ao disco externo.
 
 O bot copia a coleção `users` do Firestore todo dia às **04:00 BRT**
 (`FINANCE_BACKUP_HOUR`) para `data/backups/financeiro/financeiro-AAAA-MM-DD.json`,
-com retenção de 30 dias (`FINANCE_BACKUP_RETENTION_DAYS`).
+com retenção de **5 dias** (`FINANCE_BACKUP_RETENTION_DAYS`) — cópia quente,
+não histórico: o artifact do Actions guarda 30 dias e cada `.tgz` do
+`scripts/backup.sh` leva a pasta `data/backups/` como ela estava naquele dia.
 
 Isso roda **em paralelo** com o workflow `nightly-backup` do repo
 [srocupado/gerenciador-financeiro](https://github.com/srocupado/gerenciador-financeiro),
