@@ -2036,16 +2036,26 @@ def _estado_parcelada(entry: dict, closing: int | None, hoje: date) -> dict | No
     ini_a, ini_m = _bill_month_for_date(pd, closing)
     hoje_a, hoje_m = _bill_month_for_date(hoje, closing)
     decorridas = (hoje_a - ini_a) * 12 + (hoje_m - ini_m)
-    atual = decorridas + 1                      # 1-based
+    bruto = decorridas + 1                      # 1-based, pode sair da faixa
+    concluida = bruto > total
+    # Compra com data FUTURA (erro de digitação na data, ou lançamento
+    # adiantado): a 1ª parcela ainda não chegou. `bruto` vem 0 ou negativo.
+    futura = bruto < 1
+    atual = min(max(bruto, 1), total)
     fim_idx = total - 1
     fim_a, fim_m = ini_a + (ini_m - 1 + fim_idx) // 12, (ini_m - 1 + fim_idx) % 12 + 1
     return {
         "total": total,
-        "atual": min(max(atual, 1), total),
+        "atual": atual,
         # Parcelas que faltam APÓS a atual — mesma conta do app (o +1 daqui
         # deixava compra concluída eternamente como "restam 1x").
-        "restantes": max(total - atual, 0),
-        "concluida": atual > total,
+        #
+        # Derivado do `atual` JÁ LIMITADO, nunca do bruto: com data futura o
+        # bruto era 0 e a linha saía "parcela 1/2 · restam 2" — três parcelas
+        # numa compra de duas, o bot se contradizendo sobre dinheiro.
+        "restantes": 0 if concluida else total - atual,
+        "concluida": concluida,
+        "futura": futura,
         "fim": _rotulo_fatura(fim_a, fim_m),
         "inicio": _rotulo_fatura(ini_a, ini_m),
     }
@@ -2118,6 +2128,9 @@ async def buscar_lancamentos(session: AsyncSession, user, termos: list[str]) -> 
             if p["concluida"]:
                 linhas.append(f"   ↳ ✅ <b>concluída</b> — última parcela na "
                               f"fatura {p['fim']}")
+            elif p["futura"]:
+                linhas.append(f"   ↳ ⏳ ainda não começou — 1ª das {p['total']} "
+                              f"parcelas na fatura {p['inicio']}")
             else:
                 linhas.append(
                     f"   ↳ parcela <b>{p['atual']}/{p['total']}</b> na fatura "

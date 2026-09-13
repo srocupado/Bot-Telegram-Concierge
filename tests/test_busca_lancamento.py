@@ -253,3 +253,48 @@ def test_todo_exemplo_do_help_acha_alguma_secao() -> None:
         "o help ENSINA estas frases e o `ajuda` responde 'não sei' pra elas:\n"
         + "\n".join(f"  [{t}] {e!r}" for t, e in orfaos)
     )
+
+
+# ────────── varredura de 13/09/2026: matemática de parcela ──────────
+
+def test_parcela_nunca_se_contradiz(monkeypatch) -> None:
+    """Property check que ACHOU o bug: com data FUTURA, `restantes` saía do
+    `atual` sem limite (0 ou negativo) enquanto `atual` era exibido limitado a
+    1 — a linha dizia "parcela 1/2 · restam 2", três parcelas numa compra de
+    duas. O bot se contradizendo sobre dinheiro.
+
+    435 das 4.740 combinações falhavam, TODAS com compra de data futura
+    (digitação errada da data, ou lançamento adiantado); nenhuma em compra
+    passada."""
+    from datetime import timedelta as _td
+    hoje = date(2026, 9, 13)
+    testadas = 0
+    for fechamento in (None, 1, 5, 20, 28, 31):
+        for dd in range(0, 1100, 7):
+            compra = date(2024, 1, 1) + _td(days=dd)
+            for total in (2, 3, 10, 12, 24):
+                testadas += 1
+                p = fin._estado_parcelada(
+                    {"date": compra.isoformat(), "installments": total},
+                    fechamento, hoje)
+                assert 1 <= p["atual"] <= total, (compra, total, p)
+                assert 0 <= p["restantes"] <= total - 1, (compra, total, p)
+                assert not (p["concluida"] and p["restantes"]), (compra, p)
+                assert 1 <= int(p["fim"][:2]) <= 12, (compra, p)
+                if p["futura"]:
+                    assert compra > hoje and p["atual"] == 1, (compra, p)
+    assert testadas > 4000
+
+
+def test_compra_futura_diz_que_nao_comecou() -> None:
+    """Antes: "parcela 1/2 · restam 2". Agora diz o que de fato acontece."""
+    _STATE["cardEntries"].append(
+        {"id": "f1", "date": "2026-10-05", "desc": "Cadeira gamer",
+         "category": "outros", "amount": 1200.0, "installments": 2})
+    try:
+        out = _buscar("cadeira")
+        assert "ainda não começou" in out, out
+        assert "1ª das 2 parcelas na fatura 10/2026" in out
+        assert "restam 2" not in out
+    finally:
+        _STATE["cardEntries"].pop()
