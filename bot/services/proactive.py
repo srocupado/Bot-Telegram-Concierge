@@ -174,6 +174,36 @@ _OK_RECENTE_H = 6
 _NOTA_MAX_POR_JANELA = 2
 _NOTA_PENDENTE_EXPIRA_DIAS = 14
 
+# Validade da marca de manutenção do Inlabs (kind dou_manut) para afirmar
+# "em manutenção AGORA".
+#
+# Dono, 13/09/2026: a fila mostrava "⚠️ Inlabs em manutenção agora" com o
+# Inlabs fora do projeto há semanas. A marca só é limpa dentro da re-tentativa
+# de NOTA pendente — numa fila que só tem DIAS, essa limpeza nunca roda, e a
+# marca congelava até a poda de 90 dias. Estado presente não pode se apoiar em
+# registro velho: passadas estas horas sem re-observação, o bot simplesmente
+# não afirma nada sobre manutenção.
+_MANUTENCAO_VALIDA_HORAS = 6
+
+
+def _manutencao_vigente(row) -> bool:
+    """A marca `dou_manut` autoriza dizer "em manutenção agora"?
+
+    Duas condições, e as duas nasceram do mesmo relato: sem Inlabs
+    configurado o bot não pode nem detectar manutenção (o gate de credencial
+    em dou_monitor._fetch_mps_sync levanta antes de qualquer
+    InlabsMaintenanceError), então falar dele é narrar fonte que saiu do
+    desenho; e marca velha não sustenta o presente."""
+    from bot.services.dou_monitor import inlabs_configurado
+
+    if not inlabs_configurado():
+        return False
+    quando = as_utc(getattr(row, "sent_at", None))
+    if quando is None:
+        return False
+    return (datetime.now(timezone.utc) - quando
+            <= timedelta(hours=_MANUTENCAO_VALIDA_HORAS))
+
 
 async def _entregar_nota_pendente(
     bot, user_id: int, d: date, numeros: list[str] | None, key: str,
@@ -474,8 +504,8 @@ async def _processar_notas_pendentes(
             # engolir a desistência — a entrada sumia e o aviso nunca vinha.
             ok = await _send(bot, user.id, (
                 f"⚠️ Desisti da nota técnica de {d.strftime('%d/%m')} — "
-                f"{_NOTA_PENDENTE_EXPIRA_DIAS} dias sem conseguir acessar o "
-                "Inlabs. Se ainda quiser, peça de novo com "
+                f"{_NOTA_PENDENTE_EXPIRA_DIAS} dias sem conseguir o texto "
+                "íntegro em nenhuma fonte. Se ainda quiser, peça de novo com "
                 f"/mp_dou_agora {d.strftime('%d/%m/%Y')}."
             ))
             if ok:
@@ -658,7 +688,9 @@ async def listar_fila_mp(
 
     for r in rows:
         if r.kind == "dou_manut":
-            manutencao = True
+            # `or`, não atribuição: com várias marcas, uma antiga no fim do
+            # laço apagaria uma recente vista antes.
+            manutencao = manutencao or _manutencao_vigente(r)
         elif r.kind == "nota_pendente":
             d = _data_da_chave(r.key)
             _, _, nums = (r.key or "").partition(":")
@@ -995,7 +1027,9 @@ async def collect_mp(
 ) -> list[ProactiveFact]:
     if not user.dou_mp_subscribed:
         return []
-    from bot.services.dou_monitor import _num_fmt, fetch_mps, numero_canonico
+    from bot.services.dou_monitor import (
+        _num_fmt, fetch_mps, inlabs_configurado, numero_canonico,
+    )
     facts: list[ProactiveFact] = []
     seen: set[str] = set()
     failed: list[date] = []
@@ -1341,8 +1375,11 @@ async def collect_mp(
                         "mp", "mp_fail", pkey,
                         f"ℹ️ Chequei o DOU de {d.strftime('%d/%m')} pelo "
                         f"<b>portal público</b>, fonte primária: "
-                        f"{portal_estado[d]} O Inlabs também não respondeu "
-                        "pra desempatar — sigo re-checando os dois.",
+                        f"{portal_estado[d]}"
+                        + (" O Inlabs também não respondeu pra desempatar — "
+                           "sigo re-checando os dois."
+                           if inlabs_configurado()
+                           else " Sigo re-checando nas próximas janelas."),
                         date_iso=None,
                     ))
                 continue
@@ -1369,8 +1406,10 @@ async def collect_mp(
                 datas = ", ".join(d.strftime("%d/%m") for d in fortes)
                 facts.append(ProactiveFact(
                     "mp", "mp_fail", fkey,
-                    f"⚠️ <b>Não consegui checar o DOU</b> de {datas} (Inlabs "
-                    "instável). NÃO assuma que não houve MP — confira depois com "
+                    f"⚠️ <b>Não consegui checar o DOU</b> de {datas} "
+                    + ("(Inlabs instável). " if inlabs_configurado()
+                       else "(nenhuma fonte concluiu). ")
+                    + "NÃO assuma que não houve MP — confira depois com "
                     "<code>/mp_dou_agora</code>.",
                     date_iso=None,
                 ))
@@ -1391,7 +1430,9 @@ async def collect_mp(
             "mp", "mp_desisti", f"desisti:{d.isoformat()}",
             f"⚠️ Desisti de checar o DOU de {d.strftime('%d/%m')} — "
             f"{_MP_RETRO_EXPIRA_DIAS} dias sem conseguir verificar o dia em "
-            f"nenhuma fonte (portal e Inlabs). Esse dia NÃO foi verificado; "
+            + ("nenhuma fonte (portal e Inlabs). " if inlabs_configurado()
+               else "nenhuma fonte. ")
+            + f"Esse dia NÃO foi verificado; "
             f"se quiser, rode /mp_dou_agora {d.strftime('%d/%m/%Y')}.",
             date_iso=None,
         ))
@@ -1455,8 +1496,11 @@ async def collect_mp(
                 "mp", "mp_fail", pkey,
                 f"ℹ️ Chequei o DOU de {d.strftime('%d/%m')} (fila "
                 f"retroativa) pelo <b>portal público</b>, fonte primária: "
-                f"{portal_estado[d]} O Inlabs também não respondeu pra "
-                "desempatar — sigo re-checando os dois.",
+                f"{portal_estado[d]}"
+                + (" O Inlabs também não respondeu pra desempatar — sigo "
+                   "re-checando os dois."
+                   if inlabs_configurado()
+                   else " Sigo re-checando nas próximas janelas."),
                 date_iso=None,
             ))
 
@@ -1486,7 +1530,7 @@ async def collect_mp(
     # Antes afirmava "Inlabs instável" sempre — e a causa não fica registrada
     # em lugar nenhum, então a frase era chute: seguia dizendo isso com o
     # Inlabs de pé e a nota já sendo gerada na mesma rodada.
-    from bot.services.dou_monitor import chave_nota_prefixo
+    from bot.services.dou_monitor import chave_nota_prefixo, inlabs_configurado
     # Datas cuja ÚLTIMA re-tentativa bateu em manutenção verificada (kind
     # dou_manut) — permite a linha dizer a causa APURADA em vez de otimismo.
     manut_rows = list(await session.scalars(
@@ -1495,7 +1539,9 @@ async def collect_mp(
             ProactiveNotice.kind == "dou_manut",
         )
     ))
-    em_manutencao = {r.key for r in manut_rows}
+    # Mesma régua da fila: marca velha (ou Inlabs fora do desenho) não
+    # sustenta "está em manutenção" no presente.
+    em_manutencao = {r.key for r in manut_rows if _manutencao_vigente(r)}
     fila_ordenada = sorted(
         (r for r in rows if _data_da_chave(r.key)),
         key=lambda r: _data_da_chave(r.key),
@@ -1520,7 +1566,7 @@ async def collect_mp(
         elif d.isoformat() in em_manutencao:
             estado = ("<b>na fila de checagem</b> — o Inlabs está em manutenção; "
                       "checo e envio quando ele voltar (pode não ser hoje)")
-        elif inlabs_fora:
+        elif inlabs_fora and inlabs_configurado():
             # A checagem DESTE run não alcançou o Inlabs: a nota não gera agora.
             # NÃO dizer "gerando"/"assim que responder" — soa iminente e o dono
             # esquece. "instável" (não "fora"): quase sempre é RECUSA DE SESSÃO
@@ -1528,6 +1574,12 @@ async def collect_mp(
             # navegador e "fora" soa como bug. Sem promessa de prazo.
             estado = ("<b>na fila de checagem</b> — o Inlabs está instável agora "
                       "(recusando a sessão); checo e envio assim que estabilizar")
+        elif inlabs_fora:
+            # Sem credencial, `inlabs_fora` é só o gate de configuração
+            # disparando — dizer "instável/recusando a sessão" seria inventar
+            # uma pane numa fonte que sequer foi chamada.
+            estado = ("<b>na fila de checagem</b> — nenhuma fonte concluiu "
+                      "ainda; re-tento nas próximas janelas")
         elif jobs.algum_em_andamento(chave_nota_prefixo(user.id, d)):
             estado = _estado_em_andamento(r.key)
         elif pos >= _NOTA_MAX_POR_JANELA:

@@ -23,7 +23,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db.models import User
-from bot.services.dou_monitor import DouError, chave_job_nota, deliver_to_user
+from bot.services.dou_monitor import (
+    DouError, chave_job_nota, deliver_to_user, inlabs_configurado,
+)
 
 logger = logging.getLogger(__name__)
 router = Router(name="dou_mp")
@@ -294,8 +296,9 @@ async def _rodar_nota(
             await bot.send_message(
                 user.id,
                 f"⚠️ {e}\n📄 O portal público também não foi conclusivo agora. "
-                "Deixei na fila: a re-checagem segue sozinha (Inlabs OU portal) "
-                "e te aviso o resultado.",
+                "Deixei na fila: a re-checagem segue sozinha"
+                + (" (Inlabs OU portal)" if inlabs_configurado() else "")
+                + " e te aviso o resultado.",
                 parse_mode=None,
             )
             return

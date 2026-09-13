@@ -13,7 +13,7 @@ afirma causa (limpa a marca).
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -127,6 +127,10 @@ def test_linha_diz_manutencao_quando_marcada(monkeypatch) -> None:
     monkeypatch.setattr(proactive.settings, "dou_portal_fallback", False)
     monkeypatch.setattr(proactive.jobs, "spawn", lambda *a, **kw: True)
     monkeypatch.setattr(proactive.jobs, "job_em_andamento", lambda _k: False)
+    # Desde 13/09/2026 afirmar manutenção exige Inlabs CONFIGURADO: sem
+    # credencial ele nem é consultado, logo não há como saber de manutenção.
+    monkeypatch.setattr(proactive.settings, "inlabs_email", "x@y.z")
+    monkeypatch.setattr(proactive.settings, "inlabs_password", "segredo")
 
     from types import SimpleNamespace as NS
 
@@ -144,7 +148,9 @@ def test_linha_diz_manutencao_quando_marcada(monkeypatch) -> None:
 
     from datetime import timedelta
     fila = [NS(key=KEY)]
-    manut = [NS(key=D.isoformat())]
+    # `sent_at` recente: "em manutenção AGORA" não se apoia em marca velha.
+    manut = [NS(key=D.isoformat(),
+                sent_at=datetime.now(timezone.utc) - timedelta(minutes=5))]
     user = NS(id=42, dou_mp_subscribed=True,
               dou_ultimo_dia_ok=date.today() - timedelta(days=1))
 
@@ -178,6 +184,10 @@ def test_inlabs_fora_no_run_nao_diz_gerando_agora(monkeypatch) -> None:
     # Estes cenários exercitam o CAMINHO DO INLABS: portal desligado, senão
     # o portal-primeiro responderia com o site real e o mock nem rodava.
     monkeypatch.setattr(proactive.settings, "dou_portal_fallback", False)
+    # E o Inlabs precisa estar CONFIGURADO pra a linha poder culpá-lo — sem
+    # credencial, `inlabs_fora` é só o gate de configuração disparando.
+    monkeypatch.setattr(proactive.settings, "inlabs_email", "x@y.z")
+    monkeypatch.setattr(proactive.settings, "inlabs_password", "segredo")
 
     from types import SimpleNamespace as NS
 

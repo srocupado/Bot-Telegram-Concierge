@@ -96,6 +96,14 @@ class DouError(Exception):
     pass
 
 
+def inlabs_configurado() -> bool:
+    """Há credencial do Inlabs? Sem ela o Inlabs não é consultado, não pode
+    ser detectado em manutenção, e portanto NÃO deve aparecer em mensagem
+    nenhuma — narrar uma fonte que saiu do desenho confunde mais que informa
+    (dono, 13/09/2026: "Inlabs?" diante de um aviso de manutenção residual)."""
+    return bool(settings.inlabs_email and settings.inlabs_password)
+
+
 # ──────────────────────── fetch (sync; rodar em thread) ────────────────────────
 
 def _planalto_period(year: int) -> str:

@@ -5,7 +5,7 @@ pode alterá-la.
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from bot.services import proactive
@@ -21,13 +21,23 @@ class _Sess:
         return list(self._rows)
 
 
-def _n(kind, key):
-    return SimpleNamespace(kind=kind, key=key)
+def _n(kind, key, *, sent_at=None):
+    # `sent_at` recente por padrão: desde 13/09/2026 a marca `dou_manut` só
+    # autoriza dizer "em manutenção AGORA" se foi observada há poucas horas —
+    # uma marca congelada mantinha o aviso no ar por semanas (dono: "Inlabs?"
+    # com o Inlabs fora do projeto).
+    if sent_at is None:
+        sent_at = datetime.now(timezone.utc)
+    return SimpleNamespace(kind=kind, key=key, sent_at=sent_at)
 
 
 # ───────────────────────── leitor da fila (serviço) ─────────────────────────
 
-def test_listar_fila_notas_so_com_numero_all_vira_dia() -> None:
+def test_listar_fila_notas_so_com_numero_all_vira_dia(monkeypatch) -> None:
+    # Sem credencial o bot não consulta o Inlabs, logo não pode afirmar
+    # manutenção dele — este cenário pressupõe o Inlabs em uso.
+    monkeypatch.setattr(proactive.settings, "inlabs_email", "x@y.z")
+    monkeypatch.setattr(proactive.settings, "inlabs_password", "segredo")
     hoje = date(2026, 8, 2)
     rows = [
         _n("nota_pendente", "2026-08-01:1382"),   # número conhecido → NOTA
@@ -177,3 +187,45 @@ def test_fmt_fila_dia_aberto_sem_janelas_fecha_no_briefing() -> None:
     out = _fmt_fila_mp(fila)
     assert "03/08/2026 — fecho no briefing de amanhã (o dia encerra de madrugada)" in out
     assert "14 dia(s)" not in out
+
+
+# ───────── marca de manutenção não sobrevive ao tempo nem à remoção ─────────
+# Dono, 13/09/2026, vendo "⚠️ Inlabs em manutenção agora" numa fila só de dias:
+# "Inlabs?". A marca `dou_manut` só é limpa dentro da re-tentativa de NOTA
+# pendente — numa fila sem notas essa limpeza nunca roda, e a marca ficava
+# congelada até a poda de 90 dias. Além disso o Inlabs saiu do desenho: sem
+# credencial o bot nem o consulta (o gate em _fetch_mps_sync levanta antes de
+# qualquer InlabsMaintenanceError), então não há como saber de manutenção.
+
+def _rows_com_manut(sent_at):
+    return [_n("mp_pendente", "2026-08-01"), _n("dou_manut", "now", sent_at=sent_at)]
+
+
+def test_marca_de_manutencao_velha_nao_afirma_agora(monkeypatch) -> None:
+    monkeypatch.setattr(proactive.settings, "inlabs_email", "x@y.z")
+    monkeypatch.setattr(proactive.settings, "inlabs_password", "segredo")
+    velha = datetime.now(timezone.utc) - timedelta(days=20)
+    fila = asyncio.run(proactive.listar_fila_mp(
+        _Sess(_rows_com_manut(velha)), 1, date(2026, 8, 2)))
+    assert fila["manutencao"] is False, "afirmou 'agora' com marca de 20 dias"
+
+
+def test_marca_recente_ainda_vale(monkeypatch) -> None:
+    monkeypatch.setattr(proactive.settings, "inlabs_email", "x@y.z")
+    monkeypatch.setattr(proactive.settings, "inlabs_password", "segredo")
+    recente = datetime.now(timezone.utc) - timedelta(minutes=30)
+    fila = asyncio.run(proactive.listar_fila_mp(
+        _Sess(_rows_com_manut(recente)), 1, date(2026, 8, 2)))
+    assert fila["manutencao"] is True
+
+
+def test_sem_credencial_nao_fala_de_inlabs(monkeypatch) -> None:
+    """O relato original: Inlabs fora do desenho e a fila falando dele."""
+    monkeypatch.setattr(proactive.settings, "inlabs_email", None)
+    monkeypatch.setattr(proactive.settings, "inlabs_password", None)
+    agora = datetime.now(timezone.utc)
+    fila = asyncio.run(proactive.listar_fila_mp(
+        _Sess(_rows_com_manut(agora)), 1, date(2026, 8, 2)))
+    assert fila["manutencao"] is False
+    texto = _fmt_fila_mp(fila)
+    assert "Inlabs" not in texto, f"ainda narra fonte que saiu do desenho: {texto!r}"
