@@ -2001,3 +2001,150 @@ async def build_card_closing_summary(
 
 def _fmt_brl(v: float) -> str:
     return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+# ───────────────── busca por descrição no histórico (13/09/2026) ─────────────────
+# Dono: "Eu não tinha comprado um drone parcelado?" — o bot despejou a fatura
+# aberta inteira (37 itens) sem responder. Faltavam DUAS coisas: nenhuma tool
+# procurava por texto, e olhar a fatura aberta é o lugar errado — parcelada
+# comprada há mais tempo pode já ter TERMINADO, então some da fatura e da lista
+# de "parceladas ativas", mas continua no histórico.
+
+_BUSCA_MAX = 40
+
+
+def _rotulo_fatura(ano: int, mes: int) -> str:
+    return f"{mes:02d}/{ano}"
+
+
+def _estado_parcelada(entry: dict, closing: int | None, hoje: date) -> dict | None:
+    """Situação da parcelada HOJE: qual parcela, quantas faltam, onde termina.
+
+    None quando não é parcelada (à vista/recorrente) ou a data é ilegível —
+    o caller ainda mostra a linha, só sem o detalhe das parcelas."""
+    try:
+        total = int(entry.get("installments") or 1)
+    except (TypeError, ValueError):
+        return None
+    if total <= 1:
+        return None
+    try:
+        pd = datetime.fromisoformat((entry.get("date") or "").replace(" ", "T")).date()
+    except ValueError:
+        return None
+
+    ini_a, ini_m = _bill_month_for_date(pd, closing)
+    hoje_a, hoje_m = _bill_month_for_date(hoje, closing)
+    decorridas = (hoje_a - ini_a) * 12 + (hoje_m - ini_m)
+    atual = decorridas + 1                      # 1-based
+    fim_idx = total - 1
+    fim_a, fim_m = ini_a + (ini_m - 1 + fim_idx) // 12, (ini_m - 1 + fim_idx) % 12 + 1
+    return {
+        "total": total,
+        "atual": min(max(atual, 1), total),
+        # Parcelas que faltam APÓS a atual — mesma conta do app (o +1 daqui
+        # deixava compra concluída eternamente como "restam 1x").
+        "restantes": max(total - atual, 0),
+        "concluida": atual > total,
+        "fim": _rotulo_fatura(fim_a, fim_m),
+        "inicio": _rotulo_fatura(ini_a, ini_m),
+    }
+
+
+def _data_br_com_ano(iso: str) -> str:
+    """'2025-10-05' -> '05/10/2025'. O extrato da fatura pode omitir o ano (é
+    sempre o ciclo corrente), mas a BUSCA varre anos — "05/10" não diz se a
+    compra foi de 2025 ou 2026, que é justamente o que a pergunta "quando
+    comprei?" quer saber."""
+    try:
+        return datetime.fromisoformat(
+            (iso or "").replace(" ", "T")[:10]).strftime("%d/%m/%Y")
+    except ValueError:
+        return iso or "?"
+
+
+def _casa(desc: str, termos: list[str]) -> bool:
+    alvo = _normalize_text(desc)
+    return any(t and t in alvo for t in termos)
+
+
+async def buscar_lancamentos(session: AsyncSession, user, termos: list[str]) -> str:
+    """Procura por DESCRIÇÃO em todo o histórico de cartão e banco.
+
+    Determinístico e verbatim: valor e parcela não passam pelo LLM."""
+    db = await _get_db(session)
+    uid = _require_uid(user)
+    state = await _read_state(db, uid)
+    hoje = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+    closing = _get_card_closing_day(state)
+
+    alvos = [_normalize_text(t) for t in termos if _normalize_text(t)]
+    if not alvos:
+        return "⚠️ Preciso de um termo pra procurar."
+
+    cartao = [e for e in (state.get("cardEntries") or [])
+              if _casa(e.get("desc") or "", alvos)]
+    banco = [e for e in (state.get("bankTransactions") or [])
+             if _casa(e.get("desc") or "", alvos)]
+
+    procurei = ", ".join(f"<i>{_html_escape_fin(t)}</i>" for t in termos)
+    if not cartao and not banco:
+        return (f"🔍 Não achei nada com {procurei} no histórico do cartão nem "
+                "do banco.\n\n<i>A busca é por texto da descrição — se você "
+                "lançou com outro nome, me diga qual que eu procuro de "
+                "novo.</i>")
+
+    linhas = [f"🔍 Busca por {procurei}"]
+
+    if cartao:
+        cartao.sort(key=lambda e: e.get("date") or "")
+        linhas.append(f"\n💳 <b>Cartão</b> ({len(cartao)}):")
+        for e in cartao[-_BUSCA_MAX:]:
+            try:
+                total_rs = float(e.get("amount") or 0)
+            except (TypeError, ValueError):
+                total_rs = 0.0
+            base = (f"• {_data_br_com_ano(e.get('date', ''))} — "
+                    f"{_html_escape_fin(e.get('desc') or '?')}")
+            p = _estado_parcelada(e, closing, hoje)
+            if p is None:
+                linhas.append(f"{base} · {_fmt_brl(total_rs)} · "
+                              f"{e.get('category', '?')}")
+                continue
+            parcela = total_rs / p["total"] if p["total"] else total_rs
+            linhas.append(
+                f"{base} · {_fmt_brl(total_rs)} em {p['total']}x de "
+                f"{_fmt_brl(parcela)} · {e.get('category', '?')}")
+            if p["concluida"]:
+                linhas.append(f"   ↳ ✅ <b>concluída</b> — última parcela na "
+                              f"fatura {p['fim']}")
+            else:
+                linhas.append(
+                    f"   ↳ parcela <b>{p['atual']}/{p['total']}</b> na fatura "
+                    f"atual · restam {p['restantes']} (última em {p['fim']})")
+        if len(cartao) > _BUSCA_MAX:
+            linhas.append(f"<i>… e mais {len(cartao) - _BUSCA_MAX} mais "
+                          "antigos, omitidos.</i>")
+
+    if banco:
+        banco.sort(key=lambda e: e.get("date") or "")
+        linhas.append(f"\n🏦 <b>Banco</b> ({len(banco)}):")
+        for e in banco[-_BUSCA_MAX:]:
+            try:
+                v = float(e.get("amount") or 0)
+            except (TypeError, ValueError):
+                v = 0.0
+            sinal = "−" if (e.get("type") or "").lower().startswith("deb") else "+"
+            linhas.append(
+                f"• {_data_br_com_ano(e.get('date', ''))} — "
+                f"{_html_escape_fin(e.get('desc') or '?')} · {sinal}{_fmt_brl(v)} "
+                f"· {e.get('category', '?')}")
+        if len(banco) > _BUSCA_MAX:
+            linhas.append(f"<i>… e mais {len(banco) - _BUSCA_MAX} mais "
+                          "antigos, omitidos.</i>")
+
+    return "\n".join(linhas)
+
+
+def _html_escape_fin(s: str) -> str:
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))

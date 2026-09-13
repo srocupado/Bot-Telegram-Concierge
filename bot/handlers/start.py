@@ -144,6 +144,11 @@ HELP_TEXT = (
     "• <i>\"aportei 1000 no Tesouro IPCA+ 2035\"</i> → contribuição em título existente.\n"
     "• <i>\"como tá meu cartão esse mês?\"</i> → consulta os últimos lançamentos.\n"
     "• <i>\"qual meu saldo?\"</i> / <i>\"quanto tá a fatura em aberto?\"</i> → saldo bancário atual e total da fatura do ciclo.\n"
+    "• <i>\"eu não tinha comprado um drone parcelado?\"</i> / <i>\"quando comprei a geladeira?\"</i> / "
+    "<i>\"já paguei o sofá?\"</i> → <b>procura pela descrição em TODO o histórico</b>, não só na fatura "
+    "aberta, e diz em que parcela está, quantas faltam e se já foi concluída. Parcelada que terminou "
+    "sumiu da fatura, mas continua aqui. A busca é por texto: se não achar, tente o nome como você "
+    "lançou (ex.: <i>\"procura avata\"</i>).\n"
     "• <code>/financeiro_backup</code> — copia o Firestore agora e manda o JSON aqui. "
     "Um automático roda todo dia de madrugada, em paralelo com o backup do GitHub "
     "(os dois falham por motivos diferentes; ter os dois é de propósito).\n"
@@ -365,6 +370,12 @@ _HELP_KEYWORDS: dict[str, str] = {
     "gastei": "gerenciador financeiro", "gastar": "gerenciador financeiro",
     "gastando": "gerenciador financeiro",
     "saldo": "gerenciador financeiro", "extrato": "gerenciador financeiro",
+    # Busca por descrição (13/09/2026). "comprei"/"comprar" NÃO entram: são da
+    # lista de compras ("comprei o sal" marca item). A família "parcela" é
+    # inequívoca — ninguém parcela item de supermercado no bot.
+    "parcela": "gerenciador financeiro", "parcelas": "gerenciador financeiro",
+    "parcelado": "gerenciador financeiro", "parcelada": "gerenciador financeiro",
+    "parcelamento": "gerenciador financeiro",
     # backup/restore do financeiro. VERBOS junto dos substantivos: "como faço
     # backup?" e "quero restaurar" são as duas formas reais de perguntar.
     "backup": "gerenciador financeiro", "backups": "gerenciador financeiro",

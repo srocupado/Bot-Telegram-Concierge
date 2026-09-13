@@ -1216,6 +1216,29 @@ async def _h_consultar_lancamentos(args: dict, ctx: ToolContext) -> str:
             "linhas. Pra apagar algo, use os ids abaixo.\n" + resto)
 
 
+async def _h_buscar_lancamento(args: dict, ctx: ToolContext) -> str:
+    termos = args.get("termos") or []
+    if isinstance(termos, str):
+        termos = [termos]
+    termos = [str(t).strip() for t in termos if str(t).strip()][:6]
+    if not termos:
+        return "erro: 'termos' precisa de pelo menos uma palavra"
+    from bot.services.financeiro import buscar_lancamentos
+    try:
+        out = await buscar_lancamentos(ctx.session, ctx.user, termos)
+    except NotConfiguredError as e:
+        return f"erro: {e}"
+    except FinanceiroError as e:
+        return f"erro: {e}"
+    # Valor e número de parcela são dado determinístico: vão VERBATIM. A
+    # função já monta HTML (e escapa a descrição, que vem do usuário), então
+    # NÃO passa por _html_escape — escapar aqui mostraria as tags na tela.
+    ctx.fallback_text = re.sub(r"</?[a-z]+>", "", out)
+    ctx.direct_html = out
+    ctx.short_circuit = True
+    return "ok: resultado da busca enviado ao usuário verbatim (não escreva nada)"
+
+
 async def _h_consultar_saldo(args: dict, ctx: ToolContext) -> str:
     today = datetime.now(ZoneInfo(ctx.tz)).date()
     try:
@@ -2614,6 +2637,41 @@ TOOLS: list[Tool] = [
             "required": ["modulo"],
         },
         handler=_h_consultar_lancamentos,
+    ),
+    Tool(
+        name="buscar_lancamento",
+        description=(
+            "PROCURA uma compra/lançamento pela DESCRIÇÃO em TODO o histórico "
+            "(cartão + banco), não só na fatura aberta. Use sempre que o "
+            "usuário perguntar SE ou QUANDO comprou algo: 'eu não tinha "
+            "comprado um drone parcelado?', 'quando comprei a geladeira?', "
+            "'aquela compra do notebook, quantas parcelas faltam?', 'já "
+            "paguei o sofá?'.\n"
+            "NÃO use consultar_lancamentos pra isso: ele lista a fatura/janela "
+            "e NÃO procura por texto — uma parcelada que já terminou sumiu da "
+            "fatura e das 'parceladas ativas', mas continua no histórico.\n"
+            "Mande VÁRIOS termos quando a palavra do usuário pode não ser a "
+            "que ele digitou no lançamento: 'drone' → ['drone','avata','dji', "
+            "'mavic']; 'geladeira' → ['geladeira','refrigerador','brastemp']. "
+            "A busca é por trecho, sem acento.\n"
+            "Devolve, pra cada parcelada, em que parcela está, quantas faltam "
+            "e se já foi CONCLUÍDA."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "termos": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Palavras a procurar na descrição (OR entre elas). "
+                        "Inclua sinônimos e marcas prováveis."
+                    ),
+                },
+            },
+            "required": ["termos"],
+        },
+        handler=_h_buscar_lancamento,
     ),
     Tool(
         name="apagar_lancamento",
