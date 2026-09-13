@@ -217,3 +217,39 @@ def test_help_nao_roubou_a_lista_de_compras() -> None:
 
     secoes = find_help_sections("preciso comprar arroz")
     assert any("Lista de compras" in s for s in secoes)
+
+
+# ───────── invariante do help: exemplo documentado tem que rotear ─────────
+# Medição de 13/09/2026: 14 dos 79 exemplos que o help ENSINA não achavam
+# seção nenhuma — o bot respondia "não sei" pra frase que ele mesmo sugere.
+# Dois eram meus, escritos no mesmo dia, apesar da regra do CLAUDE.md que
+# manda verificar o matching. Regra que depende de lembrar não se sustenta;
+# este teste faz a lacuna errar alto.
+
+def _exemplos_do_help():
+    """Frases entre <i>"..."</i> que um usuário digitaria LITERALMENTE.
+
+    Fora: trechos truncados com "…" (não são frases, são recortes) e
+    templates com placeholder solto ("procura X")."""
+    import re as _re
+    from bot.handlers.start import _HELP_SECTIONS
+
+    for titulo, bloco in _HELP_SECTIONS:
+        for a, b in _re.findall(r'<i>&quot;(.+?)&quot;</i>|<i>"(.+?)"</i>', bloco):
+            ex = _re.sub(r"<[^>]+>", "", a or b)
+            ex = ex.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+            if "…" in ex or _re.search(r"\b[A-Z]\b\s*$", ex):
+                continue
+            yield _re.sub(r"<[^>]+>", "", titulo), ex
+
+
+def test_todo_exemplo_do_help_acha_alguma_secao() -> None:
+    from bot.handlers.start import find_help_sections
+
+    pares = list(_exemplos_do_help())
+    assert len(pares) > 50, "o extrator de exemplos quebrou"
+    orfaos = [(t, e) for t, e in pares if not find_help_sections(e)]
+    assert not orfaos, (
+        "o help ENSINA estas frases e o `ajuda` responde 'não sei' pra elas:\n"
+        + "\n".join(f"  [{t}] {e!r}" for t, e in orfaos)
+    )

@@ -132,7 +132,7 @@ HELP_TEXT = (
     "comparação: <i>\"Até qui: 3 treinos (semana passada até qui: 2) ↑ +1\"</i>.\n"
     "• <i>\"treinei mais que semana passada?\"</i> → a comparação é sempre ATÉ O MESMO "
     "DIA (quinta contra quinta), pra semana pela metade não parecer pior que semana cheia.\n"
-    "• <i>\"como foi minha semana passada?\"</i> → resumo da semana anterior inteira.\n"
+    "• <i>\"como foi minha semana passada na academia?\"</i> → resumo da semana anterior inteira.\n"
     "• <i>\"apaga o treino de hoje\"</i> / <i>\"errei, não treinei isso ontem\"</i> "
     "→ limpa os registros do dia pra você regravar.\n"
     "• O banco guarda a semana corrente e a anterior; o mais velho que isso é "
@@ -148,7 +148,7 @@ HELP_TEXT = (
     "<i>\"já paguei o sofá?\"</i> → <b>procura pela descrição em TODO o histórico</b>, não só na fatura "
     "aberta, e diz em que parcela está, quantas faltam e se já foi concluída. Parcelada que terminou "
     "sumiu da fatura, mas continua aqui. A busca é por texto: se não achar, tente o nome como você "
-    "lançou (ex.: <i>\"procura avata\"</i>).\n"
+    "lançou (ex.: <i>\"procura avata no cartão\"</i>).\n"
     "• <code>/financeiro_backup</code> — copia o Firestore agora e manda o JSON aqui. "
     "Um automático roda todo dia de madrugada, em paralelo com o backup do GitHub "
     "(os dois falham por motivos diferentes; ter os dois é de propósito).\n"
@@ -329,6 +329,19 @@ _HELP_KEYWORDS: dict[str, str] = {
     "tarefa": "lembrete", "tarefas": "lembrete", "reminder": "lembrete", "afazer": "lembrete",
     "compra": "compras", "compras": "compras", "lista": "compras",
     "mercado": "compras", "comprar": "compras", "supermercado": "compras",
+    # Verbos que a própria seção documenta como exemplo e não casavam:
+    # "acabou o sal", "comprei o sal", "voltei, limpa o que comprei"
+    # (dono, 13/09/2026). "comprei" também aparece em "comprei um drone
+    # parcelado" — ali o "parcelado" traz o financeiro junto, e mostrar as
+    # duas seções é melhor que não mostrar nenhuma.
+    "acabou": "compras", "comprei": "compras", "comprou": "compras",
+    # Órfãos medidos em 13/09/2026: exemplos que o PRÓPRIO help documenta e
+    # que não achavam seção nenhuma (o bot respondia "não sei" pra frase que
+    # ele mesmo ensina). Dois eram meus, escritos hoje.
+    "paguei": "gerenciador financeiro", "aportei": "gerenciador financeiro",
+    "malhei": "academia", "malhar": "academia", "cardio": "academia",
+    "errei": "desfazer", "cancela": "desfazer", "desfaz": "desfazer",
+    "monitora": "viagens", "watch": "viagens",
     "transito": "transito", "trafego": "transito", "engarrafamento": "transito",
     "rota": "rota", "chegar": "rota", "caminho": "rota", "trajeto": "rota",
     "voo": "viagens", "voos": "viagens", "passagem": "viagens", "passagens": "viagens",
