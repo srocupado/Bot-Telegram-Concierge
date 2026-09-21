@@ -17,8 +17,10 @@ from google import genai
 from google.genai import types
 
 from bot.services.llm.base import (
-    ITER_LIMIT_FALLBACK,
-    ITER_LIMIT_INSTRUCTION,
+    MAX_ITER_PADRAO,
+    fallback_limite,
+    instrucao_limite,
+    teto_de_rodadas,
     ChatMessage,
     LLMProvider,
     Tool,
@@ -238,7 +240,7 @@ class GeminiProvider(LLMProvider):
         *,
         system: str | None = None,
         max_tokens: int = 1024,
-        max_iterations: int = 5,
+        max_iterations: int = MAX_ITER_PADRAO,
     ) -> str:
         contents = _messages_to_contents(messages)
         function_declarations = [
@@ -260,7 +262,11 @@ class GeminiProvider(LLMProvider):
         ]
         tool_by_name = {t.name: t for t in tools}
 
-        for _ in range(max_iterations):
+        rodada = 0
+        # Teto RECALCULADO a cada volta: se uma escrita acontecer no
+        # meio de um turno que começou só lendo, o teto encurta na hora.
+        while rodada < teto_de_rodadas(ctx, max_iterations):
+            rodada += 1
             def _call() -> Any:
                 return gerar(
                     self.client, self.model_name, contents, "chat_with_tools",
@@ -315,6 +321,7 @@ class GeminiProvider(LLMProvider):
                     result = f"erro: tool '{fc.name}' não existe"
                 else:
                     try:
+                        ctx.tools_chamadas.append(fc.name)
                         result = await tool.handler(args, ctx)
                     except Exception as e:
                         logger.exception("tool %s failed", fc.name)
@@ -330,11 +337,12 @@ class GeminiProvider(LLMProvider):
                 return ""
 
         # Limite estourado: última rodada SEM tools pro modelo contar o que já
-        # executou (ver ITER_LIMIT_INSTRUCTION em llm/base.py).
+        # executou (ver instrucao_limite em llm/base.py — turno que só LEU não
+        # inventaria ação nenhuma).
         logger.warning("gemini: max_iterations (%d) estourado", max_iterations)
         contents.append(
             types.Content(
-                role="user", parts=[types.Part.from_text(text=ITER_LIMIT_INSTRUCTION)],
+                role="user", parts=[types.Part.from_text(text=instrucao_limite(ctx))],
             )
         )
 
@@ -359,4 +367,4 @@ class GeminiProvider(LLMProvider):
         except Exception:
             logger.exception("gemini: rodada final pós-limite falhou")
             texto = ""
-        return texto or ITER_LIMIT_FALLBACK
+        return texto or fallback_limite(ctx)

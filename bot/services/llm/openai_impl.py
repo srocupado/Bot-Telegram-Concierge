@@ -8,8 +8,10 @@ from typing import Any
 from openai import OpenAI
 
 from bot.services.llm.base import (
-    ITER_LIMIT_FALLBACK,
-    ITER_LIMIT_INSTRUCTION,
+    MAX_ITER_PADRAO,
+    fallback_limite,
+    instrucao_limite,
+    teto_de_rodadas,
     ChatMessage,
     LLMProvider,
     Tool,
@@ -127,7 +129,7 @@ class OpenAIProvider(LLMProvider):
         *,
         system: str | None = None,
         max_tokens: int = 1024,
-        max_iterations: int = 5,
+        max_iterations: int = MAX_ITER_PADRAO,
     ) -> str:
         oa_messages: list[dict] = []
         if system:
@@ -149,7 +151,11 @@ class OpenAIProvider(LLMProvider):
         ]
         tool_by_name = {t.name: t for t in tools}
 
-        for _ in range(max_iterations):
+        rodada = 0
+        # Teto RECALCULADO a cada volta: se uma escrita acontecer no
+        # meio de um turno que começou só lendo, o teto encurta na hora.
+        while rodada < teto_de_rodadas(ctx, max_iterations):
+            rodada += 1
             def _call():
                 return self._create(
                     model=self.model,
@@ -186,6 +192,7 @@ class OpenAIProvider(LLMProvider):
                     result = f"erro: tool '{fn_name}' não existe"
                 else:
                     try:
+                        ctx.tools_chamadas.append(fn_name)
                         result = await tool.handler(fn_args, ctx)
                     except Exception as e:
                         logger.exception("tool %s failed", fn_name)
@@ -200,9 +207,10 @@ class OpenAIProvider(LLMProvider):
                 return ""
 
         # Limite estourado: última rodada SEM tools pro modelo contar o que já
-        # executou (ver ITER_LIMIT_INSTRUCTION em llm/base.py).
+        # executou (ver instrucao_limite em llm/base.py — turno que só LEU não
+        # inventaria ação nenhuma).
         logger.warning("openai: max_iterations (%d) estourado", max_iterations)
-        oa_messages.append({"role": "user", "content": ITER_LIMIT_INSTRUCTION})
+        oa_messages.append({"role": "user", "content": instrucao_limite(ctx)})
 
         def _final():
             # tools declaradas (o histórico tem tool_calls), mas proibidas de
@@ -218,4 +226,4 @@ class OpenAIProvider(LLMProvider):
         except Exception:
             logger.exception("openai: rodada final pós-limite falhou")
             texto = ""
-        return texto or ITER_LIMIT_FALLBACK
+        return texto or fallback_limite(ctx)

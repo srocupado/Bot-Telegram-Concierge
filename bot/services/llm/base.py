@@ -70,6 +70,10 @@ class ToolContext:
     # (lancar_movimento_banco / lancar_despesa_cartao / registrar_aporte_tesouro).
     # Usado pela blindagem anti-alucinação no handler de chat/voz.
     financial_logged_ok: bool = False
+    # Nomes das tools que rodaram NESTE turno, na ordem. Serve pra decidir se
+    # o estouro de rodadas deve inventariar ações (turno que gravou) ou só
+    # responder o que apurou (turno que só leu). Ver houve_escrita().
+    tools_chamadas: list = field(default_factory=list)
     # Setado por consultar_mp_dou quando acha MP(s) numa data: {"date_iso", "count"}.
     # O handler de chat/voz usa pra oferecer a nota técnica com botões Sim/Não.
     dou_mp_found: Any = None
@@ -129,6 +133,76 @@ class Tool:
     handler: ToolHandler
 
 
+# Tools que só LEEM. Tudo que não estiver aqui conta como escrita — o default
+# seguro é o inverso do confortável: classificar errado pra "leitura" esconderia
+# do dono que algo foi gravado (e ele repetiria o pedido, duplicando);
+# classificar errado pra "escrita" só produz um aviso a mais.
+#
+# Origem (dono, 21/09/2026): perguntou onde comprar um drone no Japão e a
+# resposta veio com "Nesta conversa, as seguintes ações já foram executadas e
+# registradas no sistema: • Lançamento de R$ 236,00 no cartão…". Eram
+# lançamentos REAIS e ANTIGOS da conversa, recitados porque o turno bateu no
+# limite de rodadas e a instrução de estouro manda inventariar o que rodou.
+# Numa busca web não há nada a duplicar — o inventário era só ruído.
+TOOLS_SOMENTE_LEITURA = frozenset({
+    # consulta externa
+    "buscar_web", "ler_pagina", "buscar_local", "buscar_preco",
+    "consultar_clima", "consultar_cotacao", "consultar_transito",
+    "melhor_horario_sair", "buscar_voo", "buscar_hotel",
+    # consulta ao estado do usuário
+    "consultar_saldo", "consultar_lancamentos", "buscar_lancamento",
+    "consultar_treinos", "listar_tarefas", "listar_compras",
+    "listar_lembretes", "listar_watches_viagem", "listar_arquivos",
+    "listar_fatos", "recuperar_fato", "buscar_historico",
+    # legislativo
+    "consultar_mp_dou", "consultar_congresso", "consultar_pauta_camara",
+    "varrer_comissoes_partido", "listar_comissoes_reuniao",
+    "consultar_sessoes_cinema",
+    # ajuda e cálculo
+    "ajuda", "propor_agente",
+    # Processo isolado, env limpo, tmpdir efêmero: não toca estado do usuário.
+    "executar_python",
+})
+
+
+# Rodadas de ferramenta por turno. Eram 5 fixas — e uma busca web que abre
+# duas páginas já estourava (dono, 21/09/2026: pesquisa de loja no Japão).
+# Turno que só LÊ pode ir mais longe: nenhuma rodada extra grava nada, e o
+# custo é uma chamada de LLM a mais. Turno que ESCREVE mantém o teto curto:
+# lá cada rodada tem efeito permanente e passear é arriscado.
+MAX_ITER_PADRAO = 8
+MAX_ITER_SOMENTE_LEITURA = 16
+
+
+def teto_de_rodadas(ctx, max_iterations: int) -> int:
+    """Teto efetivo do turno. Só afrouxa enquanto NADA foi gravado."""
+    if houve_escrita(ctx):
+        return max_iterations
+    return max(max_iterations, MAX_ITER_SOMENTE_LEITURA)
+
+
+def houve_escrita(ctx) -> bool:
+    """Alguma tool com efeito PERMANENTE rodou neste turno?
+
+    `executar_python` conta como leitura: roda em processo isolado com env
+    limpo e tmpdir efêmero — não toca estado nenhum do usuário."""
+    chamadas = getattr(ctx, "tools_chamadas", None) or ()
+    return any(n not in TOOLS_SOMENTE_LEITURA for n in chamadas)
+
+
+def instrucao_limite(ctx) -> str:
+    """Instrução da última rodada, conforme o turno gravou algo ou não."""
+    if houve_escrita(ctx):
+        return ITER_LIMIT_INSTRUCTION
+    return ITER_LIMIT_INSTRUCTION_LEITURA
+
+
+def fallback_limite(ctx) -> str:
+    if houve_escrita(ctx):
+        return ITER_LIMIT_FALLBACK
+    return ITER_LIMIT_FALLBACK_LEITURA
+
+
 # Estouro de `max_iterations`: as tools JÁ rodaram (lançamento no Firestore,
 # lembrete criado, item na lista). Devolver "(limite de iterações...)" fazia o
 # usuário achar que nada aconteceu e REPETIR o pedido — duplicando o que já
@@ -146,6 +220,22 @@ ITER_LIMIT_FALLBACK = (
     "ATENÇÃO: parte do que você pediu PODE já ter sido executada (lançamento, "
     "lembrete, item de lista). Confira antes de repetir o pedido, pra não "
     "duplicar."
+)
+
+# Mesmas situações, turno que SÓ LEU: não há nada gravado, logo não há o que
+# inventariar nem risco de duplicar. Pedir o relato de ações aqui produzia
+# aquele preâmbulo burocrático em cima de uma resposta que estava boa.
+ITER_LIMIT_INSTRUCTION_LEITURA = (
+    "PARE de usar ferramentas — o limite de rodadas foi atingido. Responda "
+    "AGORA ao usuário, em português, com o que você APUROU até aqui. Nada foi "
+    "gravado neste turno: NÃO liste ações executadas nem fale em registros no "
+    "sistema. Se algo da pergunta ficou sem resposta, diga em UMA linha no "
+    "fim. Não invente resultado que não veio de uma ferramenta."
+)
+ITER_LIMIT_FALLBACK_LEITURA = (
+    "⚠️ Precisei parar no meio: bati o limite de rodadas de ferramenta e não "
+    "consegui fechar a pesquisa. Nada foi gravado — pode pedir de novo, "
+    "de preferência estreitando a pergunta."
 )
 
 

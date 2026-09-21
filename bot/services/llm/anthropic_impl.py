@@ -7,8 +7,10 @@ from typing import Any
 import anthropic
 
 from bot.services.llm.base import (
-    ITER_LIMIT_FALLBACK,
-    ITER_LIMIT_INSTRUCTION,
+    MAX_ITER_PADRAO,
+    fallback_limite,
+    instrucao_limite,
+    teto_de_rodadas,
     ChatMessage,
     LLMProvider,
     Tool,
@@ -115,7 +117,7 @@ class AnthropicProvider(LLMProvider):
         *,
         system: str | None = None,
         max_tokens: int = 1024,
-        max_iterations: int = 5,
+        max_iterations: int = MAX_ITER_PADRAO,
     ) -> str:
         anth_messages: list[dict] = [
             {"role": m["role"], "content": _to_anth_content(m["content"])}
@@ -145,7 +147,11 @@ class AnthropicProvider(LLMProvider):
             if system else None
         )
 
-        for _ in range(max_iterations):
+        rodada = 0
+        # Teto RECALCULADO a cada volta: se uma escrita acontecer no
+        # meio de um turno que começou só lendo, o teto encurta na hora.
+        while rodada < teto_de_rodadas(ctx, max_iterations):
+            rodada += 1
             def _call() -> anthropic.types.Message:
                 kwargs: dict = {
                     "model": self.model,
@@ -197,6 +203,7 @@ class AnthropicProvider(LLMProvider):
                     result = f"erro: tool '{block.name}' não existe"
                 else:
                     try:
+                        ctx.tools_chamadas.append(block.name)
                         result = await tool.handler(block.input or {}, ctx)
                     except Exception as e:
                         logger.exception("tool %s failed", block.name)
@@ -212,10 +219,11 @@ class AnthropicProvider(LLMProvider):
                 return ""
 
         # Limite estourado: uma última rodada SEM tools pro modelo CONTAR o que
-        # já executou (ver ITER_LIMIT_INSTRUCTION). Nunca devolver string de
+        # já executou (ver instrucao_limite; turno que só LEU não inventaria
+        # ação nenhuma). Nunca devolver string de
         # erro seca — o usuário repetia o pedido e duplicava o que já gravou.
         logger.warning("anthropic: max_iterations (%d) estourado", max_iterations)
-        anth_messages.append({"role": "user", "content": ITER_LIMIT_INSTRUCTION})
+        anth_messages.append({"role": "user", "content": instrucao_limite(ctx)})
 
         def _final() -> anthropic.types.Message:
             # `tools` continua no request (o histórico tem blocos tool_use e a
@@ -241,4 +249,4 @@ class AnthropicProvider(LLMProvider):
         except Exception:
             logger.exception("anthropic: rodada final pós-limite falhou")
             texto = ""
-        return texto or ITER_LIMIT_FALLBACK
+        return texto or fallback_limite(ctx)
