@@ -374,7 +374,7 @@ async def _baixar_entradas_cobertas(session: AsyncSession, user_id: int,
 
 
 async def _avisar_ja_entregue(bot, session: AsyncSession, user: User,
-                               numeros: list[str]) -> None:
+                               numeros: list[str], d: date) -> None:
     """Diz que a nota já saiu — e QUANDO. Sem a hora, o dono fica achando que
     o bot se enganou; com ela, ele lembra do aviso do proativo."""
     from bot.services.dou_monitor import _num_fmt
@@ -398,19 +398,32 @@ async def _avisar_ja_entregue(bot, session: AsyncSession, user: User,
         dt = quando.get(n)
         hora = f" (enviada {dt.strftime('%d/%m às %H:%M')})" if dt else ""
         linhas.append(f"• MP {_num_fmt(n)}{hora}")
+
+    # BOTÃO, não frase. A primeira versão disto (22/09/2026) pedia ao dono que
+    # dissesse "gera de novo a nota da MP X" — e esse caminho não existia: a
+    # frase casava as keywords do help e ele recebia a seção inteira do DOU.
+    # Prometer no texto o que o código não faz é o erro que este projeto mais
+    # combate, e eu o cometi dentro da própria correção.
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    cb = f"doump:re:{d.isoformat()}:{','.join(numeros)}"
+    teclado = None
+    if len(cb.encode()) <= 64:
+        teclado = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🔁 Gerar de novo", callback_data=cb),
+        ]])
     await _send(bot, user.id, (
         "✅ <b>Essa nota já está com você</b> — não vou gerar de novo "
         "(a geração custa e o arquivo seria idêntico).\n\n"
         + "\n".join(linhas)
-        + "\n\nSe quiser uma nova mesmo assim, me diga explicitamente "
-          "'gera de novo a nota da MP X'."
-    ))
+        + ("\n\nSe quiser uma nova mesmo assim, é só clicar." if teclado
+           else "")
+    ), reply_markup=teclado)
 
 
 async def _tentar_nota_via_portal(
     bot, session: AsyncSession, user: User, d: date,
     numeros: list[str] | None, key: str, *,
-    usuario_esperando: bool = False,
+    usuario_esperando: bool = False, regerar: bool = False,
 ) -> bool:
     """Gera as notas da fila com o TEXTO DO PORTAL público — a fonte
     PRIMÁRIA desde 11/08/2026 (nascida do pedido do dono em 06/08: 'não
@@ -442,7 +455,9 @@ async def _tentar_nota_via_portal(
     # Filtro por NOTA ENTREGUE (não por MP vista — ver _KIND_NOTA_OK): MP
     # apenas anunciada continua com nota devida e TEM de ser gerada.
     from bot.services.dou_monitor import numero_canonico
-    ja_entregues = await notas_entregues(session, user.id)
+    # `regerar`: o dono clicou "gerar de novo" no aviso de nota já entregue.
+    # É o ÚNICO caminho que ignora o filtro — pedido explícito e por botão.
+    ja_entregues = set() if regerar else await notas_entregues(session, user.id)
     pendentes = [mp for mp in mps
                  if numero_canonico(mp.numero) not in ja_entregues]
     faltam_no_portal = alvo - {mp.numero for mp in mps}
@@ -458,7 +473,7 @@ async def _tentar_nota_via_portal(
         # sair por esta porta em silêncio deixava a promessa no ar pra sempre.
         # A re-tentativa de FUNDO continua calada (ninguém prometeu nada lá).
         if usuario_esperando:
-            await _avisar_ja_entregue(bot, session, user, sorted(alvo))
+            await _avisar_ja_entregue(bot, session, user, sorted(alvo), d)
         return True
     if faltam_no_portal:
         logger.info("nota pendente %s: portal não tem %s — Inlabs desempata",

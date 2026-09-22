@@ -239,6 +239,7 @@ async def _checar_via_portal(bot, session, user, target: date) -> bool:
 
 async def _rodar_nota(
     bot, user_id: int, target: date, only_numeros: list[str] | None,
+    *, regerar: bool = False,
 ) -> None:
     """Pipeline da nota em background, com sessão PRÓPRIA.
 
@@ -284,7 +285,7 @@ async def _rodar_nota(
                     bot, session, user, target, sorted(only_numeros), key_np,
                     # Aqui o usuário JÁ foi prometido ("te aviso quando sair"),
                     # então nenhuma saída pode ser silenciosa.
-                    usuario_esperando=True,
+                    usuario_esperando=True, regerar=regerar,
                 ):
                     return
             except Exception:
@@ -359,6 +360,51 @@ async def _rodar_nota(
 # A chave vive no serviço porque o proativo também dispara esse job: os dois
 # caminhos PRECISAM concordar na chave pra dedup funcionar entre eles.
 _chave_nota = chave_job_nota
+
+
+@router.callback_query(F.data.startswith("doump:re:"))
+async def cb_nota_regerar(query: CallbackQuery, user: User) -> None:
+    """Força uma nota NOVA de MP cuja nota já foi entregue.
+
+    Existe porque o aviso "essa nota já está com você" precisa de uma saída
+    de verdade. Na primeira versão (22/09/2026) eu escrevi no texto "me diga
+    'gera de novo a nota da MP X'" — e esse caminho NÃO existia: a frase caía
+    na tool `ajuda` e o dono recebia a seção inteira do help. Botão não depende
+    de interpretação."""
+    if not user.is_authorized:
+        await query.answer()
+        return
+    try:
+        payload = query.data.split(":", 2)[2]
+        date_part, _, nums_part = payload.partition(":")
+        target = date.fromisoformat(date_part)
+        numeros = [n for n in nums_part.split(",") if n] or None
+    except (ValueError, IndexError):
+        await query.answer("⚠️ alvo inválido", show_alert=True)
+        return
+    await query.answer("Gerando de novo…")
+    try:
+        await query.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    from bot.services import jobs
+    # Chave PRÓPRIA (sufixo :re): senão o dedup confundiria com o pedido
+    # normal que acabou de sair por "já entregue" e recusaria a regeração.
+    chave = _chave_nota(user.id, target, numeros) + ":re"
+    bot_ = query.bot
+    if not jobs.spawn(chave, lambda: _rodar_nota(
+        bot_, user.id, target, numeros, regerar=True,
+    )):
+        await query.message.answer(
+            "📄 Já estou regerando essa nota — te mando assim que sair.",
+            parse_mode=None,
+        )
+        return
+    await query.message.answer(
+        "📄 Regerando a nota técnica… leva alguns minutos. Te aviso quando sair.",
+        parse_mode=None,
+    )
 
 
 @router.callback_query(F.data.startswith("doump:y:"))

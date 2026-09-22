@@ -81,16 +81,30 @@ def test_aviso_diz_qual_mp_e_quando_saiu(monkeypatch) -> None:
         async def scalars(self, _stmt):
             return [linha]
 
-    monkeypatch.setattr(proactive, "_send", _send)
+    teclados = []
+
+    async def _send2(_bot, _chat, texto, reply_markup=None):
+        enviadas.append(texto)
+        teclados.append(reply_markup)
+        return True
+
+    monkeypatch.setattr(proactive, "_send", _send2)
     asyncio.run(proactive._avisar_ja_entregue(
-        None, _Sess(), SimpleNamespace(id=1), ["1392"]))
+        None, _Sess(), SimpleNamespace(id=1), ["1392"], date(2026, 9, 22)))
 
     assert len(enviadas) == 1
     txt = enviadas[0]
     assert "já está com você" in txt
     assert "1.392" in txt, "não disse QUAL mp"
     assert "enviada" in txt, "não disse QUANDO"
-    assert "gera de novo" in txt, "não disse como forçar uma nova"
+    # BOTÃO, não frase mágica: a 1ª versão mandava dizer "gera de novo a nota
+    # da MP X" e a frase caía no help (dono, 22/09/2026).
+    assert "gera de novo a nota" not in txt.lower(), "voltou a frase mágica"
+    kb = teclados[0]
+    assert kb is not None, "sem botão o dono não tem como forçar"
+    cb = kb.inline_keyboard[0][0].callback_data
+    assert cb == "doump:re:2026-09-22:1392"
+    assert len(cb.encode()) <= 64
 
 
 # ───────────── B: a fila volta a drenar ─────────────
@@ -204,3 +218,43 @@ def test_prompt_manda_respeitar_pedido_condicional() -> None:
              if isinstance(v, str) and "NUNCA PROMETA COMPORTAMENTO" in v)
     assert "condicionar o pedido" in p
     assert "não é entregar outra coisa parecida" in p
+
+
+# ───── a frase que EU inventei e o código não cumpria ─────
+
+def test_regerar_tem_callback_de_verdade() -> None:
+    """Dono, 22/09/2026: seguiu a instrução do meu aviso ("gera de novo a nota
+    da MP 1.392") e recebeu a seção inteira do help — a frase casava keywords
+    do `ajuda` e não existia caminho nenhum de regeração."""
+    from bot.handlers import dou_mp
+
+    src = inspect.getsource(dou_mp)
+    assert 'F.data.startswith("doump:re:")' in src
+    assert "regerar=True" in src
+
+
+def test_regerar_ignora_o_filtro_de_ja_entregue() -> None:
+    """Sem isto o botão cairia na MESMA porta de 'já entregue' e o clique não
+    faria nada — outra promessa vazia."""
+    src = inspect.getsource(proactive._tentar_nota_via_portal)
+    assert "set() if regerar else" in src
+
+
+def test_regerar_usa_chave_de_job_propria() -> None:
+    """A chave normal acabou de ser usada pelo pedido que saiu por 'já
+    entregue'; sem sufixo o dedup recusaria a regeração."""
+    from bot.handlers import dou_mp
+
+    src = inspect.getsource(dou_mp.cb_nota_regerar)
+    assert '+ ":re"' in src
+
+
+def test_a_frase_magica_cai_no_help_por_isso_o_botao() -> None:
+    """Prova do porquê: a instrução antiga era inalcançável."""
+    from bot.handlers.start import find_help_sections
+
+    secoes = find_help_sections("gera de novo a nota da MP 1392")
+    assert any("Diário Oficial" in s for s in secoes), (
+        "se um dia deixar de cair no help, o botão AINDA é o caminho certo — "
+        "mas este teste documenta o motivo original"
+    )
