@@ -149,11 +149,33 @@ async def _checar_via_portal(bot, session, user, target: date) -> bool:
     # dá baixa — afirmar "NENHUMA MP" com essa evidência foi o que fez o dono
     # confirmar a perda achando que estava conferindo.
     if fechado and dia.edicao_confirmada and dia.extras_sem_mp:
+        # Antes de deixar o dia preso, PERGUNTA ao Planalto: se não existe MP
+        # acima da última entregue, a ausência está provada por fonte que não
+        # depende do índice — e o dia pode fechar. Sem este desempate a fila
+        # nunca drenava (4 de 6 dias úteis têm extra).
+        from bot.services import dou_planalto
+        if await dou_planalto.confirma_sem_mp_nova(
+            session, user.id, target.year,
+        ):
+            texto = (f"📄 A edição de {dd} teve edição EXTRA e o índice do "
+                     "portal não traz MP nela — mas o Planalto confirma que "
+                     "não existe MP nova além das que já te entreguei. "
+                     "Conclusivo: não houve MP em " + dd + ".")
+            try:
+                if await baixa_checagem_manual(
+                    session, user, target, 0, [], "sem_mp",
+                ):
+                    texto += " Dei baixa: o dia sai da fila."
+            except Exception:
+                logger.exception("baixa pós-Planalto falhou (%s)", target)
+            await bot.send_message(user.id, texto, parse_mode=None)
+            return True
         await bot.send_message(
             user.id,
             f"📄 Pelo portal oficial do DOU: a edição de {dd} está no índice "
             "e não achei MP nela — mas o dia teve edição EXTRA, e o índice "
-            "não cobre MP de extra de forma confiável.\n\n"
+            "não cobre MP de extra de forma confiável. O Planalto também não "
+            "concluiu agora.\n\n"
             "Não vou afirmar que não houve MP: o dia continua na fila e é "
             "re-checado nas próximas janelas.",
             parse_mode=None,
@@ -260,6 +282,9 @@ async def _rodar_nota(
             try:
                 if await _tentar_nota_via_portal(
                     bot, session, user, target, sorted(only_numeros), key_np,
+                    # Aqui o usuário JÁ foi prometido ("te aviso quando sair"),
+                    # então nenhuma saída pode ser silenciosa.
+                    usuario_esperando=True,
                 ):
                     return
             except Exception:

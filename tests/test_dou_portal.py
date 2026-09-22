@@ -1011,7 +1011,9 @@ def test_fila_numerada_tenta_portal_antes_do_inlabs(monkeypatch) -> None:
     from bot.services import dou_monitor as dm
     ordem = []
 
-    async def _nota_portal(bot, session, user, d, numeros, key):
+    # `usuario_esperando` (22/09/2026): quem pediu a nota no chat já foi
+    # prometido, então a saída 'já entregue' avisa em vez de calar.
+    async def _nota_portal(bot, session, user, d, numeros, key, **kw):
         ordem.append(("portal", tuple(numeros)))
         return True
 
@@ -1043,7 +1045,9 @@ def test_botao_com_numeros_tenta_portal_antes_do_inlabs(monkeypatch) -> None:
     from bot.handlers import dou_mp
     ordem = []
 
-    async def _nota_portal(bot, session, user, d, numeros, key):
+    # `usuario_esperando` (22/09/2026): quem pediu a nota no chat já foi
+    # prometido, então a saída 'já entregue' avisa em vez de calar.
+    async def _nota_portal(bot, session, user, d, numeros, key, **kw):
         ordem.append(("portal", tuple(numeros), key))
         return True
 

@@ -214,3 +214,43 @@ async def sondar_novas(ultimo_numero: int, anos: list[int]) -> list:
         logger.info("planalto: %d MP(s) além da %d — %s", len(achadas),
                     ultimo_numero, [f"{m.numero}/{m.ano}" for m in achadas])
     return achadas
+
+
+async def ultimo_numero_entregue(session, user_id: int) -> tuple[int, int] | None:
+    """(número, ano) da MP mais alta já ENTREGUE a este usuário, ou None.
+
+    É a régua da sonda sequencial. None = sem régua (usuário novo): aí não há
+    o que sondar e nenhuma conclusão pode ser tirada."""
+    from sqlalchemy import select
+
+    from bot.db.models import DouSeenMP
+    from bot.services.dou_monitor import numero_canonico
+
+    rows = await session.scalars(
+        select(DouSeenMP).where(DouSeenMP.user_id == user_id)
+    )
+    vistos: list[tuple[int, int]] = []
+    for r in rows:
+        try:
+            vistos.append((int(numero_canonico(r.numero)), r.ano))
+        except (TypeError, ValueError):
+            continue
+    return max(vistos) if vistos else None
+
+
+async def confirma_sem_mp_nova(session, user_id: int, hoje_ano: int) -> bool:
+    """A sonda RODOU e não existe MP acima da última entregue?
+
+    True é evidência POSITIVA de ausência, vinda de fonte independente do
+    índice do DOU — é o que autoriza dar baixa num dia com edição extra e
+    zero MP no índice. Falha de rede ou ausência de régua devolvem False:
+    "não sei" nunca vira "não há"."""
+    regua = await ultimo_numero_entregue(session, user_id)
+    if regua is None:
+        return False
+    ultimo, ano_ultimo = regua
+    try:
+        return not await sondar_novas(ultimo, [hoje_ano, ano_ultimo])
+    except Exception as exc:
+        logger.warning("planalto: sonda de confirmação falhou (%s)", exc)
+        return False

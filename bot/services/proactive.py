@@ -373,9 +373,44 @@ async def _baixar_entradas_cobertas(session: AsyncSession, user_id: int,
             logger.info("nota pendente %s: notas já entregues — baixa", r.key)
 
 
+async def _avisar_ja_entregue(bot, session: AsyncSession, user: User,
+                               numeros: list[str]) -> None:
+    """Diz que a nota já saiu — e QUANDO. Sem a hora, o dono fica achando que
+    o bot se enganou; com ela, ele lembra do aviso do proativo."""
+    from bot.services.dou_monitor import _num_fmt
+
+    quando = {}
+    rows = await session.scalars(
+        select(ProactiveNotice).where(
+            ProactiveNotice.user_id == user.id,
+            ProactiveNotice.kind == _KIND_NOTA_OK,
+        )
+    )
+    from bot.services.dou_monitor import numero_canonico
+    for r in rows:
+        num = numero_canonico(str(r.key).partition("/")[0])
+        dt = as_utc(r.sent_at)
+        if dt is not None:
+            quando[num] = dt.astimezone(BRT)
+
+    linhas = []
+    for n in numeros:
+        dt = quando.get(n)
+        hora = f" (enviada {dt.strftime('%d/%m às %H:%M')})" if dt else ""
+        linhas.append(f"• MP {_num_fmt(n)}{hora}")
+    await _send(bot, user.id, (
+        "✅ <b>Essa nota já está com você</b> — não vou gerar de novo "
+        "(a geração custa e o arquivo seria idêntico).\n\n"
+        + "\n".join(linhas)
+        + "\n\nSe quiser uma nova mesmo assim, me diga explicitamente "
+          "'gera de novo a nota da MP X'."
+    ))
+
+
 async def _tentar_nota_via_portal(
     bot, session: AsyncSession, user: User, d: date,
-    numeros: list[str] | None, key: str,
+    numeros: list[str] | None, key: str, *,
+    usuario_esperando: bool = False,
 ) -> bool:
     """Gera as notas da fila com o TEXTO DO PORTAL público — a fonte
     PRIMÁRIA desde 11/08/2026 (nascida do pedido do dono em 06/08: 'não
@@ -418,6 +453,12 @@ async def _tentar_nota_via_portal(
         await unmark_notified(session, user.id, "nota_pendente", key)
         await _baixar_entradas_cobertas(session, user.id, d, extras=alvo)
         logger.info("nota pendente %s: todas já entregues — baixa sem regenerar", key)
+        # Dono, 22/09/2026: "ele falou que iria gerar e não mandou nada". O
+        # handler JÁ prometeu "te aviso quando sair" antes de spawnar o job;
+        # sair por esta porta em silêncio deixava a promessa no ar pra sempre.
+        # A re-tentativa de FUNDO continua calada (ninguém prometeu nada lá).
+        if usuario_esperando:
+            await _avisar_ja_entregue(bot, session, user, sorted(alvo))
         return True
     if faltam_no_portal:
         logger.info("nota pendente %s: portal não tem %s — Inlabs desempata",
@@ -1149,8 +1190,15 @@ async def collect_mp(
         if houve_mp:
             return _Colheita(out, True, not fechado, False, len(dia_portal.mps))
         if dia_portal.edicao_confirmada:
+            # Extra no índice sem MP só TRAVA o dia enquanto nada independente
+            # confirma a ausência. Com a sonda do Planalto dizendo "não existe
+            # MP acima da última entregue", a dúvida acabou: pode dar baixa.
+            trava = dia_portal.extras_sem_mp and not planalto_sem_novas
+            if dia_portal.extras_sem_mp and planalto_sem_novas:
+                logger.info("proactive: %s tinha extra sem MP, mas o Planalto "
+                            "confirmou nenhuma MP nova — baixa liberada", d)
             return _Colheita([], True, not fechado, False, 0,
-                             extras_sem_mp=dia_portal.extras_sem_mp)
+                             extras_sem_mp=trava)
         if dia_portal.sem_edicao:
             return _Colheita([], True, not fechado, True, 0)
         logger.info("proactive: portal sem índice p/ %s (inconclusivo)", d)
@@ -1160,6 +1208,15 @@ async def collect_mp(
             "nem haver edição)."
         )
         return None
+
+    # A sonda do Planalto RODOU e confirmou que não existe MP acima da última
+    # entregue? Isso é evidência POSITIVA de fonte independente do índice do
+    # DOU — e é o que libera a baixa de um dia com edição extra e zero MP.
+    # Sem isso a fila nunca drenava: 4 de 6 dias úteis têm extra (medido em
+    # 22/09/2026), então quase todo dia sem MP ficava preso até expirar com
+    # aviso de desistência. Regressão que EU introduzi em 12/09 ao corrigir a
+    # perda da MP 1.391 — travei a porta e não abri a saída.
+    planalto_sem_novas = False
 
     async def _rede_planalto() -> list[ProactiveFact]:
         """Rede principal: 'existe MP depois da última que entreguei?'
@@ -1201,6 +1258,12 @@ async def collect_mp(
         except Exception as exc:
             logger.warning("proactive: sonda do Planalto falhou (%s)", exc)
             return []
+        if not novas:
+            # SÓ aqui: a sonda rodou, respondeu, e não há MP acima da última
+            # entregue. Falha de rede ou ausência de régua (nenhuma MP
+            # entregue ainda) NÃO passam por este ponto.
+            nonlocal planalto_sem_novas
+            planalto_sem_novas = True
 
         achados: list[ProactiveFact] = []
         for mp in novas:
