@@ -88,6 +88,14 @@ class User(Base):
     # ser lido como pedido de restore — e restore sobrescreve o financeiro.
     awaiting_finance_restore_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Setup da retirada automática de ingresso na Sympla (dono, 23/09/2026).
+    # `awaiting_sympla_field` guarda QUAL campo a próxima mensagem de texto
+    # preenche ("email"|"senha"|"nome"|"cpf"); sem isso o handler de captura
+    # não saberia distinguir de chat livre. Expira em `awaiting_sympla_until`
+    # como as demais janelas de captura do projeto.
+    awaiting_sympla_field: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    awaiting_sympla_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # Monitor de MPs no Diário Oficial (Inlabs/DOU)
     dou_mp_subscribed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
     # Override por usuário do motor da nota técnica (/dou_provider). NULL =

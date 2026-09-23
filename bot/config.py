@@ -163,6 +163,21 @@ class Settings(BaseSettings):
     # não é 5 dias de histórico — é 5 dias de cópia QUENTE.
     finance_backup_retention_days: int = Field(5, alias="FINANCE_BACKUP_RETENTION_DAYS")
 
+    # Retirada automática de ingresso grátis na Sympla (dono, 23/09/2026):
+    # toda quarta a Orquestra Sinfônica do TN Cláudio Santoro libera 2
+    # ingressos por pessoa pro concerto da semana. O EVENTO em si só é
+    # publicado às 17h59 (URL nova a cada semana — não dá pra fixar link) e
+    # a retirada abre às 18h00. Owner-only; credenciais via /sympla_setup
+    # (kv_settings), nunca aqui — senha de conta pessoal não vai pro .env.
+    sympla_search_query: str = Field(
+        "Orquestra Sinfônica do Teatro Nacional Claudio Santoro",
+        alias="SYMPLA_SEARCH_QUERY",
+    )
+    sympla_qty: int = Field(2, alias="SYMPLA_QTY")
+    # 0=segunda … 6=domingo (convenção de datetime.weekday()).
+    sympla_weekday: int = Field(2, alias="SYMPLA_WEEKDAY")
+    sympla_release_hour: int = Field(18, alias="SYMPLA_RELEASE_HOUR")  # BRT
+
     # Scheduler
     scheduler_tick_seconds: int = Field(60, alias="SCHEDULER_TICK_SECONDS")
     timezone: str = Field("America/Sao_Paulo", alias="TIMEZONE")

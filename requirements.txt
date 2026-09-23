@@ -26,3 +26,9 @@ python-docx==1.1.2
 PyMuPDF==1.24.14
 pypdf==5.1.0
 claude-agent-sdk==0.2.99
+# Retirada automática de ingresso na Sympla (/sympla_setup). Chromium ARM64
+# confirmado contra o CDN oficial do Playwright antes de fixar a versão
+# (~208 MB, HTTP 200) — o Dockerfile roda `playwright install --with-deps
+# chromium` no build, então o binário É baixado na primeira imagem, não
+# aqui no requirements.
+playwright==1.63.0

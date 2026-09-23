@@ -97,6 +97,16 @@ async def _ensure_columns(conn) -> None:
             "ALTER TABLE users ADD COLUMN awaiting_finance_restore_until DATETIME"
         )
         logger.info("migrated: added users.awaiting_finance_restore_until")
+    if "awaiting_sympla_field" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE users ADD COLUMN awaiting_sympla_field VARCHAR(8)"
+        )
+        logger.info("migrated: added users.awaiting_sympla_field")
+    if "awaiting_sympla_until" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE users ADD COLUMN awaiting_sympla_until DATETIME"
+        )
+        logger.info("migrated: added users.awaiting_sympla_until")
     if "dou_mp_subscribed" not in cols:
         await conn.exec_driver_sql(
             "ALTER TABLE users ADD COLUMN dou_mp_subscribed BOOLEAN NOT NULL DEFAULT 0"

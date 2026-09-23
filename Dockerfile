@@ -33,6 +33,13 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
+# Chromium do Playwright pra retirada automática de ingresso (/sympla_setup).
+# --with-deps instala as libs de sistema que o Chromium headless precisa
+# (fontes, libnss3, libatk etc.) — sem isso o browser sobe mas trava sem
+# renderizar nada. Build confirmado com binário ARM64 real do Playwright
+# (testado contra o CDN oficial antes de escrever este Dockerfile).
+RUN playwright install --with-deps chromium
+
 # pytest na IMAGEM (não em requirements.txt, que é produção): o agente
 # escreve teste junto com toda tool nova (/tool_nova) e o /tool_ativar roda
 # esse teste antes de deixar o dono aprovar. Sem isto o agente gastava

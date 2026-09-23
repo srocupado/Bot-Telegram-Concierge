@@ -40,6 +40,8 @@ from bot.handlers.financeiro import cmd_setup as cmd_financeiro_setup
 from bot.handlers.finance_backup import cmd_backup as cmd_financeiro_backup
 from bot.handlers.finance_backup import cmd_listar as cmd_financeiro_backups
 from bot.handlers.finance_backup import cmd_restaurar as cmd_financeiro_restaurar
+from bot.handlers.sympla import cmd_setup as cmd_sympla_setup
+from bot.handlers.sympla import cmd_testar as cmd_sympla_testar
 from bot.handlers.ping import cmd_ping
 from bot.handlers.proactive import (
     cmd_agora as cmd_proativo_agora,
@@ -238,6 +240,8 @@ _DISPATCH: dict[str, Callable[..., Any]] = {
     # Restaurar por voz é seguro: o comando só monta a PRÉVIA — sobrescrever
     # exige apertar o botão de confirmação, que voz nenhuma aperta.
     "financeiro_backup": cmd_financeiro_backup,
+    "sympla_setup": cmd_sympla_setup,
+    "sympla_testar": cmd_sympla_testar,
     "financeiro_backups": cmd_financeiro_backups,
     "financeiro_restaurar": cmd_financeiro_restaurar,
     "start": cmd_start,

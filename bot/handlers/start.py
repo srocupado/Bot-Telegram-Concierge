@@ -184,6 +184,16 @@ HELP_TEXT = (
     "<i>\"cancela o watch #3\"</i> → encerra.\n"
     "• Cidades viram IATA automaticamente (Brasília=BSB, NY=JFK, etc.); datas relativas (\"sexta\", \"15/07\") também.\n"
     "• <code>/viagem &lt;destino&gt; DD/MM a DD/MM [moeda &lt;nome&gt;]</code> — modo viagem: clima do destino no briefing, lembretes e avisos no fuso local, cotação da moeda local (ex.: <code>/viagem Tóquio 01/11 a 15/11 moeda iene</code>). <code>/viagem off</code> desliga; no fim do período desliga sozinho.\n\n"
+    "<b>Retirada automática de ingresso (Sympla)</b>:\n"
+    "• <code>/sympla_setup</code> — configura sua conta Sympla (e-mail, senha, "
+    "nome completo, CPF) em passos separados; cada resposta sua é apagada do "
+    "chat depois de lida. Só o dono do bot configura (é login pessoal).\n"
+    "• Toda quarta o bot loga sozinho ~17h55, espera o evento da semana ser "
+    "publicado (às 17h59) e faz a retirada assim que abrir (18h00) — sem "
+    "precisar pedir nada. Avisa o resultado (sucesso ou onde travou), com "
+    "print da tela.\n"
+    "• <code>/sympla_testar</code> — roda o fluxo agora, fora da janela de "
+    "quarta (serve pra confirmar login/busca sem esperar a próxima liberação).\n\n"
     "<b>Imagens</b>:\n"
     "• Mande uma foto (com ou sem caption) — o bot analisa via LLM agente. "
     "Casos típicos: OCR de recibo/boleto, leitura de placa de rua, resumo "
@@ -439,6 +449,8 @@ _HELP_KEYWORDS: dict[str, str] = {
     "budget": "llm", "gemini": "llm", "token": "llm", "tokens": "llm",
     "memoria": "llm", "lembra": "llm",
     "foto": "imagens", "imagem": "imagens", "recibo": "imagens", "boleto": "imagens",
+    "sympla": "sympla", "ingresso": "sympla", "ingressos": "sympla",
+    "orquestra": "sympla", "concerto": "sympla", "sinfonica": "sympla",
     "proativo": "proativo", "briefing": "proativo", "aviso": "proativo",
     # resumo de fim de semana + rotina noturna (seção do agente proativo)
     "fim de semana": "proativo", "fds": "proativo", "sexta": "proativo",
