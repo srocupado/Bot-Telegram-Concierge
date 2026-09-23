@@ -319,42 +319,82 @@ async def _dump_clicaveis(page, limite: int = 40) -> str:
         return "(não consegui listar os elementos da tela)"
 
 
-async def _login(page, creds: SymplaCredenciais) -> None:
-    # A ROTA OFICIAL de login é a hash "#login" — confirmado contra o site
-    # real: acessar sympla.com.br/login redireciona pra sympla.com.br/#login
-    # (não é um chute: é o comportamento do servidor deles). Ir direto nela
-    # evita depender de achar/clicar um gatilho no header, que é justamente
-    # onde a 1ª tentativa real quebrou.
-    await page.goto(f"{BASE_URL}/#login", wait_until="domcontentloaded", timeout=30_000)
+async def _abrir_login(page) -> None:
+    """3 estratégias, na ordem do mais barato/provável pro mais genérico —
+    cada uma só roda se a anterior não revelou o campo de senha.
+
+    Reescrita depois do 2º uso real (23/09/2026): a 1ª versão ia direto pra
+    URL "…/#login" (fato verificado: sympla.com.br/login redireciona pra
+    lá) — mas o dump de elementos visíveis que ELA MESMA trouxe na falha
+    provou que não abriu nada: nenhuma palavra de login/conta apareceu na
+    tela. Isso bate com um comportamento comum de SPA: o roteador só reage
+    ao EVENTO hashchange, não ao hash já presente na URL no carregamento
+    inicial — page.goto(url + "#login") nunca dispara esse evento porque
+    não há transição de hash nenhum→"login", só carrega já com ele setado.
+
+    O mesmo dump trouxe uma pista concreta: "Open Dropdown" — texto em
+    INGLÊS solto numa tela toda em português, cara de rótulo padrão de
+    biblioteca que ninguém traduziu. Forte candidato a ser o ícone de
+    conta/usuário sem aria-label customizado."""
     campo_senha = page.locator("input[type=password]").first
+
+    # 1) Dispara hashchange DE VERDADE (muda o hash depois da página já
+    # montada, em vez de carregar com ele pronto).
     try:
-        await campo_senha.wait_for(state="visible", timeout=8_000)
+        await page.evaluate("() => { window.location.hash = 'login'; }")
+        await campo_senha.wait_for(state="visible", timeout=5_000)
+        return
     except Exception:
-        # A hash não abriu o formulário sozinha — plano B: procura um
-        # gatilho por várias palavras plausíveis (o texto real pode não ser
-        # "Entrar" — ver _dump_clicaveis). Cada tentativa é rápida; a soma
-        # ainda cabe dentro do timeout geral da etapa.
-        candidatos = ("entrar", "login", "fazer login", "acessar conta",
-                      "minha conta", "acessar")
-        clicou = False
-        for termo in candidatos:
+        pass
+
+    # 2) "Open Dropdown" pode não ser único (ex.: idioma, moeda, notificação
+    # também usam esse rótulo genérico) — tenta CADA ocorrência, fechando
+    # com Escape antes da próxima se não revelar o campo de senha.
+    try:
+        candidatos_dropdown = await page.get_by_text(
+            re.compile(r"^open dropdown$", re.I)).all()
+    except Exception:
+        candidatos_dropdown = []
+    for el in candidatos_dropdown[:5]:
+        try:
+            await el.click(timeout=3_000)
+            await campo_senha.wait_for(state="visible", timeout=3_000)
+            return
+        except Exception:
             try:
-                gatilho = page.get_by_role(
-                    "button", name=re.compile(termo, re.I)).or_(
-                    page.get_by_role("link", name=re.compile(termo, re.I))
-                ).first
-                await gatilho.click(timeout=3_000)
-                clicou = True
-                break
+                await page.keyboard.press("Escape")
             except Exception:
-                continue
-        if not clicou:
-            visiveis = await _dump_clicaveis(page)
-            raise SymplaError(
-                "não achei como abrir o login (nem pela rota #login nem por "
-                f"botão). Elementos visíveis na tela: {visiveis}"
-            )
-        await campo_senha.wait_for(state="visible", timeout=8_000)
+                pass
+            continue
+
+    # 3) Texto candidato de botão/link, plano C — pode não ser "Entrar",
+    # mas é barato tentar antes de desistir.
+    for termo in ("entrar", "login", "fazer login", "acessar conta",
+                  "minha conta", "acessar"):
+        try:
+            gatilho = page.get_by_role(
+                "button", name=re.compile(termo, re.I)).or_(
+                page.get_by_role("link", name=re.compile(termo, re.I))
+            ).first
+            await gatilho.click(timeout=3_000)
+            await campo_senha.wait_for(state="visible", timeout=5_000)
+            return
+        except Exception:
+            continue
+
+    visiveis = await _dump_clicaveis(page)
+    raise SymplaError(
+        "não achei como abrir o login (hashchange, 'Open Dropdown' nem "
+        f"botão de texto). Elementos visíveis na tela: {visiveis}"
+    )
+
+
+async def _login(page, creds: SymplaCredenciais) -> None:
+    # Carrega a página LIMPA (sem hash) — a mudança pra "#login" precisa
+    # acontecer DEPOIS de montada, ver _abrir_login.
+    await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30_000)
+    await _abrir_login(page)
+    campo_senha = page.locator("input[type=password]").first
 
     # Campo de e-mail/senha por TIPO de input (HTML semântico, não rótulo
     # ARIA nem classe da Sympla) — mais estável que confiar em label/aria

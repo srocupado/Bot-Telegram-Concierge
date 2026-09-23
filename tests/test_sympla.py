@@ -342,13 +342,18 @@ def _sem_comentarios(src: str) -> str:
     )
 
 
-def test_login_vai_direto_na_rota_oficial_login() -> None:
-    """A rota #login é FATO verificado (sympla.com.br/login redireciona pra
-    lá), não texto de botão adivinhado — é o que a correção troca."""
+def test_login_carrega_pagina_limpa_e_delega_a_abertura() -> None:
+    """2ª falha real (23/09/2026): a 1ª versão ia direto pra "…/#login" —
+    mas o PRÓPRIO dump que ela trouxe na falha provou que isso não abre
+    nada (nenhuma palavra de conta/login apareceu na tela). Motivo provável:
+    o roteador só reage ao EVENTO hashchange, não ao hash já presente no
+    carregamento inicial. Agora a página carrega LIMPA e quem muda o hash
+    é _abrir_login, depois de montada — ver os testes dela abaixo."""
     import inspect
     src = _sem_comentarios(inspect.getsource(sy._login))
-    assert 'page.goto(f"{BASE_URL}/#login"' in src
-    assert "input[type=password]" in src
+    assert 'page.goto(BASE_URL,' in src
+    assert '"{BASE_URL}/#login"' not in src, "voltou a carregar já com o hash"
+    assert "_abrir_login(page)" in src
 
 
 def test_login_usa_tipo_de_input_nao_label_ou_classe_css() -> None:
@@ -360,12 +365,47 @@ def test_login_usa_tipo_de_input_nao_label_ou_classe_css() -> None:
     assert "get_by_label" not in src, "voltou a depender de rótulo ARIA"
 
 
-def test_login_sem_gatilho_algum_reporta_com_diagnostico() -> None:
-    """Falha total do login (nem #login nem botão) tem que vir com o dump —
-    é a diferença entre 'estourou de novo' e 'aqui está o texto certo'."""
+def test_abrir_login_dispara_hashchange_de_verdade() -> None:
+    """Não pode voltar a ser um goto() com o hash já pronto — tem que ser
+    uma mudança de hash DEPOIS da página montada, pra disparar o evento."""
     import inspect
-    src = inspect.getsource(sy._login)
+    src = _sem_comentarios(inspect.getsource(sy._abrir_login))
+    assert "window.location.hash = 'login'" in src
+    assert "page.evaluate(" in src
+
+
+def test_abrir_login_tenta_a_pista_open_dropdown() -> None:
+    """A pista concreta do dump real: "Open Dropdown" é texto em inglês
+    solto numa tela em português — cara de rótulo de biblioteca não
+    traduzido, forte candidato a ícone de conta sem aria-label."""
+    import inspect
+    src = inspect.getsource(sy._abrir_login)
+    assert "open dropdown" in src.lower()
+
+
+def test_abrir_login_tenta_varias_ocorrencias_do_dropdown_nao_so_a_primeira() -> None:
+    """"Open Dropdown" pode não ser único (idioma, moeda, notificação usam o
+    mesmo rótulo genérico) — usar só .first arriscaria abrir o dropdown
+    errado e nunca sobrar tentativa pro certo."""
+    import inspect
+    src = inspect.getsource(sy._abrir_login)
+    assert ".all()" in src
+    assert "Escape" in src, "não fecha o dropdown errado antes do próximo"
+
+
+def test_abrir_login_ainda_tenta_texto_candidato_como_ultimo_recurso() -> None:
+    import inspect
+    src = inspect.getsource(sy._abrir_login)
+    assert "entrar" in src.lower() and "fazer login" in src.lower()
+
+
+def test_abrir_login_sem_estrategia_nenhuma_reporta_com_diagnostico() -> None:
+    """Falha de TODAS as estratégias tem que vir com o dump — é a diferença
+    entre 'estourou de novo' e 'aqui está o texto real da tela'."""
+    import inspect
+    src = inspect.getsource(sy._abrir_login)
     assert "_dump_clicaveis" in src
+    assert "SymplaError" in src
 
 
 def test_falha_fora_do_login_tambem_carrega_o_dump() -> None:
