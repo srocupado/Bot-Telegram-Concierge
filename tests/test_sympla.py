@@ -273,3 +273,105 @@ def test_help_roteia_para_a_secao_sympla(frase: str) -> None:
     assert "/sympla_testar" in HELP_TEXT
     secoes = find_help_sections(frase)
     assert any("sympla" in s.lower() for s in secoes), frase
+
+
+# ───────────────── falha real de 23/09/2026: "Entrar" não existe ─────────────
+# Primeiro uso real: TimeoutError esperando get_by_role("button", name=~entrar)
+# — investigação contra os bundles JS baixados no levantamento mostrou que
+# "Entrar" não existe como STRING em lugar nenhum do código da Sympla (o
+# gatilho do header provavelmente é ícone sem texto, com rótulo vindo de
+# tradução externa). A correção troca "adivinha um texto de botão" por "vai
+# direto na rota oficial de login" (sympla.com.br/login redireciona pra
+# /#login — confirmado contra o site real, não é chute) e só cai pra
+# candidatos de texto como plano B.
+
+class _ElementoFalso:
+    def __init__(self, texto):
+        self._texto = texto
+
+    async def wait_for(self, **kw):
+        pass
+
+
+class _PaginaFalsa:
+    """Dublê mínimo só pra exercitar _dump_clicaveis sem navegador real."""
+
+    def __init__(self, textos):
+        self._textos = textos
+
+    async def eval_on_selector_all(self, _sel, _js):
+        return self._textos
+
+
+def test_dump_clicaveis_lista_e_deduplica() -> None:
+    pagina = _PaginaFalsa(["Entrar", "Cadastrar", "Entrar", "  ", "Buscar"])
+    out = asyncio.run(sy._dump_clicaveis(pagina))
+    assert out == "Entrar | Cadastrar | Buscar"
+
+
+def test_dump_clicaveis_sem_elementos_nao_finge_achar_algo() -> None:
+    pagina = _PaginaFalsa([])
+    out = asyncio.run(sy._dump_clicaveis(pagina))
+    assert "nenhum elemento" in out
+
+
+def test_dump_clicaveis_trunca_pra_nao_estourar_mensagem() -> None:
+    pagina = _PaginaFalsa([f"Botão número {i} com texto longo" for i in range(200)])
+    out = asyncio.run(sy._dump_clicaveis(pagina))
+    assert len(out) <= 801  # 800 + "…"
+    assert out.endswith("…")
+
+
+def test_dump_clicaveis_pagina_que_estoura_nao_derruba_o_caller() -> None:
+    class _Explode:
+        async def eval_on_selector_all(self, *a):
+            raise RuntimeError("página fechou no meio")
+    out = asyncio.run(sy._dump_clicaveis(_Explode()))
+    assert "não consegui listar" in out
+
+
+def _sem_comentarios(src: str) -> str:
+    """Remove linhas de comentário puro — evita que uma asserção sobre o
+    CÓDIGO passe só porque a string aparece num comentário/docstring
+    explicando a decisão (bug real do 1º rascunho deste teste: a mutação
+    que trocava o goto() continuava passando, porque "/#login" sobrevivia
+    no comentário logo acima)."""
+    return "\n".join(
+        ln for ln in src.splitlines()
+        if not ln.strip().startswith("#")
+    )
+
+
+def test_login_vai_direto_na_rota_oficial_login() -> None:
+    """A rota #login é FATO verificado (sympla.com.br/login redireciona pra
+    lá), não texto de botão adivinhado — é o que a correção troca."""
+    import inspect
+    src = _sem_comentarios(inspect.getsource(sy._login))
+    assert 'page.goto(f"{BASE_URL}/#login"' in src
+    assert "input[type=password]" in src
+
+
+def test_login_usa_tipo_de_input_nao_label_ou_classe_css() -> None:
+    """Rótulo ARIA e classe CSS são coisas que a Sympla controla e pode
+    trocar a qualquer deploy; tipo de input é HTML semântico padrão."""
+    import inspect
+    src = inspect.getsource(sy._login)
+    assert "input[type=email]" in src
+    assert "get_by_label" not in src, "voltou a depender de rótulo ARIA"
+
+
+def test_login_sem_gatilho_algum_reporta_com_diagnostico() -> None:
+    """Falha total do login (nem #login nem botão) tem que vir com o dump —
+    é a diferença entre 'estourou de novo' e 'aqui está o texto certo'."""
+    import inspect
+    src = inspect.getsource(sy._login)
+    assert "_dump_clicaveis" in src
+
+
+def test_falha_fora_do_login_tambem_carrega_o_dump() -> None:
+    import inspect
+    src = inspect.getsource(sy.retirar_ingresso)
+    assert "_dump_clicaveis" in src
+    assert "isinstance(exc, SymplaError)" in src, (
+        "sem essa checagem o dump do login duplicaria dentro dele mesmo"
+    )

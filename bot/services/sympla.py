@@ -290,21 +290,96 @@ async def _ler_hydration(page) -> dict | None:
         return None
 
 
+async def _dump_clicaveis(page, limite: int = 40) -> str:
+    """Lista os botões/links VISÍVEIS da tela — usado só em falha, pra virar
+    diagnóstico real em vez de eu ter que adivinhar de novo às cegas.
+
+    Nasceu do primeiro uso real (23/09/2026): a etapa "login" estourou
+    porque "Entrar" não existe como TEXTO em lugar nenhum do JS da Sympla —
+    o gatilho do header é provavelmente ícone sem rótulo visível, com texto
+    vindo de um arquivo de tradução que não dá pra enumerar por fora. Sem
+    isto, cada falha exigiria outra rodada de tentativa-e-erro cega."""
+    try:
+        itens = await page.eval_on_selector_all(
+            "button, a, [role=button]",
+            "els => els.filter(e => e.offsetParent !== null).slice(0, %d)"
+            ".map(e => (e.innerText || e.getAttribute('aria-label') || "
+            "e.getAttribute('title') || '').trim()).filter(Boolean)" % limite,
+        )
+        # Filtra/apara de novo em Python: não confia só no .trim()/Boolean do
+        # lado do JS (achado pelo próprio teste deste módulo — um item só de
+        # espaço passava pelo filtro do JS e sobrevivia até aqui).
+        limpos = [t.strip() for t in itens if isinstance(t, str) and t.strip()]
+        texto = " | ".join(dict.fromkeys(limpos)) or "(nenhum elemento com texto visível)"
+        # Teto de tamanho: o dump entra dentro da mensagem de erro que vai
+        # pro Telegram, e uma tela com muitos elementos NÃO pode estourar o
+        # limite da mensagem e mascarar o próprio diagnóstico.
+        return texto if len(texto) <= 800 else texto[:800] + "…"
+    except Exception:
+        return "(não consegui listar os elementos da tela)"
+
+
 async def _login(page, creds: SymplaCredenciais) -> None:
-    await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30_000)
-    entrar_btn = page.get_by_role("button", name=re.compile("entrar", re.I)).first
-    await entrar_btn.click(timeout=10_000)
-    await page.get_by_label(re.compile("e-?mail", re.I)).first.fill(
-        creds.email, timeout=10_000)
-    await page.get_by_label(re.compile("senha", re.I)).first.fill(
-        creds.senha, timeout=10_000)
-    await page.get_by_role("button", name=re.compile(r"^entrar$", re.I)).first.click(
-        timeout=10_000)
-    # Confirma autenticado pelo desaparecimento do botão "Entrar" do topo
-    # (vira nome/avatar do usuário) — melhor sinal disponível sem saber o
-    # markup exato do estado logado.
-    await page.get_by_role("button", name=re.compile(r"^entrar$", re.I)).wait_for(
-        state="detached", timeout=15_000)
+    # A ROTA OFICIAL de login é a hash "#login" — confirmado contra o site
+    # real: acessar sympla.com.br/login redireciona pra sympla.com.br/#login
+    # (não é um chute: é o comportamento do servidor deles). Ir direto nela
+    # evita depender de achar/clicar um gatilho no header, que é justamente
+    # onde a 1ª tentativa real quebrou.
+    await page.goto(f"{BASE_URL}/#login", wait_until="domcontentloaded", timeout=30_000)
+    campo_senha = page.locator("input[type=password]").first
+    try:
+        await campo_senha.wait_for(state="visible", timeout=8_000)
+    except Exception:
+        # A hash não abriu o formulário sozinha — plano B: procura um
+        # gatilho por várias palavras plausíveis (o texto real pode não ser
+        # "Entrar" — ver _dump_clicaveis). Cada tentativa é rápida; a soma
+        # ainda cabe dentro do timeout geral da etapa.
+        candidatos = ("entrar", "login", "fazer login", "acessar conta",
+                      "minha conta", "acessar")
+        clicou = False
+        for termo in candidatos:
+            try:
+                gatilho = page.get_by_role(
+                    "button", name=re.compile(termo, re.I)).or_(
+                    page.get_by_role("link", name=re.compile(termo, re.I))
+                ).first
+                await gatilho.click(timeout=3_000)
+                clicou = True
+                break
+            except Exception:
+                continue
+        if not clicou:
+            visiveis = await _dump_clicaveis(page)
+            raise SymplaError(
+                "não achei como abrir o login (nem pela rota #login nem por "
+                f"botão). Elementos visíveis na tela: {visiveis}"
+            )
+        await campo_senha.wait_for(state="visible", timeout=8_000)
+
+    # Campo de e-mail/senha por TIPO de input (HTML semântico, não rótulo
+    # ARIA nem classe da Sympla) — mais estável que confiar em label/aria
+    # num site que eu não controlo. E-mail costuma vir ANTES da senha na
+    # ordem do DOM; pega o primeiro input de texto/e-mail visível na tela.
+    campo_email = page.locator(
+        "input[type=email], input[autocomplete=username], input[type=text]"
+    ).first
+    await campo_email.fill(creds.email, timeout=10_000)
+    await campo_senha.fill(creds.senha, timeout=10_000)
+
+    submit = page.locator(
+        "form button[type=submit], button[type=submit]"
+    ).first
+    try:
+        await submit.click(timeout=5_000)
+    except Exception:
+        # Sem botão type=submit visível: tenta Enter no campo de senha —
+        # funciona na maioria dos formulários de login.
+        await campo_senha.press("Enter")
+
+    # Confirma autenticado pelo DESAPARECIMENTO do campo de senha (o modal
+    # fecha ao logar com sucesso). Login errado deixa o modal aberto e este
+    # wait estoura — vira SymplaError com contexto na camada de cima.
+    await campo_senha.wait_for(state="detached", timeout=15_000)
 
 
 async def _buscar_candidatos(page, query: str) -> list[EventoCandidato]:
@@ -453,6 +528,14 @@ async def retirar_ingresso(
     except Exception as exc:
         logger.exception("sympla: falha na etapa '%s'", etapa)
         shot = await _screenshot_seguro(page) if page is not None else None
+        detalhe = f"{type(exc).__name__}: {exc}"
+        # SymplaError já embute o dump de elementos visíveis quando faz
+        # sentido (ver _login). Pras demais etapas, anexa aqui — é o que
+        # transforma "estourou de novo" em "aqui está o texto certo do
+        # botão", sem precisar de outra rodada de tentativa cega.
+        if page is not None and not isinstance(exc, SymplaError):
+            visiveis = await _dump_clicaveis(page)
+            detalhe += f" | elementos visíveis: {visiveis}"
         return SymplaResultado(
-            False, etapa, f"{type(exc).__name__}: {exc}", screenshot=shot,
+            False, etapa, detalhe, screenshot=shot,
         )
