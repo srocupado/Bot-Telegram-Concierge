@@ -360,7 +360,7 @@ def test_login_carrega_pagina_limpa_e_delega_a_abertura() -> None:
     é _abrir_login, depois de montada — ver os testes dela abaixo."""
     import inspect
     src = _sem_comentarios(inspect.getsource(sy._login))
-    assert 'page.goto(BASE_URL,' in src
+    assert '_ir(page, BASE_URL)' in src
     assert '"{BASE_URL}/#login"' not in src, "voltou a carregar já com o hash"
     assert "_abrir_login(page)" in src
 
@@ -824,3 +824,120 @@ def test_busca_que_nao_carregou_nao_vira_nao_achei(monkeypatch) -> None:
     assert r.sucesso is False
     assert "não consegui checar" in r.detalhe
     assert "não achei" not in r.detalhe
+
+
+# ───────────── Cloudflare no Pi (print real, 23/09/2026) ─────────────
+
+class _ContaFalsa:
+    def __init__(self, fn):
+        self._fn = fn
+
+    async def count(self):
+        return self._fn()
+
+
+class _PaginaCloudflareFalsa:
+    """O desafio fica na tela por `some_apos` checagens e depois libera."""
+
+    def __init__(self, some_apos):
+        self.checagens = 0
+        self.some_apos = some_apos
+
+    def _cf(self):
+        self.checagens += 1
+        return 1 if self.checagens <= self.some_apos else 0
+
+    def get_by_text(self, padrao):
+        assert padrao.search("Executando verificação de segurança")
+        return _ContaFalsa(self._cf)
+
+    async def wait_for_timeout(self, ms):
+        pass
+
+    async def wait_for_load_state(self, *a):
+        pass
+
+
+def test_cloudflare_que_libera_sozinho_so_espera() -> None:
+    pagina = _PaginaCloudflareFalsa(some_apos=3)
+    asyncio.run(sy._passar_cloudflare(pagina))
+    assert pagina.checagens == 4
+
+
+def test_cloudflare_que_nao_libera_vira_falha_explicita(monkeypatch) -> None:
+    monkeypatch.setattr(sy, "CLOUDFLARE_ESPERA_S", 0.05)
+    pagina = _PaginaCloudflareFalsa(some_apos=10**9)
+    with pytest.raises(sy.SymplaError, match="Cloudflare"):
+        asyncio.run(sy._passar_cloudflare(pagina))
+
+
+def test_pagina_de_evento_ilegivel_nao_e_pulada_em_silencio(monkeypatch) -> None:
+    """Antes: hydration ausente → None → o evento era pulado e o resultado
+    final virava "não achei nenhum evento". Com a página do Cloudflare no
+    lugar da Sympla, era assim que o concerto podia sumir."""
+    async def _ir(*a, **kw):
+        return None
+
+    async def _sem_hydration(_page):
+        return None
+    monkeypatch.setattr(sy, "_ir", _ir)
+    monkeypatch.setattr(sy, "_ler_hydration", _sem_hydration)
+    cand = sy.EventoCandidato("Orquestra", "https://x/evento/1", None, False)
+    with pytest.raises(sy.SymplaError, match="não consegui ler"):
+        asyncio.run(sy._detalhar(None, cand))
+
+
+def test_cloudflare_depois_do_entrar_nao_conta_como_login_feito(monkeypatch) -> None:
+    """O login dava como concluído quando o campo de senha sumia — e ele
+    some quando o Cloudflare cobre a tela. Cenário: desafio por 2 checagens,
+    depois volta o modal com a recusa da Sympla. Tem que dar a recusa."""
+    async def _nada(*a, **kw):
+        return None
+    monkeypatch.setattr(sy, "_ir", _nada)
+    monkeypatch.setattr(sy, "_abrir_login", _nada)
+    monkeypatch.setattr(sy, "_clicar", _nada)
+    monkeypatch.setattr(sy, "_passar_cloudflare", _nada)
+
+    estado = {"t": 0}
+
+    def cf():
+        return 1 if estado["t"] < 2 else 0
+
+    def recusa():
+        return 1 if estado["t"] >= 2 else 0
+
+    class _Campo:
+        first = property(lambda self: self)
+
+        async def fill(self, *a, **kw):
+            pass
+
+        async def is_visible(self):
+            return estado["t"] >= 2
+
+    class _Pagina:
+        def locator(self, _sel):
+            return _Campo()
+
+        def get_by_role(self, *a, **kw):
+            return _Campo()
+
+        def get_by_text(self, padrao):
+            if padrao.search("E-mail ou senha inválidos"):
+                return _ContaFalsa(recusa)
+            return _ContaFalsa(cf)
+
+        async def wait_for_timeout(self, ms):
+            estado["t"] += 1
+
+    async def _cf_na_tela(_page):
+        return bool(cf())
+    monkeypatch.setattr(sy, "_cloudflare_na_tela", _cf_na_tela)
+
+    async def _cf_passa(_page):
+        estado["t"] += 1
+    monkeypatch.setattr(sy, "_passar_cloudflare", _cf_passa)
+
+    creds = sy.SymplaCredenciais("x@x.com", "1234x", "X Y", None)
+    with pytest.raises(sy.SymplaError, match="recusou"):
+        asyncio.run(sy._login(_Pagina(), creds))

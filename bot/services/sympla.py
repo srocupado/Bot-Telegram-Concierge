@@ -252,6 +252,7 @@ POLL_TIMEOUT_S = 180.0
 # levou ~19s, 12x ~40s (do goto até o formulário). O Pi real não foi medido.
 LOGIN_ABRIR_TIMEOUT_S = 120.0
 BUSCA_TIMEOUT_MS = 60_000
+CLOUDFLARE_ESPERA_S = 30.0
 
 
 # ───────────────────────── automação (Playwright) ─────────────────────────
@@ -326,6 +327,46 @@ async def _dump_clicaveis(page, limite: int = 40) -> str:
         return "(não consegui listar os elementos da tela)"
 
 
+_CLOUDFLARE = re.compile(
+    r"verifica[çc][aã]o de seguran[çc]a|prote[çc][aã]o contra bots|"
+    r"verifying you are human|checking your browser|just a moment",
+    re.I)
+
+
+async def _cloudflare_na_tela(page) -> bool:
+    try:
+        return bool(await page.get_by_text(_CLOUDFLARE).count())
+    except Exception:
+        return False
+
+
+async def _passar_cloudflare(page) -> None:
+    """Print real do Pi (23/09/2026): a tela no fim do teste era a
+    verificação anti-bot do Cloudflare ("Executando verificação de
+    segurança"), não a Sympla. É o desafio que qualquer navegador recebe e
+    que costuma liberar sozinho em segundos — aqui só se ESPERA, como um
+    navegador comum. Não há tentativa de burlar: se não liberar, a etapa
+    falha dizendo isso, em vez de ler a página do desafio como se fosse a
+    Sympla (foi assim que um evento podia sumir como "não achei")."""
+    if not await _cloudflare_na_tela(page):
+        return
+    import time as _time
+    prazo = _time.monotonic() + CLOUDFLARE_ESPERA_S
+    while _time.monotonic() < prazo:
+        await page.wait_for_timeout(1_000)
+        if not await _cloudflare_na_tela(page):
+            await page.wait_for_load_state("domcontentloaded")
+            return
+    raise SymplaError(
+        f"a Sympla mostrou a verificação anti-bot do Cloudflare e ela não "
+        f"liberou em {CLOUDFLARE_ESPERA_S:.0f}s — não consegui continuar.")
+
+
+async def _ir(page, url: str, timeout_ms: int = 60_000) -> None:
+    await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+    await _passar_cloudflare(page)
+
+
 async def _clicar(page, loc, timeout_ms: int = 10_000) -> None:
     """Clique de mouse de verdade no centro do elemento, SEM o teste de
     "estável" do locator.click().
@@ -384,6 +425,7 @@ async def _abrir_login(page) -> None:
     ultimo_erro: Exception | None = None
     while _time.monotonic() < prazo:
         try:
+            await _passar_cloudflare(page)
             if await _visivel(senha):
                 return
             if await _visivel(opcao):
@@ -403,7 +445,7 @@ async def _abrir_login(page) -> None:
 
 
 async def _login(page, creds: SymplaCredenciais) -> None:
-    await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=60_000)
+    await _ir(page, BASE_URL)
     await _abrir_login(page)
 
     # :visible é obrigatório (visto ao vivo): há um 2º input[type=email]
@@ -429,6 +471,10 @@ async def _login(page, creds: SymplaCredenciais) -> None:
             raise SymplaError(
                 "a Sympla recusou o login: 'E-mail ou senha inválidos'. "
                 "Confira com /sympla_setup email e /sympla_setup senha.")
+        if await _cloudflare_na_tela(page):
+            # O campo some atrás do desafio — isso NÃO é login concluído.
+            await _passar_cloudflare(page)
+            continue
         if not await _visivel(campo):
             return
         await page.wait_for_timeout(1_000)
@@ -441,7 +487,7 @@ async def _buscar_candidatos(page, query: str) -> list[EventoCandidato]:
     """Busca é renderizada client-side — precisa de JS rodando, por isso é
     Playwright e não um scraper leve à parte."""
     url = SEARCH_URL.format(query=quote(query))
-    await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+    await _ir(page, url)
     # Espera o ESTADO FINAL da busca, visto ao vivo: "N eventos encontrados"
     # ou "Que tal tentar outra busca" (zero resultados). Não dá pra esperar
     # só por link de evento: com zero resultados a página mostra "Eventos em
@@ -481,11 +527,14 @@ async def _buscar_candidatos(page, query: str) -> list[EventoCandidato]:
 async def _detalhar(page, cand: EventoCandidato) -> EventoCandidato | None:
     """Abre a página do candidato e lê data/estado reais — os cards da
     busca não trazem isso, só título e link."""
-    await page.goto(cand.url, wait_until="domcontentloaded", timeout=30_000)
+    await _ir(page, cand.url)
     payload = await _ler_hydration(page)
-    if payload is None:
-        return None
-    return evento_da_hydration(cand.url, payload)
+    # Página que não deu pra ler NÃO é "evento que não serve": pular em
+    # silêncio fazia um evento bloqueado virar "não achei nenhum evento".
+    ev = evento_da_hydration(cand.url, payload) if payload else None
+    if ev is None:
+        raise SymplaError(f"não consegui ler a página do evento {cand.url}")
+    return ev
 
 
 async def _localizar_evento(
@@ -617,7 +666,7 @@ async def retirar_ingresso(
                     )
 
                 await _avisar("abrir o evento")
-                await page.goto(evento.url, wait_until="domcontentloaded", timeout=30_000)
+                await _ir(page, evento.url)
 
                 await _avisar("selecionar ingressos e reservar")
                 await _selecionar_e_reservar(page, qty)
