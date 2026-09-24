@@ -248,9 +248,10 @@ INICIO_ANTECEDENCIA = timedelta(minutes=5)
 POLL_INTERVALO_S = 2.0
 # Desiste de procurar o evento depois disso (publicação atrasada/sumida).
 POLL_TIMEOUT_S = 180.0
-# Re-cliques no botão de login até a página hidratar (~3s cada; Orange Pi
-# é bem mais lento que o sandbox onde isto foi medido).
-LOGIN_TENTATIVAS_ABRIR = 10
+# Prazo pra abrir o formulário de login. Medido com a CPU limitada: 6x
+# levou ~19s, 12x ~40s (do goto até o formulário). O Pi real não foi medido.
+LOGIN_ABRIR_TIMEOUT_S = 120.0
+BUSCA_TIMEOUT_MS = 60_000
 
 
 # ───────────────────────── automação (Playwright) ─────────────────────────
@@ -325,6 +326,32 @@ async def _dump_clicaveis(page, limite: int = 40) -> str:
         return "(não consegui listar os elementos da tela)"
 
 
+async def _clicar(page, loc, timeout_ms: int = 10_000) -> None:
+    """Clique de mouse de verdade no centro do elemento, SEM o teste de
+    "estável" do locator.click().
+
+    Log real do Orange Pi (24/09/2026): o botão foi achado, mas o click()
+    ficou 10s em "waiting for element to be visible, enabled and stable" e
+    desistiu. Reproduzido aqui com a CPU do Chromium limitada 6x e 12x: o
+    botão estava visível, habilitado e PARADO (mesma posição medida várias
+    vezes), mas o teste de estabilidade depende de quadros de animação que
+    não chegam numa CPU lenta — 20 re-cliques em 100s, todos falharam. O
+    clique por coordenada abriu o modal nos mesmos cenários."""
+    await loc.wait_for(state="visible", timeout=timeout_ms)
+    caixa = await loc.bounding_box(timeout=timeout_ms)
+    if caixa is None:
+        raise SymplaError("elemento sem posição na tela")
+    await page.mouse.click(caixa["x"] + caixa["width"] / 2,
+                           caixa["y"] + caixa["height"] / 2)
+
+
+async def _visivel(loc) -> bool:
+    try:
+        return await loc.is_visible()
+    except Exception:
+        return False
+
+
 async def _abrir_login(page) -> None:
     """Abre o formulário de e-mail+senha. Caminho CONFIRMADO num Chromium de
     verdade contra o site ao vivo (24/09/2026), não inferido:
@@ -336,43 +363,47 @@ async def _abrir_login(page) -> None:
       2. no modal, "Continuar com e-mail e senha" — só então aparecem os
          campos de e-mail e senha.
 
-    Por que as versões anteriores falhavam, visto ao vivo: elas clicavam no
-    botão certo, procuravam um ITEM DE MENU que não existe e apertavam
-    Escape — o que FECHAVA o modal. Depois o plano B por texto ("minha
-    conta") achava o botão do FAQ "Não consigo acessar minha conta" no
-    rodapé da home; o print que parecia a Central de Ajuda era a própria
-    home rolada até o FAQ. Não houve navegação nenhuma.
+    Cada volta do laço OLHA A TELA antes de agir, em vez de repetir cliques
+    às cegas: numa CPU lenta (reproduzido com limite de 6x) o 1º clique é
+    processado atrasado — o modal abre DEPOIS que o 2º clique já saiu, e o
+    2º cai no fundo escuro e FECHA o modal. Então: senha visível → pronto;
+    opção "e-mail e senha" visível → modal aberto, clica nela; senão → abre
+    o modal. Um fechamento atrasado só custa mais uma volta.
 
-    E o motivo de fundo, reproduzido ao vivo com o MESMO dump da produção:
-    o clique vinha logo após o domcontentloaded, antes do React hidratar a
-    página — clique em botão só-SSR não faz nada. Por isso re-clica até o
-    modal responder, em vez de clicar uma vez só."""
+    Histórico: versões anteriores procuravam um item de menu que não existe
+    e apertavam Escape (fechando o modal), e o plano B por texto clicava no
+    FAQ "Não consigo acessar minha conta" do rodapé da home — o print que
+    parecia a Central de Ajuda era isso."""
     gatilho = page.get_by_role(
         "button", name=re.compile(r"^open dropdown$", re.I)).first
     opcao = page.get_by_role(
         "button", name=re.compile(r"e-?mail e senha", re.I)).first
-    try:
-        for tentativa in range(LOGIN_TENTATIVAS_ABRIR):
-            await gatilho.click(timeout=10_000)
-            try:
-                await opcao.wait_for(state="visible", timeout=3_000)
-                break
-            except Exception:
-                if tentativa == LOGIN_TENTATIVAS_ABRIR - 1:
-                    raise
-        await opcao.click(timeout=10_000)
-        await page.locator("input[type=password]:visible").first.wait_for(
-            state="visible", timeout=10_000)
-    except Exception as exc:
-        visiveis = await _dump_clicaveis(page)
-        raise SymplaError(
-            f"não consegui abrir o formulário de e-mail e senha ({exc}). "
-            f"Elementos visíveis na tela: {visiveis}"
-        ) from exc
+    senha = page.locator("input[type=password]:visible").first
+    import time as _time
+    prazo = _time.monotonic() + LOGIN_ABRIR_TIMEOUT_S
+    ultimo_erro: Exception | None = None
+    while _time.monotonic() < prazo:
+        try:
+            if await _visivel(senha):
+                return
+            if await _visivel(opcao):
+                await _clicar(page, opcao)
+                await senha.wait_for(state="visible", timeout=10_000)
+                return
+            await _clicar(page, gatilho)
+            await opcao.wait_for(state="visible", timeout=10_000)
+        except Exception as exc:
+            ultimo_erro = exc
+    visiveis = await _dump_clicaveis(page)
+    raise SymplaError(
+        f"não consegui abrir o formulário de e-mail e senha em "
+        f"{LOGIN_ABRIR_TIMEOUT_S:.0f}s (último erro: {ultimo_erro}). "
+        f"Elementos visíveis na tela: {visiveis}"
+    )
 
 
 async def _login(page, creds: SymplaCredenciais) -> None:
-    await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30_000)
+    await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=60_000)
     await _abrir_login(page)
 
     # :visible é obrigatório (visto ao vivo): há um 2º input[type=email]
@@ -380,37 +411,55 @@ async def _login(page, creds: SymplaCredenciais) -> None:
     # ANTES do modal no DOM — o seletor antigo digitava o e-mail na busca.
     campo_email = page.locator("input[type=email]:visible").first
     campo_senha = page.locator("input[type=password]:visible").first
-    await campo_email.fill(creds.email, timeout=10_000)
-    await campo_senha.fill(creds.senha, timeout=10_000)
+    await campo_email.fill(creds.email, timeout=30_000)
+    await campo_senha.fill(creds.senha, timeout=30_000)
 
     # O botão ENTRAR é type="button" (não submit), confirmado ao vivo.
-    await page.get_by_role(
-        "button", name=re.compile(r"^entrar$", re.I),
-    ).first.click(timeout=10_000)
+    await _clicar(page, page.get_by_role(
+        "button", name=re.compile(r"^entrar$", re.I)).first, 30_000)
 
     # Login certo fecha o modal (o campo some). Login errado deixa aberto
     # com "E-mail ou senha inválidos" (texto visto ao vivo com conta falsa).
-    try:
-        await page.locator("input[type=password]").first.wait_for(
-            state="hidden", timeout=20_000)
-    except Exception as exc:
-        if await page.get_by_text(re.compile(r"senha inv[aá]lid", re.I)).count():
+    campo = page.locator("input[type=password]").first
+    recusa = page.get_by_text(re.compile(r"senha inv[aá]lid", re.I))
+    import time as _time
+    prazo = _time.monotonic() + 60
+    while _time.monotonic() < prazo:
+        if await recusa.count():
             raise SymplaError(
                 "a Sympla recusou o login: 'E-mail ou senha inválidos'. "
-                "Confira com /sympla_setup email e /sympla_setup senha."
-            ) from exc
-        raise
+                "Confira com /sympla_setup email e /sympla_setup senha.")
+        if not await _visivel(campo):
+            return
+        await page.wait_for_timeout(1_000)
+    raise SymplaError(
+        "cliquei em ENTRAR mas o login não concluiu em 60s (o formulário "
+        "continuou aberto, sem mensagem de erro).")
 
 
 async def _buscar_candidatos(page, query: str) -> list[EventoCandidato]:
     """Busca é renderizada client-side — precisa de JS rodando, por isso é
     Playwright e não um scraper leve à parte."""
     url = SEARCH_URL.format(query=quote(query))
-    await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+    await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+    # Espera o ESTADO FINAL da busca, visto ao vivo: "N eventos encontrados"
+    # ou "Que tal tentar outra busca" (zero resultados). Não dá pra esperar
+    # só por link de evento: com zero resultados a página mostra "Eventos em
+    # alta" (links de outros eventos). E o timeout antigo (10s, devolvendo
+    # lista vazia) virava "não achei" em CPU lenta — com a CPU limitada 12x
+    # os resultados levaram 13,4s pra aparecer.
+    estado = page.get_by_text(
+        re.compile(r"\d+\s+eventos?\s+encontrad|tentar outra busca", re.I)).first
     try:
-        await page.wait_for_selector("a[href*='/evento/']", timeout=10_000)
-    except Exception:
+        await estado.wait_for(state="visible", timeout=BUSCA_TIMEOUT_MS)
+    except Exception as exc:
+        raise SymplaError(
+            f"a busca da Sympla não terminou de carregar em "
+            f"{BUSCA_TIMEOUT_MS // 1000}s"
+        ) from exc
+    if await page.get_by_text(re.compile(r"tentar outra busca", re.I)).count():
         return []
+    await page.wait_for_selector("a[href*='/evento/']", timeout=BUSCA_TIMEOUT_MS)
     links = await page.eval_on_selector_all(
         "a[href*='/evento/']",
         "els => els.map(e => ({href: e.href, text: e.innerText}))",
@@ -458,11 +507,11 @@ async def _selecionar_e_reservar(page, qty: int) -> None:
     exato do botão de "+" e de avançar são inferidos, não confirmados."""
     mais = page.get_by_role("button", name="+").first
     for _ in range(qty):
-        await mais.click(timeout=10_000)
+        await _clicar(page, mais, 30_000)
     avancar = page.get_by_role(
         "button", name=re.compile(r"reservar|continuar|garantir", re.I),
     ).first
-    await avancar.click(timeout=10_000)
+    await _clicar(page, avancar, 30_000)
 
 
 async def _preencher_checkout(page, creds: SymplaCredenciais) -> None:
@@ -486,7 +535,7 @@ async def _preencher_checkout(page, creds: SymplaCredenciais) -> None:
     finalizar = page.get_by_role(
         "button", name=re.compile(r"finalizar|confirmar pedido", re.I),
     ).first
-    await finalizar.click(timeout=15_000)
+    await _clicar(page, finalizar, 30_000)
 
 
 async def retirar_ingresso(
@@ -539,11 +588,25 @@ async def retirar_ingresso(
                 evento = None
                 import time as _time
                 deadline = _time.monotonic() + poll_timeout_s
+                erro_busca: Exception | None = None
                 while True:
-                    evento = await _localizar_evento(page, query, hoje)
+                    try:
+                        evento = await _localizar_evento(page, query, hoje)
+                        erro_busca = None
+                    except SymplaError as exc:
+                        # Busca que não carregou NÃO é "não tem evento":
+                        # tenta de novo até o prazo e, se a última falhou,
+                        # reporta como "não consegui checar".
+                        evento, erro_busca = None, exc
                     if evento is not None or _time.monotonic() >= deadline:
                         break
                     await page.wait_for_timeout(int(POLL_INTERVALO_S * 1000))
+                if evento is None and erro_busca is not None:
+                    return SymplaResultado(
+                        False, etapa,
+                        f"não consegui checar se o evento saiu: {erro_busca}",
+                        screenshot=await _screenshot_seguro(page),
+                    )
                 if evento is None:
                     return SymplaResultado(
                         False, etapa,

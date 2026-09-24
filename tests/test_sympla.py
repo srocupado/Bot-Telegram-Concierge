@@ -397,7 +397,14 @@ def test_abrir_login_tenta_a_pista_open_dropdown() -> None:
     assert "open dropdown" in src.lower()
 
 
+_POS = {"gatilho": (10, 10), "opcao": (100, 100), "senha": (100, 200),
+        "fundo": (500, 500)}
+
+
 class _LocFalso:
+    """Sem método click(): o código TEM que clicar pelo mouse (o click() do
+    locator trava no teste de "estável" numa CPU lenta — log real do Pi)."""
+
     def __init__(self, pagina, nome):
         self._p = pagina
         self._nome = nome
@@ -406,33 +413,57 @@ class _LocFalso:
     def first(self):
         return self
 
-    async def click(self, **kw):
-        self._p.eventos.append(f"click:{self._nome}")
-        if self._nome == "gatilho":
-            self._p.cliques_gatilho += 1
-            if self._p.cliques_gatilho >= self._p.hidrata_no_clique:
-                self._p.modal_aberto = True
-        elif self._nome == "opcao":
-            self._p.form_aberto = True
+    async def is_visible(self):
+        return self._p.visivel(self._nome)
 
-    async def wait_for(self, state="visible", **kw):
-        ok = {"opcao": self._p.modal_aberto,
-              "senha": self._p.form_aberto}.get(self._nome, True)
-        if not ok:
+    async def wait_for(self, state="visible", timeout=None):
+        if not self._p.visivel(self._nome):
             raise TimeoutError(f"{self._nome} não apareceu")
+
+    async def bounding_box(self, timeout=None):
+        x, y = _POS[self._nome]
+        return {"x": x - 5, "y": y - 5, "width": 10, "height": 10}
+
+
+class _MouseFalso:
+    def __init__(self, pagina):
+        self._p = pagina
+
+    async def click(self, x, y):
+        alvo = next(n for n, pos in _POS.items() if pos == (x, y))
+        self._p.clique(alvo)
 
 
 class _PaginaLoginFalsa:
     """Reproduz o que foi VISTO ao vivo (24/09/2026): antes do React
     hidratar, clicar no "Open Dropdown" não faz nada; depois, abre direto o
-    modal (sem menu), e "e-mail e senha" revela o formulário."""
+    modal (sem menu), e "e-mail e senha" revela o formulário. Clique em
+    qualquer lugar com o modal aberto que não seja a opção cai no fundo
+    escuro e FECHA o modal (a corrida vista com a CPU limitada 6x)."""
 
-    def __init__(self, hidrata_no_clique=1):
+    def __init__(self, hidrata_no_clique=1, modal_ja_aberto=False):
         self.hidrata_no_clique = hidrata_no_clique
         self.cliques_gatilho = 0
-        self.modal_aberto = False
+        self.modal_aberto = modal_ja_aberto
         self.form_aberto = False
         self.eventos: list[str] = []
+        self.mouse = _MouseFalso(self)
+
+    def visivel(self, nome):
+        return {"gatilho": True, "opcao": self.modal_aberto and not self.form_aberto,
+                "senha": self.form_aberto}[nome]
+
+    def clique(self, alvo):
+        self.eventos.append(alvo)
+        if self.modal_aberto and alvo != "opcao":
+            self.modal_aberto = False  # caiu no fundo escuro
+            return
+        if alvo == "gatilho":
+            self.cliques_gatilho += 1
+            if self.cliques_gatilho >= self.hidrata_no_clique:
+                self.modal_aberto = True
+        elif alvo == "opcao":
+            self.form_aberto = True
 
     def get_by_role(self, role, name=None):
         assert role == "button"
@@ -453,24 +484,43 @@ class _PaginaLoginFalsa:
 def test_abrir_login_caminho_visto_ao_vivo() -> None:
     pagina = _PaginaLoginFalsa()
     asyncio.run(sy._abrir_login(pagina))
-    assert pagina.eventos == ["click:gatilho", "click:opcao"]
+    assert pagina.eventos == ["gatilho", "opcao"]
     assert pagina.form_aberto
 
 
 def test_abrir_login_reclica_ate_a_pagina_hidratar() -> None:
-    """A causa real das 5 falhas, reproduzida ao vivo com o MESMO dump da
-    produção: o 1º clique vinha antes da hidratação e não fazia nada."""
+    """Reproduzido ao vivo com o MESMO dump da produção: o 1º clique vinha
+    antes da hidratação e não fazia nada."""
     pagina = _PaginaLoginFalsa(hidrata_no_clique=4)
     asyncio.run(sy._abrir_login(pagina))
     assert pagina.cliques_gatilho == 4
     assert pagina.form_aberto
 
 
-def test_abrir_login_desiste_com_diagnostico_se_nunca_hidratar() -> None:
-    pagina = _PaginaLoginFalsa(hidrata_no_clique=10_000)
+def test_abrir_login_com_modal_ja_aberto_nao_clica_no_gatilho() -> None:
+    """A corrida vista com a CPU limitada 6x: o clique anterior abriu o
+    modal ATRASADO. Clicar no gatilho de novo cairia no fundo e fecharia o
+    modal — tem que olhar a tela e ir direto na opção."""
+    pagina = _PaginaLoginFalsa(modal_ja_aberto=True)
+    asyncio.run(sy._abrir_login(pagina))
+    assert pagina.eventos == ["opcao"]
+
+
+def test_abrir_login_desiste_com_diagnostico_se_nunca_hidratar(monkeypatch) -> None:
+    monkeypatch.setattr(sy, "LOGIN_ABRIR_TIMEOUT_S", 0.05)
+    pagina = _PaginaLoginFalsa(hidrata_no_clique=10**9)
     with pytest.raises(sy.SymplaError, match="Elementos visíveis"):
         asyncio.run(sy._abrir_login(pagina))
-    assert pagina.cliques_gatilho == sy.LOGIN_TENTATIVAS_ABRIR
+    assert pagina.cliques_gatilho >= 1
+
+
+def test_nenhum_clique_usa_locator_click() -> None:
+    """Log real do Pi: locator.click() ficou 10s em "waiting for element to
+    be visible, enabled and stable". Todo clique passa por _clicar."""
+    import inspect
+    src = _sem_comentarios(inspect.getsource(sy))
+    src = re.sub(r'"""(?:.|\n)*?"""', "", src)
+    assert ".click(" not in src.replace("page.mouse.click(", "")
 
 
 def test_abrir_login_nao_aperta_escape_nem_procura_menu() -> None:
@@ -748,3 +798,29 @@ def test_testar_nunca_morre_calado(monkeypatch) -> None:
 
     log = _rodar_testar(monkeypatch, _retirar)
     assert any(k == "answer" and "quebrou" in t[0] for k, *t in log)
+
+
+def test_busca_que_nao_carregou_nao_vira_nao_achei(monkeypatch) -> None:
+    """Com a CPU limitada 12x os resultados levaram 13,4s; o timeout antigo
+    (10s) devolvia lista vazia → "não achei nenhum evento". Busca que não
+    carregou tem que ser reportada como "não consegui checar"."""
+    import sys
+
+    ordem: list[str] = []
+    page = _FakePageScreenshot(ordem)
+    monkeypatch.setitem(sys.modules, "playwright.async_api",
+                        _fake_playwright_module(page, ordem))
+
+    async def _login_ok(_page, _creds):
+        return None
+    monkeypatch.setattr(sy, "_login", _login_ok)
+
+    async def _busca_lenta(*a, **kw):
+        raise sy.SymplaError("a busca da Sympla não terminou de carregar em 60s")
+    monkeypatch.setattr(sy, "_localizar_evento", _busca_lenta)
+
+    creds = sy.SymplaCredenciais("x@x.com", "1234x", "X Y", None)
+    r = asyncio.run(sy.retirar_ingresso(creds, "q", 2, poll_timeout_s=0))
+    assert r.sucesso is False
+    assert "não consegui checar" in r.detalhe
+    assert "não achei" not in r.detalhe
