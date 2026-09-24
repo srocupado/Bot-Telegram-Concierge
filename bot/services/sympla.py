@@ -245,6 +245,9 @@ INICIO_ANTECEDENCIA = timedelta(minutes=5)
 POLL_INTERVALO_S = 2.0
 # Desiste de procurar o evento depois disso (publicação atrasada/sumida).
 POLL_TIMEOUT_S = 180.0
+# Re-cliques no botão de login até a página hidratar (~3s cada; Orange Pi
+# é bem mais lento que o sandbox onde isto foi medido).
+LOGIN_TENTATIVAS_ABRIR = 10
 
 
 # ───────────────────────── automação (Playwright) ─────────────────────────
@@ -319,213 +322,81 @@ async def _dump_clicaveis(page, limite: int = 40) -> str:
         return "(não consegui listar os elementos da tela)"
 
 
-async def _icones_sem_nome_no_header(page):
-    """Botões do <header> SEM nenhum nome acessível (sem innerText, sem
-    aria-label) — invertidos (direita pra esquerda), porque ícone de
-    conta/perfil é quase sempre o ÚLTIMO elemento do cabeçalho.
-
-    Nasceu de um print REAL (24/09/2026): o dono viu a tela e disse "não
-    tem login, é uma imagem de boneco" — um ícone sem NENHUM texto por
-    perto, nem "Open Dropdown" nem qualquer palavra. Um elemento sem nome
-    é justamente o que `_dump_clicaveis` NUNCA lista (ela só reporta o que
-    tem texto/aria-label/title) — por isso ele era invisível em todas as
-    tentativas anteriores, mesmo com o diagnóstico funcionando.
-
-    SÓ <button>, nunca <a> (5º print, mesmo dia): a versão anterior incluía
-    "header a" e um LINK sem nome no header (provável ícone de ajuda) foi
-    clicado antes do ícone de conta de verdade — reproduzindo o exato bug da
-    navegação-fantasma pra Central de Ajuda que a estratégia 3 já tinha
-    corrigido, mas que continuava aberto aqui."""
-    try:
-        candidatos = await page.locator("header button").all()
-    except Exception:
-        return []
-    sem_nome = []
-    for el in candidatos:
-        try:
-            nome = (await el.inner_text() or "").strip()
-            if not nome:
-                nome = (await el.get_attribute("aria-label") or "").strip()
-            if not nome:
-                sem_nome.append(el)
-        except Exception:
-            continue
-    return list(reversed(sem_nome))
-
-
-async def _avancar_para_email_senha(page, campo_senha) -> None:
-    """Depois do modal de login abrir, a Sympla mostra um SELETOR de método
-    ("Continuar sem senha" / "Continuar com o Google" / "Continuar com
-    e-mail e senha") ANTES do formulário de e-mail+senha em si — confirmado
-    por print real (24/09/2026): o dono clicou no ícone certo, o modal "Que
-    bom ter você aqui!" abriu, mas o campo de senha só aparece depois de
-    escolher a opção "Continuar com e-mail e senha" (as outras duas levam
-    pra magic-link e OAuth, que este fluxo não usa). Se essa opção não
-    existir (ex.: sessão anterior já pulou direto pro formulário), segue
-    sem erro — quem decide se deu certo é o wait_for do campo de senha."""
-    try:
-        opcao = page.get_by_role(
-            "button", name=re.compile(r"e-?mail e senha", re.I)).first
-        await opcao.click(timeout=3_000)
-    except Exception:
-        pass
-    await campo_senha.wait_for(state="visible", timeout=5_000)
-
-
-async def _resetar_se_navegou(page, url_original: str) -> None:
-    """Se um clique mudou a URL (mesmo sendo botão — pode ser roteamento
-    client-side, ou o candidato ser outro elemento por engano) e a tentativa
-    falhou mesmo assim, a lista de candidatos da estratégia fica obsoleta
-    PRA ESSA PÁGINA NOVA: o próximo `.click()` da mesma lista reconsulta o
-    seletor genérico já na tela errada e pode clicar em qualquer coisa lá.
-
-    Nasceu do 5º uso real (24/09/2026): dump (capturado no fim de
-    `_abrir_login`, sem SymplaError ainda) mostrou a HOME de novo, mas o
-    screenshot de falha (capturado segundos depois, já fora desta função)
-    mostrou a Central de Ajuda com um item de FAQ aberto — prova de que a
-    navegação errada continuou em curso DEPOIS do dump, disparada por um
-    clique anterior desta mesma função. Sem resetar a página antes do
-    próximo candidato, esse tipo de desvio se acumula silenciosamente."""
-    if page.url != url_original:
-        try:
-            await page.goto(url_original, wait_until="domcontentloaded", timeout=15_000)
-        except Exception:
-            pass
-
-
 async def _abrir_login(page) -> None:
-    """3 tentativas — reescrita pela 4ª vez (24/09/2026) com base num PRINT
-    real da tela de falha, a evidência mais direta até agora.
+    """Abre o formulário de e-mail+senha. Caminho CONFIRMADO num Chromium de
+    verdade contra o site ao vivo (24/09/2026), não inferido:
 
-    As duas tentativas anteriores miravam hipóteses erradas: a URL "#login"
-    (não controla nada — é flag de store JS, ver histórico abaixo) e depois
-    o botão "Open Dropdown" (Radix, aria-haspopup=menu, confirmado no HTML
-    real). O print mostrou que NENHUM dos dois é o gatilho: "não tem login,
-    é uma imagem de boneco" — um ícone SEM nome nenhum, que o
-    _dump_clicaveis nunca conseguiria listar (só reporta o que tem
-    texto/aria-label). O print também revelou um bug SEPARADO: a tela final
-    era a Central de Ajuda da Sympla, não a home — o dump de texto (capturado
-    num instante) e o screenshot (capturado depois) mostravam páginas
-    DIFERENTES. Causa provável: o plano B clicava em LINKS além de botões, e
-    o termo genérico "acessar" bateu nalgum link de ajuda dentro do menu
-    "Open Dropdown" (que era menu de categorias/ajuda, não de conta) —
-    Playwright não espera a navegação de um link terminar antes de resolver
-    o click(), então o código seguiu adiante enquanto a página ainda trocava
-    por baixo. Por isso agora só clica em BOTÃO, nunca em link.
+      1. o botão do header com aria-label "Open Dropdown" (Radix) — é o
+         pílula hambúrguer+boneco que o dono circulou no print. Deslogado,
+         ele NÃO abre menu nenhum: abre direto o modal "Que bom ter você
+         aqui!";
+      2. no modal, "Continuar com e-mail e senha" — só então aparecem os
+         campos de e-mail e senha.
 
-    2º print no mesmo dia CONFIRMOU o ícone certo (círculo vermelho do dono
-    no cluster hambúrguer+boneco) e mostrou o passo seguinte: o clique abre
-    o modal "Que bom ter você aqui!" com 3 opções de login, e é preciso
-    escolher "Continuar com e-mail e senha" pra chegar no formulário de
-    verdade — ver `_avancar_para_email_senha`, chamada nas 3 estratégias.
+    Por que as versões anteriores falhavam, visto ao vivo: elas clicavam no
+    botão certo, procuravam um ITEM DE MENU que não existe e apertavam
+    Escape — o que FECHAVA o modal. Depois o plano B por texto ("minha
+    conta") achava o botão do FAQ "Não consigo acessar minha conta" no
+    rodapé da home; o print que parecia a Central de Ajuda era a própria
+    home rolada até o FAQ. Não houve navegação nenhuma.
 
-    5º print no mesmo dia repetiu a navegação-fantasma pra Central de Ajuda
-    apesar da correção anterior: a causa desta vez era `_icones_sem_nome_no_header`
-    ainda incluir `header a` (link), não só botão — corrigido lá. Como
-    defesa adicional contra qualquer repetição (nem que seja outro elemento
-    de novo), toda tentativa falha agora chama `_resetar_se_navegou` antes
-    de seguir pro próximo candidato, pra nunca reconsultar um seletor
-    genérico já na página errada."""
-    pagina_inicial = page.url
-    campo_senha = page.locator("input[type=password]").first
-    pistas: list[str] = []
-
-    # 1) Ícone sem nome no header — a evidência do 1º print, tentada primeiro.
-    for el in await _icones_sem_nome_no_header(page):
-        try:
-            await el.click(timeout=3_000)
-            await _avancar_para_email_senha(page, campo_senha)
-            return
-        except Exception:
-            try:
-                await page.keyboard.press("Escape")
-            except Exception:
-                pass
-            await _resetar_se_navegou(page, pagina_inicial)
-            continue
-
-    # 2) "Open Dropdown" (Radix) — mantido como plano B só pro caso de o
-    # ícone de conta ESTAR dentro dele mesmo, apesar do print sugerir que é
-    # um menu diferente (categorias/ajuda). SÓ clica em ITEM DE MENU (não
-    # link nenhum), pro caso de navegação-fantasma não se repetir.
+    E o motivo de fundo, reproduzido ao vivo com o MESMO dump da produção:
+    o clique vinha logo após o domcontentloaded, antes do React hidratar a
+    página — clique em botão só-SSR não faz nada. Por isso re-clica até o
+    modal responder, em vez de clicar uma vez só."""
+    gatilho = page.get_by_role(
+        "button", name=re.compile(r"^open dropdown$", re.I)).first
+    opcao = page.get_by_role(
+        "button", name=re.compile(r"e-?mail e senha", re.I)).first
     try:
-        candidatos = await page.get_by_role(
-            "button", name=re.compile(r"^open dropdown$", re.I)).all()
-    except Exception:
-        candidatos = []
-    for el in candidatos[:5]:
-        try:
-            await el.click(timeout=3_000)
-        except Exception:
-            continue
-        try:
-            item = page.get_by_role(
-                "menuitem", name=re.compile(r"^(entrar|login|fazer login)$", re.I),
-            ).first
-            await item.click(timeout=3_000)
-            await _avancar_para_email_senha(page, campo_senha)
-            return
-        except Exception:
-            pistas.append(f"menu aberto mostrou: {await _dump_clicaveis(page)}")
+        for tentativa in range(LOGIN_TENTATIVAS_ABRIR):
+            await gatilho.click(timeout=10_000)
             try:
-                await page.keyboard.press("Escape")
+                await opcao.wait_for(state="visible", timeout=3_000)
+                break
             except Exception:
-                pass
-            await _resetar_se_navegou(page, pagina_inicial)
-            continue
-
-    # 3) Texto candidato de BOTÃO — nunca link (ver docstring: foi um link
-    # que provavelmente causou a navegação-fantasma pra Central de Ajuda).
-    for termo in ("entrar", "login", "fazer login", "minha conta"):
-        try:
-            gatilho = page.get_by_role(
-                "button", name=re.compile(termo, re.I)).first
-            await gatilho.click(timeout=3_000)
-            await _avancar_para_email_senha(page, campo_senha)
-            return
-        except Exception:
-            await _resetar_se_navegou(page, pagina_inicial)
-            continue
-
-    visiveis = await _dump_clicaveis(page)
-    detalhe_pistas = (" | " + " || ".join(pistas)) if pistas else ""
-    raise SymplaError(
-        "não achei como abrir o login (menu do 'Open Dropdown' nem botão de "
-        f"texto). Elementos visíveis na tela: {visiveis}{detalhe_pistas}"
-    )
+                if tentativa == LOGIN_TENTATIVAS_ABRIR - 1:
+                    raise
+        await opcao.click(timeout=10_000)
+        await page.locator("input[type=password]:visible").first.wait_for(
+            state="visible", timeout=10_000)
+    except Exception as exc:
+        visiveis = await _dump_clicaveis(page)
+        raise SymplaError(
+            f"não consegui abrir o formulário de e-mail e senha ({exc}). "
+            f"Elementos visíveis na tela: {visiveis}"
+        ) from exc
 
 
 async def _login(page, creds: SymplaCredenciais) -> None:
-    # Carrega a página LIMPA (sem hash) — a mudança pra "#login" precisa
-    # acontecer DEPOIS de montada, ver _abrir_login.
     await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30_000)
     await _abrir_login(page)
-    campo_senha = page.locator("input[type=password]").first
 
-    # Campo de e-mail/senha por TIPO de input (HTML semântico, não rótulo
-    # ARIA nem classe da Sympla) — mais estável que confiar em label/aria
-    # num site que eu não controlo. E-mail costuma vir ANTES da senha na
-    # ordem do DOM; pega o primeiro input de texto/e-mail visível na tela.
-    campo_email = page.locator(
-        "input[type=email], input[autocomplete=username], input[type=text]"
-    ).first
+    # :visible é obrigatório (visto ao vivo): há um 2º input[type=email]
+    # escondido no modal, e a busca "Buscar experiências" (type=text) vem
+    # ANTES do modal no DOM — o seletor antigo digitava o e-mail na busca.
+    campo_email = page.locator("input[type=email]:visible").first
+    campo_senha = page.locator("input[type=password]:visible").first
     await campo_email.fill(creds.email, timeout=10_000)
     await campo_senha.fill(creds.senha, timeout=10_000)
 
-    submit = page.locator(
-        "form button[type=submit], button[type=submit]"
-    ).first
-    try:
-        await submit.click(timeout=5_000)
-    except Exception:
-        # Sem botão type=submit visível: tenta Enter no campo de senha —
-        # funciona na maioria dos formulários de login.
-        await campo_senha.press("Enter")
+    # O botão ENTRAR é type="button" (não submit), confirmado ao vivo.
+    await page.get_by_role(
+        "button", name=re.compile(r"^entrar$", re.I),
+    ).first.click(timeout=10_000)
 
-    # Confirma autenticado pelo DESAPARECIMENTO do campo de senha (o modal
-    # fecha ao logar com sucesso). Login errado deixa o modal aberto e este
-    # wait estoura — vira SymplaError com contexto na camada de cima.
-    await campo_senha.wait_for(state="detached", timeout=15_000)
+    # Login certo fecha o modal (o campo some). Login errado deixa aberto
+    # com "E-mail ou senha inválidos" (texto visto ao vivo com conta falsa).
+    try:
+        await page.locator("input[type=password]").first.wait_for(
+            state="hidden", timeout=20_000)
+    except Exception as exc:
+        if await page.get_by_text(re.compile(r"senha inv[aá]lid", re.I)).count():
+            raise SymplaError(
+                "a Sympla recusou o login: 'E-mail ou senha inválidos'. "
+                "Confira com /sympla_setup email e /sympla_setup senha."
+            ) from exc
+        raise
 
 
 async def _buscar_candidatos(page, query: str) -> list[EventoCandidato]:

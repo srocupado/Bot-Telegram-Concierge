@@ -397,283 +397,98 @@ def test_abrir_login_tenta_a_pista_open_dropdown() -> None:
     assert "open dropdown" in src.lower()
 
 
-def test_abrir_login_clica_item_do_menu_apos_abrir_o_dropdown() -> None:
-    """aria-haspopup="menu" no HTML real prova que o clique só abre um MENU
-    — faltava exatamente este passo nas duas tentativas anteriores: elas
-    checavam o campo de senha direto após clicar no gatilho, sem nunca
-    clicar em nada DENTRO do menu que abria."""
-    import inspect
-    src = inspect.getsource(sy._abrir_login)
-    assert '"menuitem"' in src
+class _LocFalso:
+    def __init__(self, pagina, nome):
+        self._p = pagina
+        self._nome = nome
 
-
-def test_abrir_login_tenta_varias_ocorrencias_do_dropdown_nao_so_a_primeira() -> None:
-    """"Open Dropdown" pode não ser único (idioma, moeda, notificação usam o
-    mesmo rótulo genérico) — usar só .first arriscaria abrir o dropdown
-    errado e nunca sobrar tentativa pro certo."""
-    import inspect
-    src = inspect.getsource(sy._abrir_login)
-    assert ".all()" in src
-    assert "Escape" in src, "não fecha o dropdown errado antes do próximo"
-
-
-def test_abrir_login_ainda_tenta_texto_candidato_como_ultimo_recurso() -> None:
-    import inspect
-    src = inspect.getsource(sy._abrir_login)
-    assert "entrar" in src.lower() and "fazer login" in src.lower()
-
-
-def test_abrir_login_nunca_clica_em_link() -> None:
-    """Guarda de regressão do bug da Central de Ajuda (24/09/2026): o plano
-    B clicava em LINKS além de botões, e um termo genérico bateu num link de
-    ajuda — Playwright não espera a navegação de um link terminar, então o
-    código seguiu em frente enquanto a página trocava por baixo. Não pode
-    voltar a clicar em `role="link"` em nenhuma estratégia."""
-    import inspect
-    src = _sem_comentarios(inspect.getsource(sy._abrir_login))
-    assert 'get_by_role("link"' not in src
-    assert "get_by_role('link'" not in src
-
-
-def test_abrir_login_prioriza_icone_sem_nome_do_header() -> None:
-    """2º print real (24/09/2026, círculo vermelho do dono no cluster
-    hambúrguer+boneco) confirmou o ícone sem nome do header como gatilho
-    certo — tem que ser a PRIMEIRA estratégia tentada, antes do "Open
-    Dropdown" (que o mesmo print sugere ser outro menu, categorias/ajuda)."""
-    import inspect
-    src = _sem_comentarios(inspect.getsource(sy._abrir_login))
-    assert "_icones_sem_nome_no_header(page)" in src
-    pos_icone = src.index("_icones_sem_nome_no_header(page)")
-    pos_dropdown = src.lower().index("open dropdown")
-    assert pos_icone < pos_dropdown, (
-        "ícone sem nome (evidência do print) tem que ser tentado primeiro"
-    )
-
-
-def test_abrir_login_usa_avancar_para_email_senha_nas_3_estrategias() -> None:
-    """2º print real (24/09/2026): depois de abrir o modal certo, a Sympla
-    mostra um SELETOR de método ("sem senha" / Google / "e-mail e senha")
-    antes do formulário — esperar o campo de senha direto após o clique no
-    gatilho (sem escolher a opção) não funciona mais em NENHUMA das 3
-    estratégias."""
-    import inspect
-    src = inspect.getsource(sy._abrir_login)
-    assert src.count("_avancar_para_email_senha(page, campo_senha)") == 3
-    assert "campo_senha.wait_for" not in src, (
-        "wait_for direto sem passar pelo seletor de método quebra o modal novo"
-    )
-
-
-class _ElementoHeaderFalso:
-    def __init__(self, texto: str | None = None, aria: str | None = None):
-        self._texto = texto
-        self._aria = aria
-
-    async def inner_text(self):
-        return self._texto or ""
-
-    async def get_attribute(self, nome):
-        return self._aria if nome == "aria-label" else None
-
-
-class _LocatorHeaderFalso:
-    def __init__(self, elementos):
-        self._elementos = elementos
-
-    async def all(self):
-        return self._elementos
-
-
-class _PaginaHeaderFalsa:
-    def __init__(self, elementos):
-        self._loc = _LocatorHeaderFalso(elementos)
-
-    def locator(self, seletor):
-        assert seletor == "header button", (
-            "não pode voltar a incluir 'header a' — foi um link sem nome "
-            "que causou a navegação-fantasma pra Central de Ajuda (5º "
-            "print, 24/09/2026)"
-        )
-        return self._loc
-
-
-def test_icones_sem_nome_no_header_ignora_com_nome_e_inverte_ordem() -> None:
-    """Achado do 1º print (24/09/2026): "não tem login, é uma imagem de
-    boneco" — um ícone sem NENHUM nome acessível. Só esses entram, e na
-    ordem direita-pra-esquerda (o ícone de conta é tipicamente o último do
-    cabeçalho)."""
-    com_texto = _ElementoHeaderFalso(texto="Criar evento")
-    com_aria = _ElementoHeaderFalso(aria="Notificações")
-    sem_nome_1 = _ElementoHeaderFalso(texto="", aria="")
-    sem_nome_2 = _ElementoHeaderFalso(texto="", aria="")
-    pagina = _PaginaHeaderFalsa([com_texto, com_aria, sem_nome_1, sem_nome_2])
-
-    out = asyncio.run(sy._icones_sem_nome_no_header(pagina))
-
-    assert out == [sem_nome_2, sem_nome_1]
-
-
-def test_icones_sem_nome_no_header_sem_header_nao_quebra() -> None:
-    class _Explode:
-        def locator(self, _seletor):
-            raise RuntimeError("sem header nesta página")
-
-    out = asyncio.run(sy._icones_sem_nome_no_header(_Explode()))
-    assert out == []
-
-
-def test_icones_sem_nome_no_header_nunca_inclui_link() -> None:
-    """5º print real (24/09/2026): a versão anterior consultava
-    "header button, header a" e um LINK sem nome (provável ícone de ajuda)
-    foi clicado antes do ícone de conta de verdade, navegando pra Central
-    de Ajuda de novo — mesmo bug que a estratégia 3 já tinha corrigido, só
-    que aberto aqui. Guarda de regressão: nunca mais incluir <a>."""
-    import inspect
-    src = _sem_comentarios(inspect.getsource(sy._icones_sem_nome_no_header))
-    assert "header a" not in src
-    assert '"header button"' in src
-
-
-class _CampoSenhaFalso:
-    def __init__(self):
-        self.esperou = False
-
-    async def wait_for(self, **kw):
-        self.esperou = True
-
-
-class _BotaoFalso:
-    def __init__(self):
-        self.clicado = False
+    @property
+    def first(self):
+        return self
 
     async def click(self, **kw):
-        self.clicado = True
+        self._p.eventos.append(f"click:{self._nome}")
+        if self._nome == "gatilho":
+            self._p.cliques_gatilho += 1
+            if self._p.cliques_gatilho >= self._p.hidrata_no_clique:
+                self._p.modal_aberto = True
+        elif self._nome == "opcao":
+            self._p.form_aberto = True
+
+    async def wait_for(self, state="visible", **kw):
+        ok = {"opcao": self._p.modal_aberto,
+              "senha": self._p.form_aberto}.get(self._nome, True)
+        if not ok:
+            raise TimeoutError(f"{self._nome} não apareceu")
 
 
-class _ResultadoRoleFalso:
-    def __init__(self, botao):
-        self.first = botao
+class _PaginaLoginFalsa:
+    """Reproduz o que foi VISTO ao vivo (24/09/2026): antes do React
+    hidratar, clicar no "Open Dropdown" não faz nada; depois, abre direto o
+    modal (sem menu), e "e-mail e senha" revela o formulário."""
 
-
-class _PaginaComOpcaoFalsa:
-    def __init__(self, botao):
-        self._botao = botao
-        self.chamadas: list[tuple] = []
+    def __init__(self, hidrata_no_clique=1):
+        self.hidrata_no_clique = hidrata_no_clique
+        self.cliques_gatilho = 0
+        self.modal_aberto = False
+        self.form_aberto = False
+        self.eventos: list[str] = []
 
     def get_by_role(self, role, name=None):
-        self.chamadas.append((role, name))
-        return _ResultadoRoleFalso(self._botao)
+        assert role == "button"
+        if name.search("Open Dropdown"):
+            return _LocFalso(self, "gatilho")
+        if name.search("Continuar com e-mail e senha"):
+            return _LocFalso(self, "opcao")
+        raise AssertionError(name)
+
+    def locator(self, seletor):
+        assert "password" in seletor
+        return _LocFalso(self, "senha")
+
+    async def eval_on_selector_all(self, *a):
+        return ["Open Dropdown"]
 
 
-def test_avancar_para_email_senha_clica_a_opcao_antes_de_esperar_senha() -> None:
-    """2º print real (24/09/2026): o modal "Que bom ter você aqui!" tem 3
-    opções, e só "Continuar com e-mail e senha" leva ao formulário que este
-    fluxo usa."""
-    botao = _BotaoFalso()
-    pagina = _PaginaComOpcaoFalsa(botao)
-    campo_senha = _CampoSenhaFalso()
-
-    asyncio.run(sy._avancar_para_email_senha(pagina, campo_senha))
-
-    assert botao.clicado is True
-    assert campo_senha.esperou is True
-    role, nome = pagina.chamadas[0]
-    assert role == "button"
-    assert nome.search("e-mail e senha") or nome.search("email e senha")
-
-
-def test_avancar_para_email_senha_sem_a_opcao_ainda_espera_senha() -> None:
-    """Se a opção não existir (ex.: sessão anterior já foi direto pro
-    formulário), não pode travar — só espera o campo de senha mesmo assim."""
-    class _SemOpcao:
-        def get_by_role(self, role, name=None):
-            raise RuntimeError("não achou botão nenhum")
-
-    campo_senha = _CampoSenhaFalso()
-    asyncio.run(sy._avancar_para_email_senha(_SemOpcao(), campo_senha))
-    assert campo_senha.esperou is True
-
-
-def test_abrir_login_reseta_a_pagina_se_um_clique_navegar_no_meio_da_estrategia() -> None:
-    """Reproduz o 5º print real (24/09/2026): dump (capturado no fim de
-    `_abrir_login`) mostrava a HOME, mas o screenshot de falha, segundos
-    depois, mostrava a Central de Ajuda — prova de que um clique anterior
-    disparou uma navegação que só terminou DEPOIS. Na época era um <a> sem
-    nome (corrigido em `_icones_sem_nome_no_header`); este teste cobre a
-    defesa GENÉRICA — se QUALQUER candidato mudar a URL e a tentativa
-    falhar mesmo assim, o próximo candidato da lista não pode ser tentado
-    já na página errada."""
-    import types
-
-    class _ElementoHeaderComEfeito:
-        def __init__(self, pagina, nome, efeito):
-            self._pagina = pagina
-            self._nome = nome
-            self._efeito = efeito
-
-        async def inner_text(self):
-            return ""
-
-        async def get_attribute(self, _nome):
-            return None
-
-        async def click(self, **kw):
-            self._pagina.cliques.append(self._nome)
-            self._efeito(self._pagina)
-
-    class _CampoSenhaLigadoAPagina:
-        def __init__(self, pagina):
-            self._pagina = pagina
-
-        async def wait_for(self, **kw):
-            if not self._pagina.logado:
-                raise TimeoutError("campo de senha não apareceu")
-
-    class _TecladoFalso:
-        async def press(self, *_a, **_kw):
-            pass
-
-    class _PaginaComNavegacaoFantasma:
-        def __init__(self):
-            self.url = "https://www.sympla.com.br/"
-            self.logado = False
-            self.cliques: list[str] = []
-            self.gotos: list[str] = []
-            self.keyboard = _TecladoFalso()
-            self._elementos = [
-                _ElementoHeaderComEfeito(
-                    self, "conta", lambda p: setattr(p, "logado", True)),
-                _ElementoHeaderComEfeito(
-                    self, "ajuda",
-                    lambda p: setattr(
-                        p, "url", "https://www.sympla.com.br/central-de-ajuda")),
-            ]
-
-        def locator(self, seletor):
-            if seletor == "header button":
-                return _LocatorHeaderFalso(list(self._elementos))
-            if seletor == "input[type=password]":
-                return types.SimpleNamespace(first=_CampoSenhaLigadoAPagina(self))
-            raise AssertionError(seletor)
-
-        def get_by_role(self, *a, **kw):
-            raise RuntimeError("sem esse papel nesta página falsa")
-
-        async def goto(self, url, **kw):
-            self.gotos.append(url)
-            self.url = url
-
-    pagina = _PaginaComNavegacaoFantasma()
-
+def test_abrir_login_caminho_visto_ao_vivo() -> None:
+    pagina = _PaginaLoginFalsa()
     asyncio.run(sy._abrir_login(pagina))
+    assert pagina.eventos == ["click:gatilho", "click:opcao"]
+    assert pagina.form_aberto
 
-    assert pagina.cliques == ["ajuda", "conta"], (
-        "ordem invertida esperada: o candidato errado é tentado antes do certo"
-    )
-    assert pagina.gotos == ["https://www.sympla.com.br/"], (
-        "tem que voltar pra página original antes do próximo candidato"
-    )
-    assert pagina.logado is True
+
+def test_abrir_login_reclica_ate_a_pagina_hidratar() -> None:
+    """A causa real das 5 falhas, reproduzida ao vivo com o MESMO dump da
+    produção: o 1º clique vinha antes da hidratação e não fazia nada."""
+    pagina = _PaginaLoginFalsa(hidrata_no_clique=4)
+    asyncio.run(sy._abrir_login(pagina))
+    assert pagina.cliques_gatilho == 4
+    assert pagina.form_aberto
+
+
+def test_abrir_login_desiste_com_diagnostico_se_nunca_hidratar() -> None:
+    pagina = _PaginaLoginFalsa(hidrata_no_clique=10_000)
+    with pytest.raises(sy.SymplaError, match="Elementos visíveis"):
+        asyncio.run(sy._abrir_login(pagina))
+    assert pagina.cliques_gatilho == sy.LOGIN_TENTATIVAS_ABRIR
+
+
+def test_abrir_login_nao_aperta_escape_nem_procura_menu() -> None:
+    """Visto ao vivo: não existe menu; o Escape das versões anteriores
+    FECHAVA o modal que o clique certo tinha acabado de abrir."""
+    import inspect
+    src = _sem_comentarios(inspect.getsource(sy._abrir_login))
+    assert "Escape" not in src
+    assert "menuitem" not in src
+
+
+def test_login_nunca_usa_input_text_generico() -> None:
+    """Visto ao vivo: a busca "Buscar experiências" (type=text) vem antes
+    do modal no DOM — o seletor antigo digitava o e-mail nela."""
+    import inspect
+    src = _sem_comentarios(inspect.getsource(sy._login))
+    assert "input[type=text]" not in src
+    assert 'input[type=email]:visible' in src
 
 
 # ───────────── bug real: screenshot de falha nunca chegava ─────────────
