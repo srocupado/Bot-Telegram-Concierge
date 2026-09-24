@@ -11,6 +11,7 @@ janela real não deve haver evento publicado, então o desfecho esperado é
 """
 from __future__ import annotations
 
+import html
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -177,23 +178,41 @@ async def cmd_testar(message: Message, user: User, session: AsyncSession) -> Non
         )
         return
 
-    aviso = await message.answer(
-        "🎫 Testando: login + busca do evento (fora da janela de quarta, o "
-        "esperado é 'não achei o evento' — isso já confirma login e busca "
-        "funcionando). Pode levar até 3 minutos.", parse_mode=None,
+    cabecalho = (
+        "🎫 Testando: login + UMA busca do evento (fora da janela de quarta, "
+        "o esperado é 'não achei nenhum evento aberto' — isso já confirma "
+        "login e busca). Leva de 1 a 2 minutos."
     )
-    from bot.services.sympla import POLL_TIMEOUT_S
-    resultado = await retirar_ingresso(
-        creds, settings.sympla_search_query, settings.sympla_qty,
-    )
-    texto = (
-        f"{'✅' if resultado.sucesso else 'ℹ️'} <b>{resultado.etapa}</b>\n"
-        f"{resultado.detalhe}"
-    )
-    if resultado.evento_url:
-        texto += f"\n{resultado.evento_url}"
-    await aviso.edit_text(texto, parse_mode="HTML")
-    if resultado.screenshot:
-        await message.answer_photo(
-            BufferedInputFile(resultado.screenshot, filename="sympla.png"),
+    aviso = await message.answer(cabecalho, parse_mode=None)
+
+    async def _progresso(etapa: str) -> None:
+        await aviso.edit_text(f"{cabecalho}\n\n⏳ etapa: {etapa}…", parse_mode=None)
+
+    # Nada aqui pode morrer calado: o 1º teste depois do login novo não
+    # devolveu nada ao dono (causa não confirmada — sem log do Pi). Um
+    # caminho certo de silêncio: o detalhe traz texto cru do Playwright
+    # (ex.: "<input ...>") e ia como HTML sem escape; o Telegram recusa e a
+    # exceção morria no handler.
+    try:
+        resultado = await retirar_ingresso(
+            creds, settings.sympla_search_query, settings.sympla_qty,
+            poll_timeout_s=0, on_etapa=_progresso,
+        )
+        texto = (
+            f"{'✅' if resultado.sucesso else 'ℹ️'} <b>{html.escape(resultado.etapa)}</b>\n"
+            f"{html.escape(resultado.detalhe[:3500])}"
+        )
+        if resultado.evento_url:
+            texto += f"\n{html.escape(resultado.evento_url)}"
+        await aviso.edit_text(texto, parse_mode="HTML")
+        if resultado.screenshot:
+            await message.answer_photo(
+                BufferedInputFile(resultado.screenshot, filename="sympla.png"),
+            )
+    except Exception as exc:
+        logger.exception("sympla_testar: falha ao rodar/reportar")
+        await message.answer(
+            f"❌ O teste quebrou antes de conseguir me reportar: "
+            f"{type(exc).__name__}: {str(exc)[:1500]}",
+            parse_mode=None,
         )

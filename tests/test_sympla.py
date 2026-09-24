@@ -616,3 +616,135 @@ def test_falha_fora_do_login_tambem_carrega_o_dump() -> None:
     assert "isinstance(exc, SymplaError)" in src, (
         "sem essa checagem o dump do login duplicaria dentro dele mesmo"
     )
+
+
+# ───────────── 1º teste real depois do login novo (24/09/2026) ─────────────
+
+def test_busca_usa_o_parametro_real_s_e_nao_q() -> None:
+    """Visto ao vivo digitando na caixa do site: a busca é /eventos?s=...
+    Com "q=" a página ignorava o termo e listava eventos genéricos de
+    Brasília (Rock Night, Bailão...) — o concerto nunca seria achado."""
+    url = sy.SEARCH_URL.format(query="x")
+    assert url == "https://www.sympla.com.br/eventos?s=x"
+
+
+def test_teste_manual_faz_uma_busca_so_e_avisa_cada_etapa(monkeypatch) -> None:
+    import sys
+
+    ordem: list[str] = []
+    page = _FakePageScreenshot(ordem)
+    monkeypatch.setitem(sys.modules, "playwright.async_api",
+                        _fake_playwright_module(page, ordem))
+
+    async def _login_ok(_page, _creds):
+        return None
+    monkeypatch.setattr(sy, "_login", _login_ok)
+
+    buscas = []
+
+    async def _localizar_vazio(*a, **kw):
+        buscas.append(1)
+        return None
+    monkeypatch.setattr(sy, "_localizar_evento", _localizar_vazio)
+
+    etapas: list[str] = []
+
+    async def _on_etapa(e):
+        etapas.append(e)
+
+    creds = sy.SymplaCredenciais("x@x.com", "1234x", "X Y", None)
+    r = asyncio.run(sy.retirar_ingresso(
+        creds, "query", 2, poll_timeout_s=0, on_etapa=_on_etapa))
+
+    assert buscas == [1]
+    assert etapas == ["login", "localizar o evento da semana"]
+    assert r.sucesso is False and "busca única" in r.detalhe
+
+
+def test_progresso_que_falha_nao_derruba_a_retirada(monkeypatch) -> None:
+    import sys
+
+    ordem: list[str] = []
+    page = _FakePageScreenshot(ordem)
+    monkeypatch.setitem(sys.modules, "playwright.async_api",
+                        _fake_playwright_module(page, ordem))
+
+    async def _login_ok(_page, _creds):
+        return None
+    monkeypatch.setattr(sy, "_login", _login_ok)
+
+    async def _localizar_vazio(*a, **kw):
+        return None
+    monkeypatch.setattr(sy, "_localizar_evento", _localizar_vazio)
+
+    async def _on_etapa(e):
+        raise RuntimeError("Telegram fora")
+
+    creds = sy.SymplaCredenciais("x@x.com", "1234x", "X Y", None)
+    r = asyncio.run(sy.retirar_ingresso(
+        creds, "query", 2, poll_timeout_s=0, on_etapa=_on_etapa))
+    assert r.etapa == "localizar o evento da semana"
+
+
+class _AvisoFalso:
+    def __init__(self, log):
+        self._log = log
+
+    async def edit_text(self, texto, parse_mode=None):
+        if parse_mode == "HTML":
+            import re as _re
+            # Telegram recusa tag desconhecida — é o que matava a resposta.
+            for tag in _re.findall(r"</?([a-zA-Z]+)", texto):
+                if tag not in ("b", "i", "code", "pre", "a"):
+                    raise RuntimeError(f"can't parse entities: <{tag}>")
+        self._log.append(("edit", texto))
+
+
+class _MensagemFalsa:
+    def __init__(self):
+        self.log: list = []
+
+    async def answer(self, texto, parse_mode=None):
+        self.log.append(("answer", texto))
+        return _AvisoFalso(self.log)
+
+    async def answer_photo(self, *a, **kw):
+        self.log.append(("photo",))
+
+
+def _rodar_testar(monkeypatch, fake_retirar):
+    from bot.handlers import sympla as h
+    import types
+
+    async def _creds(_s):
+        return sy.SymplaCredenciais("x@x.com", "1234x", "X Y", None)
+    monkeypatch.setattr(h, "get_credenciais", _creds)
+    monkeypatch.setattr(h, "retirar_ingresso", fake_retirar)
+    monkeypatch.setattr(h, "_is_owner", lambda u: True)
+    msg = _MensagemFalsa()
+    user = types.SimpleNamespace(is_authorized=True)
+    asyncio.run(h.cmd_testar(msg, user, None))
+    return msg.log
+
+
+def test_testar_escapa_html_do_detalhe(monkeypatch) -> None:
+    """Detalhe de falha do Playwright traz HTML cru ("<input ...>"); sem
+    escape o Telegram recusa a mensagem e o dono fica sem resposta."""
+    async def _retirar(*a, **kw):
+        return sy.SymplaResultado(
+            False, "login",
+            'TimeoutError: resolved to visible <input type="password">',
+            screenshot=b"PNG")
+
+    log = _rodar_testar(monkeypatch, _retirar)
+    edits = [t for k, *t in log if k == "edit"]
+    assert edits and "&lt;input" in edits[-1][0]
+    assert ("photo",) in log
+
+
+def test_testar_nunca_morre_calado(monkeypatch) -> None:
+    async def _retirar(*a, **kw):
+        raise RuntimeError("playwright sumiu")
+
+    log = _rodar_testar(monkeypatch, _retirar)
+    assert any(k == "answer" and "quebrou" in t[0] for k, *t in log)

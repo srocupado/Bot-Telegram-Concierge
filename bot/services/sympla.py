@@ -57,7 +57,10 @@ logger = logging.getLogger(__name__)
 BRT = ZoneInfo("America/Sao_Paulo")
 
 BASE_URL = "https://www.sympla.com.br"
-SEARCH_URL = BASE_URL + "/eventos/brasilia-df?category=city&q={query}"
+# "s" é o parâmetro real da busca (visto ao vivo, 24/09/2026, digitando na
+# caixa do site). O "q" usado antes era IGNORADO: a página devolvia a lista
+# genérica de Brasília (Rock Night, Bailão...) e o concerto nunca seria achado.
+SEARCH_URL = BASE_URL + "/eventos?s={query}"
 
 _KV_EMAIL = "sympla_email"
 _KV_PASSWORD = "sympla_password"
@@ -488,6 +491,7 @@ async def _preencher_checkout(page, creds: SymplaCredenciais) -> None:
 
 async def retirar_ingresso(
     creds: SymplaCredenciais, query: str, qty: int, *, agora: datetime | None = None,
+    poll_timeout_s: float = POLL_TIMEOUT_S, on_etapa=None,
 ) -> SymplaResultado:
     """Orquestra o fluxo inteiro. Qualquer exceção numa etapa vira resultado
     de FALHA com screenshot — nunca propaga pro chamador como traceback cru,
@@ -508,6 +512,16 @@ async def retirar_ingresso(
 
     hoje = (agora or datetime.now(BRT)).astimezone(BRT).date()
     etapa = "iniciar navegador"
+
+    async def _avisar(nova: str) -> None:
+        nonlocal etapa
+        etapa = nova
+        if on_etapa is not None:
+            try:
+                await on_etapa(nova)
+            except Exception:
+                logger.exception("sympla: falha ao avisar progresso")
+
     falha_screenshot: bytes | None = None
     falha_extra = ""
     try:
@@ -518,33 +532,34 @@ async def retirar_ingresso(
                 context = await browser.new_context(locale="pt-BR")
                 page = await context.new_page()
 
-                etapa = "login"
+                await _avisar("login")
                 await _login(page, creds)
 
-                etapa = "localizar o evento da semana"
+                await _avisar("localizar o evento da semana")
                 evento = None
                 import time as _time
-                deadline = _time.monotonic() + POLL_TIMEOUT_S
-                while _time.monotonic() < deadline:
+                deadline = _time.monotonic() + poll_timeout_s
+                while True:
                     evento = await _localizar_evento(page, query, hoje)
-                    if evento is not None:
+                    if evento is not None or _time.monotonic() >= deadline:
                         break
                     await page.wait_for_timeout(int(POLL_INTERVALO_S * 1000))
                 if evento is None:
                     return SymplaResultado(
                         False, etapa,
-                        f"não achei nenhum evento publicado pra '{query}' em "
-                        f"{POLL_TIMEOUT_S:.0f}s de tentativas.",
+                        f"não achei nenhum evento aberto pra '{query}'"
+                        + (f" em {poll_timeout_s:.0f}s de tentativas."
+                           if poll_timeout_s else " (busca única)."),
                         screenshot=await _screenshot_seguro(page),
                     )
 
-                etapa = "abrir o evento"
+                await _avisar("abrir o evento")
                 await page.goto(evento.url, wait_until="domcontentloaded", timeout=30_000)
 
-                etapa = "selecionar ingressos e reservar"
+                await _avisar("selecionar ingressos e reservar")
                 await _selecionar_e_reservar(page, qty)
 
-                etapa = "preencher checkout"
+                await _avisar("preencher checkout")
                 await _preencher_checkout(page, creds)
 
                 return SymplaResultado(
