@@ -69,7 +69,13 @@ _KV_CPF = "sympla_cpf"
 
 
 class SymplaError(Exception):
-    """Falha no fluxo — a mensagem já diz o PASSO onde parou."""
+    """Falha no fluxo — a mensagem já diz o PASSO onde parou. `print_meio`
+    guarda uma tela capturada NO MEIO da etapa (o print do fim nem sempre
+    mostra o que deu errado)."""
+
+    def __init__(self, msg: str, print_meio: bytes | None = None):
+        super().__init__(msg)
+        self.print_meio = print_meio
 
 
 # ───────────────────────── credenciais (kv_settings) ─────────────────────────
@@ -267,6 +273,7 @@ class SymplaResultado:
     evento_titulo: str | None = None
     evento_url: str | None = None
     screenshot: bytes | None = None
+    print_meio: bytes | None = None
 
 
 CHROMIUM_ARGS = [
@@ -420,27 +427,53 @@ async def _abrir_login(page) -> None:
     opcao = page.get_by_role(
         "button", name=re.compile(r"e-?mail e senha", re.I)).first
     senha = page.locator("input[type=password]:visible").first
+    # Título do modal (visto ao vivo). Modal aberto com a opção ainda não
+    # desenhada = ESPERAR: clicar no botão de novo cairia no fundo escuro e
+    # fecharia o modal.
+    modal = page.get_by_text(re.compile(r"que bom ter voc", re.I)).first
     import time as _time
-    prazo = _time.monotonic() + LOGIN_ABRIR_TIMEOUT_S
+    inicio = _time.monotonic()
+    prazo = inicio + LOGIN_ABRIR_TIMEOUT_S
     ultimo_erro: Exception | None = None
+    # O Pi falhou aqui e não consegui reproduzir (nem com a mesma build do
+    # Chromium e CPU 20x mais lenta): o rastro e o print do meio existem pra
+    # a próxima falha dizer O QUE a tela mostrava, em vez de eu adivinhar.
+    rastro: list[str] = []
+    print_meio: bytes | None = None
     while _time.monotonic() < prazo:
         try:
             await _passar_cloudflare(page)
             if await _visivel(senha):
                 return
             if await _visivel(opcao):
+                rastro.append(f"{_time.monotonic() - inicio:.0f}s opção visível → clico nela")
                 await _clicar(page, opcao)
                 await senha.wait_for(state="visible", timeout=10_000)
                 return
+            if await _visivel(modal):
+                rastro.append(f"{_time.monotonic() - inicio:.0f}s modal aberto sem a opção → espero")
+                await opcao.wait_for(state="visible", timeout=10_000)
+                continue
+            rastro.append(f"{_time.monotonic() - inicio:.0f}s clico no botão da conta")
             await _clicar(page, gatilho)
             await opcao.wait_for(state="visible", timeout=10_000)
         except Exception as exc:
             ultimo_erro = exc
+            if print_meio is None:
+                print_meio = await _screenshot_seguro(page)
+                rastro.append(
+                    f"{_time.monotonic() - inicio:.0f}s (print do meio) "
+                    f"modal={await _visivel(modal)} "
+                    f"desafio={await _cloudflare_na_tela(page)} "
+                    f"url={getattr(page, 'url', '?')}")
     visiveis = await _dump_clicaveis(page)
+    erro = str(ultimo_erro).splitlines()[0] if ultimo_erro else "-"
     raise SymplaError(
         f"não consegui abrir o formulário de e-mail e senha em "
-        f"{LOGIN_ABRIR_TIMEOUT_S:.0f}s (último erro: {ultimo_erro}). "
-        f"Elementos visíveis na tela: {visiveis}"
+        f"{LOGIN_ABRIR_TIMEOUT_S:.0f}s (último erro: {erro}). "
+        f"Rastro: {' | '.join(rastro[:12])}. "
+        f"Elementos visíveis na tela: {visiveis}",
+        print_meio=print_meio,
     )
 
 
@@ -621,6 +654,7 @@ async def retirar_ingresso(
                 logger.exception("sympla: falha ao avisar progresso")
 
     falha_screenshot: bytes | None = None
+    falha_print_meio: bytes | None = None
     falha_extra = ""
     try:
         async with async_playwright() as p:
@@ -687,6 +721,7 @@ async def retirar_ingresso(
                 # mensagem; não precisa mais tocar a página.
                 if page is not None:
                     falha_screenshot = await _screenshot_seguro(page)
+                    falha_print_meio = getattr(exc, "print_meio", None)
                     # SymplaError já embute o dump de elementos visíveis
                     # quando faz sentido (ver _abrir_login). Pras demais
                     # etapas, monta aqui — transforma "estourou de novo" em
@@ -702,4 +737,5 @@ async def retirar_ingresso(
         detalhe = f"{type(exc).__name__}: {exc}{falha_extra}"
         return SymplaResultado(
             False, etapa, detalhe, screenshot=falha_screenshot,
+            print_meio=falha_print_meio,
         )

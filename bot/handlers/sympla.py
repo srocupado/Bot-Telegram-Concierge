@@ -205,9 +205,15 @@ async def cmd_testar(message: Message, user: User, session: AsyncSession) -> Non
         if resultado.evento_url:
             texto += f"\n{html.escape(resultado.evento_url)}"
         await aviso.edit_text(texto, parse_mode="HTML")
+        if resultado.print_meio:
+            await message.answer_photo(
+                BufferedInputFile(resultado.print_meio, filename="sympla_meio.png"),
+                caption="Tela no MEIO da etapa (1ª tentativa que falhou)",
+            )
         if resultado.screenshot:
             await message.answer_photo(
                 BufferedInputFile(resultado.screenshot, filename="sympla.png"),
+                caption="Tela no fim",
             )
     except Exception as exc:
         logger.exception("sympla_testar: falha ao rodar/reportar")

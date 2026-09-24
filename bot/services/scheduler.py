@@ -955,12 +955,15 @@ async def run_sympla_pickup(
         if resultado.evento_url:
             texto += f"\n{resultado.evento_url}"
         await _send_html_with_fallback(bot, dono_id, texto)
-        if resultado.screenshot:
+        from aiogram.types import BufferedInputFile
+        for imagem, legenda in ((resultado.print_meio, "Tela no meio da etapa"),
+                                (resultado.screenshot, "Tela no fim")):
+            if not imagem:
+                continue
             try:
-                from aiogram.types import BufferedInputFile
                 await bot.send_photo(
-                    dono_id,
-                    BufferedInputFile(resultado.screenshot, filename="sympla.png"),
+                    dono_id, BufferedInputFile(imagem, filename="sympla.png"),
+                    caption=legenda,
                 )
             except Exception:
                 logger.exception("sympla: falha ao enviar screenshot")

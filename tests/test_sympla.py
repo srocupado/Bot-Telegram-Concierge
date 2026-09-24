@@ -441,7 +441,9 @@ class _PaginaLoginFalsa:
     qualquer lugar com o modal aberto que não seja a opção cai no fundo
     escuro e FECHA o modal (a corrida vista com a CPU limitada 6x)."""
 
-    def __init__(self, hidrata_no_clique=1, modal_ja_aberto=False):
+    def __init__(self, hidrata_no_clique=1, modal_ja_aberto=False,
+                 opcao_atrasa=0):
+        self.opcao_atrasa = opcao_atrasa
         self.hidrata_no_clique = hidrata_no_clique
         self.cliques_gatilho = 0
         self.modal_aberto = modal_ja_aberto
@@ -450,8 +452,20 @@ class _PaginaLoginFalsa:
         self.mouse = _MouseFalso(self)
 
     def visivel(self, nome):
+        if nome == "opcao" and self.modal_aberto and self.opcao_atrasa > 0:
+            self.opcao_atrasa -= 1
+            return False
         return {"gatilho": True, "opcao": self.modal_aberto and not self.form_aberto,
-                "senha": self.form_aberto}[nome]
+                "senha": self.form_aberto,
+                "modal": self.modal_aberto and not self.form_aberto}[nome]
+
+    def get_by_text(self, padrao):
+        if padrao.search("Que bom ter você aqui!"):
+            return _LocFalso(self, "modal")
+        return _ContaFalsa(lambda: 0)
+
+    async def screenshot(self, **kw):
+        return b"PRINT-MEIO"
 
     def clique(self, alvo):
         self.eventos.append(alvo)
@@ -507,11 +521,24 @@ def test_abrir_login_com_modal_ja_aberto_nao_clica_no_gatilho() -> None:
 
 
 def test_abrir_login_desiste_com_diagnostico_se_nunca_hidratar(monkeypatch) -> None:
+    """Falha que não reproduzi fora do Pi: o erro tem que trazer o rastro
+    das tentativas e um print do MEIO da etapa, não só o do fim."""
     monkeypatch.setattr(sy, "LOGIN_ABRIR_TIMEOUT_S", 0.05)
     pagina = _PaginaLoginFalsa(hidrata_no_clique=10**9)
-    with pytest.raises(sy.SymplaError, match="Elementos visíveis"):
+    with pytest.raises(sy.SymplaError, match="Elementos visíveis") as ei:
         asyncio.run(sy._abrir_login(pagina))
     assert pagina.cliques_gatilho >= 1
+    assert "clico no botão da conta" in str(ei.value)
+    assert ei.value.print_meio == b"PRINT-MEIO"
+
+
+def test_abrir_login_modal_aberto_sem_opcao_espera_em_vez_de_reclicar() -> None:
+    """Modal aberto com a opção ainda não desenhada: re-clicar no botão
+    cairia no fundo escuro e fecharia o modal."""
+    pagina = _PaginaLoginFalsa(opcao_atrasa=3)
+    asyncio.run(sy._abrir_login(pagina))
+    assert pagina.cliques_gatilho == 1
+    assert pagina.form_aberto
 
 
 def test_nenhum_clique_usa_locator_click() -> None:
