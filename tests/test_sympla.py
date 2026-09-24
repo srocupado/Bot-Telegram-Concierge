@@ -968,3 +968,66 @@ def test_cloudflare_depois_do_entrar_nao_conta_como_login_feito(monkeypatch) -> 
     creds = sy.SymplaCredenciais("x@x.com", "1234x", "X Y", None)
     with pytest.raises(sy.SymplaError, match="recusou"):
         asyncio.run(sy._login(_Pagina(), creds))
+
+
+# ───────────── seleção de ingresso (conferida ao vivo, 24/09/2026) ─────────────
+
+class _PaginaIngressoFalsa:
+    """Formato visto num evento aberto de verdade: "+" = aria-label
+    "Increase Amount"; avançar = data-testid="buy-button" com o texto
+    "N Comprar Ingressos". `limite` simula máximo por pessoa."""
+
+    def __init__(self, limite=10):
+        self.qtd = 0
+        self.limite = limite
+        self.comprou = False
+        self.mouse = self
+        self.roles: list = []
+
+    async def click(self, x, y):
+        if (x, y) == (10, 10):
+            self.qtd = min(self.qtd + 1, self.limite)
+        else:
+            self.comprou = True
+
+    async def wait_for_timeout(self, ms):
+        pass
+
+    def get_by_role(self, role, name=None):
+        self.roles.append(name.pattern)
+        assert name.search("Increase Amount")
+        return self._loc((10, 10))
+
+    def locator(self, sel):
+        assert sel == "[data-testid=buy-button]:visible"
+        return self._loc((50, 50))
+
+    def _loc(self, pos):
+        pagina = self
+
+        class L:
+            first = property(lambda s: s)
+
+            async def wait_for(self, **kw):
+                pass
+
+            async def bounding_box(self, **kw):
+                return {"x": pos[0], "y": pos[1], "width": 0, "height": 0}
+
+            async def inner_text(self, **kw):
+                return (f"{pagina.qtd}\nComprar Ingressos" if pagina.qtd
+                        else "Selecione um Ingresso")
+        return L()
+
+
+def test_seleciona_pelo_increase_amount_e_compra_pelo_buy_button() -> None:
+    pagina = _PaginaIngressoFalsa()
+    asyncio.run(sy._selecionar_e_reservar(pagina, 2))
+    assert pagina.qtd == 2 and pagina.comprou
+
+
+def test_quantidade_diferente_na_tela_para_antes_de_comprar() -> None:
+    pagina = _PaginaIngressoFalsa(limite=1)
+    with pytest.raises(sy.SymplaError, match="pedi 2"):
+        asyncio.run(sy._selecionar_e_reservar(pagina, 2))
+    assert not pagina.comprou

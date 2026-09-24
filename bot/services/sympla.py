@@ -584,16 +584,32 @@ async def _localizar_evento(
 
 
 async def _selecionar_e_reservar(page, qty: int) -> None:
-    """Incrementa a quantidade do (primeiro) tipo de ingresso `qty` vezes e
-    avança. Melhor esforço: sem um evento ao vivo pra inspecionar, o rótulo
-    exato do botão de "+" e de avançar são inferidos, não confirmados."""
-    mais = page.get_by_role("button", name="+").first
+    """Seleciona `qty` ingressos do PRIMEIRO tipo da lista e avança.
+
+    Conferido ao vivo (24/09/2026) num evento aberto de verdade, sem
+    comprar: o "+" é um botão com aria-label "Increase Amount" (um por tipo
+    de ingresso; NÃO existe botão chamado "+", que era o que a versão
+    anterior procurava — falharia na quarta), e o avançar é
+    data-testid="buy-button" (há dois na página, um escondido), que muda de
+    "Selecione um Ingresso" pra "2 Comprar Ingressos" com 2 selecionados.
+
+    Não conferido: se o concerto grátis tem um tipo só (o código pega o
+    primeiro) e o que vem depois do clique em comprar."""
+    mais = page.get_by_role(
+        "button", name=re.compile(r"^increase amount$", re.I)).first
     for _ in range(qty):
         await _clicar(page, mais, 30_000)
-    avancar = page.get_by_role(
-        "button", name=re.compile(r"reservar|continuar|garantir", re.I),
-    ).first
-    await _clicar(page, avancar, 30_000)
+        await page.wait_for_timeout(500)
+    comprar = page.locator("[data-testid=buy-button]:visible").first
+    texto = (await comprar.inner_text(timeout=30_000)).strip()
+    # Confere a quantidade na própria tela antes de avançar: limite por
+    # pessoa menor que `qty`, ou clique perdido, aparece aqui em vez de
+    # seguir com a quantidade errada.
+    if not re.match(rf"^{qty}\b", texto):
+        raise SymplaError(
+            f"pedi {qty} ingresso(s), mas o botão de compra mostra "
+            f"'{' '.join(texto.split())}'.")
+    await _clicar(page, comprar, 30_000)
 
 
 async def _preencher_checkout(page, creds: SymplaCredenciais) -> None:
