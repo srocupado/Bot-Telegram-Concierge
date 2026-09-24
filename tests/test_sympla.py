@@ -423,6 +423,161 @@ def test_abrir_login_ainda_tenta_texto_candidato_como_ultimo_recurso() -> None:
     assert "entrar" in src.lower() and "fazer login" in src.lower()
 
 
+def test_abrir_login_nunca_clica_em_link() -> None:
+    """Guarda de regressão do bug da Central de Ajuda (24/09/2026): o plano
+    B clicava em LINKS além de botões, e um termo genérico bateu num link de
+    ajuda — Playwright não espera a navegação de um link terminar, então o
+    código seguiu em frente enquanto a página trocava por baixo. Não pode
+    voltar a clicar em `role="link"` em nenhuma estratégia."""
+    import inspect
+    src = _sem_comentarios(inspect.getsource(sy._abrir_login))
+    assert 'get_by_role("link"' not in src
+    assert "get_by_role('link'" not in src
+
+
+def test_abrir_login_prioriza_icone_sem_nome_do_header() -> None:
+    """2º print real (24/09/2026, círculo vermelho do dono no cluster
+    hambúrguer+boneco) confirmou o ícone sem nome do header como gatilho
+    certo — tem que ser a PRIMEIRA estratégia tentada, antes do "Open
+    Dropdown" (que o mesmo print sugere ser outro menu, categorias/ajuda)."""
+    import inspect
+    src = _sem_comentarios(inspect.getsource(sy._abrir_login))
+    assert "_icones_sem_nome_no_header(page)" in src
+    pos_icone = src.index("_icones_sem_nome_no_header(page)")
+    pos_dropdown = src.lower().index("open dropdown")
+    assert pos_icone < pos_dropdown, (
+        "ícone sem nome (evidência do print) tem que ser tentado primeiro"
+    )
+
+
+def test_abrir_login_usa_avancar_para_email_senha_nas_3_estrategias() -> None:
+    """2º print real (24/09/2026): depois de abrir o modal certo, a Sympla
+    mostra um SELETOR de método ("sem senha" / Google / "e-mail e senha")
+    antes do formulário — esperar o campo de senha direto após o clique no
+    gatilho (sem escolher a opção) não funciona mais em NENHUMA das 3
+    estratégias."""
+    import inspect
+    src = inspect.getsource(sy._abrir_login)
+    assert src.count("_avancar_para_email_senha(page, campo_senha)") == 3
+    assert "campo_senha.wait_for" not in src, (
+        "wait_for direto sem passar pelo seletor de método quebra o modal novo"
+    )
+
+
+class _ElementoHeaderFalso:
+    def __init__(self, texto: str | None = None, aria: str | None = None):
+        self._texto = texto
+        self._aria = aria
+
+    async def inner_text(self):
+        return self._texto or ""
+
+    async def get_attribute(self, nome):
+        return self._aria if nome == "aria-label" else None
+
+
+class _LocatorHeaderFalso:
+    def __init__(self, elementos):
+        self._elementos = elementos
+
+    async def all(self):
+        return self._elementos
+
+
+class _PaginaHeaderFalsa:
+    def __init__(self, elementos):
+        self._loc = _LocatorHeaderFalso(elementos)
+
+    def locator(self, seletor):
+        assert seletor == "header button, header a"
+        return self._loc
+
+
+def test_icones_sem_nome_no_header_ignora_com_nome_e_inverte_ordem() -> None:
+    """Achado do 1º print (24/09/2026): "não tem login, é uma imagem de
+    boneco" — um ícone sem NENHUM nome acessível. Só esses entram, e na
+    ordem direita-pra-esquerda (o ícone de conta é tipicamente o último do
+    cabeçalho)."""
+    com_texto = _ElementoHeaderFalso(texto="Criar evento")
+    com_aria = _ElementoHeaderFalso(aria="Notificações")
+    sem_nome_1 = _ElementoHeaderFalso(texto="", aria="")
+    sem_nome_2 = _ElementoHeaderFalso(texto="", aria="")
+    pagina = _PaginaHeaderFalsa([com_texto, com_aria, sem_nome_1, sem_nome_2])
+
+    out = asyncio.run(sy._icones_sem_nome_no_header(pagina))
+
+    assert out == [sem_nome_2, sem_nome_1]
+
+
+def test_icones_sem_nome_no_header_sem_header_nao_quebra() -> None:
+    class _Explode:
+        def locator(self, _seletor):
+            raise RuntimeError("sem header nesta página")
+
+    out = asyncio.run(sy._icones_sem_nome_no_header(_Explode()))
+    assert out == []
+
+
+class _CampoSenhaFalso:
+    def __init__(self):
+        self.esperou = False
+
+    async def wait_for(self, **kw):
+        self.esperou = True
+
+
+class _BotaoFalso:
+    def __init__(self):
+        self.clicado = False
+
+    async def click(self, **kw):
+        self.clicado = True
+
+
+class _ResultadoRoleFalso:
+    def __init__(self, botao):
+        self.first = botao
+
+
+class _PaginaComOpcaoFalsa:
+    def __init__(self, botao):
+        self._botao = botao
+        self.chamadas: list[tuple] = []
+
+    def get_by_role(self, role, name=None):
+        self.chamadas.append((role, name))
+        return _ResultadoRoleFalso(self._botao)
+
+
+def test_avancar_para_email_senha_clica_a_opcao_antes_de_esperar_senha() -> None:
+    """2º print real (24/09/2026): o modal "Que bom ter você aqui!" tem 3
+    opções, e só "Continuar com e-mail e senha" leva ao formulário que este
+    fluxo usa."""
+    botao = _BotaoFalso()
+    pagina = _PaginaComOpcaoFalsa(botao)
+    campo_senha = _CampoSenhaFalso()
+
+    asyncio.run(sy._avancar_para_email_senha(pagina, campo_senha))
+
+    assert botao.clicado is True
+    assert campo_senha.esperou is True
+    role, nome = pagina.chamadas[0]
+    assert role == "button"
+    assert nome.search("e-mail e senha") or nome.search("email e senha")
+
+
+def test_avancar_para_email_senha_sem_a_opcao_ainda_espera_senha() -> None:
+    """Se a opção não existir (ex.: sessão anterior já foi direto pro
+    formulário), não pode travar — só espera o campo de senha mesmo assim."""
+    class _SemOpcao:
+        def get_by_role(self, role, name=None):
+            raise RuntimeError("não achou botão nenhum")
+
+    campo_senha = _CampoSenhaFalso()
+    asyncio.run(sy._avancar_para_email_senha(_SemOpcao(), campo_senha))
+    assert campo_senha.esperou is True
+
+
 # ───────────── bug real: screenshot de falha nunca chegava ─────────────
 # Dono, 23/09/2026, depois de reproduzir a falha: "Não mandou nada fora essa
 # msg" — nenhum print chegou em NENHUMA das três falhas reais até agora. A
