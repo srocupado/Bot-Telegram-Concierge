@@ -320,8 +320,8 @@ async def _dump_clicaveis(page, limite: int = 40) -> str:
 
 
 async def _icones_sem_nome_no_header(page):
-    """Botões/links do <header> SEM nenhum nome acessível (sem innerText,
-    sem aria-label) — invertidos (direita pra esquerda), porque ícone de
+    """Botões do <header> SEM nenhum nome acessível (sem innerText, sem
+    aria-label) — invertidos (direita pra esquerda), porque ícone de
     conta/perfil é quase sempre o ÚLTIMO elemento do cabeçalho.
 
     Nasceu de um print REAL (24/09/2026): o dono viu a tela e disse "não
@@ -329,9 +329,15 @@ async def _icones_sem_nome_no_header(page):
     perto, nem "Open Dropdown" nem qualquer palavra. Um elemento sem nome
     é justamente o que `_dump_clicaveis` NUNCA lista (ela só reporta o que
     tem texto/aria-label/title) — por isso ele era invisível em todas as
-    tentativas anteriores, mesmo com o diagnóstico funcionando."""
+    tentativas anteriores, mesmo com o diagnóstico funcionando.
+
+    SÓ <button>, nunca <a> (5º print, mesmo dia): a versão anterior incluía
+    "header a" e um LINK sem nome no header (provável ícone de ajuda) foi
+    clicado antes do ícone de conta de verdade — reproduzindo o exato bug da
+    navegação-fantasma pra Central de Ajuda que a estratégia 3 já tinha
+    corrigido, mas que continuava aberto aqui."""
     try:
-        candidatos = await page.locator("header button, header a").all()
+        candidatos = await page.locator("header button").all()
     except Exception:
         return []
     sem_nome = []
@@ -366,6 +372,27 @@ async def _avancar_para_email_senha(page, campo_senha) -> None:
     await campo_senha.wait_for(state="visible", timeout=5_000)
 
 
+async def _resetar_se_navegou(page, url_original: str) -> None:
+    """Se um clique mudou a URL (mesmo sendo botão — pode ser roteamento
+    client-side, ou o candidato ser outro elemento por engano) e a tentativa
+    falhou mesmo assim, a lista de candidatos da estratégia fica obsoleta
+    PRA ESSA PÁGINA NOVA: o próximo `.click()` da mesma lista reconsulta o
+    seletor genérico já na tela errada e pode clicar em qualquer coisa lá.
+
+    Nasceu do 5º uso real (24/09/2026): dump (capturado no fim de
+    `_abrir_login`, sem SymplaError ainda) mostrou a HOME de novo, mas o
+    screenshot de falha (capturado segundos depois, já fora desta função)
+    mostrou a Central de Ajuda com um item de FAQ aberto — prova de que a
+    navegação errada continuou em curso DEPOIS do dump, disparada por um
+    clique anterior desta mesma função. Sem resetar a página antes do
+    próximo candidato, esse tipo de desvio se acumula silenciosamente."""
+    if page.url != url_original:
+        try:
+            await page.goto(url_original, wait_until="domcontentloaded", timeout=15_000)
+        except Exception:
+            pass
+
+
 async def _abrir_login(page) -> None:
     """3 tentativas — reescrita pela 4ª vez (24/09/2026) com base num PRINT
     real da tela de falha, a evidência mais direta até agora.
@@ -390,7 +417,16 @@ async def _abrir_login(page) -> None:
     no cluster hambúrguer+boneco) e mostrou o passo seguinte: o clique abre
     o modal "Que bom ter você aqui!" com 3 opções de login, e é preciso
     escolher "Continuar com e-mail e senha" pra chegar no formulário de
-    verdade — ver `_avancar_para_email_senha`, chamada nas 3 estratégias."""
+    verdade — ver `_avancar_para_email_senha`, chamada nas 3 estratégias.
+
+    5º print no mesmo dia repetiu a navegação-fantasma pra Central de Ajuda
+    apesar da correção anterior: a causa desta vez era `_icones_sem_nome_no_header`
+    ainda incluir `header a` (link), não só botão — corrigido lá. Como
+    defesa adicional contra qualquer repetição (nem que seja outro elemento
+    de novo), toda tentativa falha agora chama `_resetar_se_navegou` antes
+    de seguir pro próximo candidato, pra nunca reconsultar um seletor
+    genérico já na página errada."""
+    pagina_inicial = page.url
     campo_senha = page.locator("input[type=password]").first
     pistas: list[str] = []
 
@@ -405,6 +441,7 @@ async def _abrir_login(page) -> None:
                 await page.keyboard.press("Escape")
             except Exception:
                 pass
+            await _resetar_se_navegou(page, pagina_inicial)
             continue
 
     # 2) "Open Dropdown" (Radix) — mantido como plano B só pro caso de o
@@ -434,6 +471,7 @@ async def _abrir_login(page) -> None:
                 await page.keyboard.press("Escape")
             except Exception:
                 pass
+            await _resetar_se_navegou(page, pagina_inicial)
             continue
 
     # 3) Texto candidato de BOTÃO — nunca link (ver docstring: foi um link
@@ -446,6 +484,7 @@ async def _abrir_login(page) -> None:
             await _avancar_para_email_senha(page, campo_senha)
             return
         except Exception:
+            await _resetar_se_navegou(page, pagina_inicial)
             continue
 
     visiveis = await _dump_clicaveis(page)

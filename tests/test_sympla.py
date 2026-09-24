@@ -489,7 +489,11 @@ class _PaginaHeaderFalsa:
         self._loc = _LocatorHeaderFalso(elementos)
 
     def locator(self, seletor):
-        assert seletor == "header button, header a"
+        assert seletor == "header button", (
+            "não pode voltar a incluir 'header a' — foi um link sem nome "
+            "que causou a navegação-fantasma pra Central de Ajuda (5º "
+            "print, 24/09/2026)"
+        )
         return self._loc
 
 
@@ -516,6 +520,18 @@ def test_icones_sem_nome_no_header_sem_header_nao_quebra() -> None:
 
     out = asyncio.run(sy._icones_sem_nome_no_header(_Explode()))
     assert out == []
+
+
+def test_icones_sem_nome_no_header_nunca_inclui_link() -> None:
+    """5º print real (24/09/2026): a versão anterior consultava
+    "header button, header a" e um LINK sem nome (provável ícone de ajuda)
+    foi clicado antes do ícone de conta de verdade, navegando pra Central
+    de Ajuda de novo — mesmo bug que a estratégia 3 já tinha corrigido, só
+    que aberto aqui. Guarda de regressão: nunca mais incluir <a>."""
+    import inspect
+    src = _sem_comentarios(inspect.getsource(sy._icones_sem_nome_no_header))
+    assert "header a" not in src
+    assert '"header button"' in src
 
 
 class _CampoSenhaFalso:
@@ -576,6 +592,88 @@ def test_avancar_para_email_senha_sem_a_opcao_ainda_espera_senha() -> None:
     campo_senha = _CampoSenhaFalso()
     asyncio.run(sy._avancar_para_email_senha(_SemOpcao(), campo_senha))
     assert campo_senha.esperou is True
+
+
+def test_abrir_login_reseta_a_pagina_se_um_clique_navegar_no_meio_da_estrategia() -> None:
+    """Reproduz o 5º print real (24/09/2026): dump (capturado no fim de
+    `_abrir_login`) mostrava a HOME, mas o screenshot de falha, segundos
+    depois, mostrava a Central de Ajuda — prova de que um clique anterior
+    disparou uma navegação que só terminou DEPOIS. Na época era um <a> sem
+    nome (corrigido em `_icones_sem_nome_no_header`); este teste cobre a
+    defesa GENÉRICA — se QUALQUER candidato mudar a URL e a tentativa
+    falhar mesmo assim, o próximo candidato da lista não pode ser tentado
+    já na página errada."""
+    import types
+
+    class _ElementoHeaderComEfeito:
+        def __init__(self, pagina, nome, efeito):
+            self._pagina = pagina
+            self._nome = nome
+            self._efeito = efeito
+
+        async def inner_text(self):
+            return ""
+
+        async def get_attribute(self, _nome):
+            return None
+
+        async def click(self, **kw):
+            self._pagina.cliques.append(self._nome)
+            self._efeito(self._pagina)
+
+    class _CampoSenhaLigadoAPagina:
+        def __init__(self, pagina):
+            self._pagina = pagina
+
+        async def wait_for(self, **kw):
+            if not self._pagina.logado:
+                raise TimeoutError("campo de senha não apareceu")
+
+    class _TecladoFalso:
+        async def press(self, *_a, **_kw):
+            pass
+
+    class _PaginaComNavegacaoFantasma:
+        def __init__(self):
+            self.url = "https://www.sympla.com.br/"
+            self.logado = False
+            self.cliques: list[str] = []
+            self.gotos: list[str] = []
+            self.keyboard = _TecladoFalso()
+            self._elementos = [
+                _ElementoHeaderComEfeito(
+                    self, "conta", lambda p: setattr(p, "logado", True)),
+                _ElementoHeaderComEfeito(
+                    self, "ajuda",
+                    lambda p: setattr(
+                        p, "url", "https://www.sympla.com.br/central-de-ajuda")),
+            ]
+
+        def locator(self, seletor):
+            if seletor == "header button":
+                return _LocatorHeaderFalso(list(self._elementos))
+            if seletor == "input[type=password]":
+                return types.SimpleNamespace(first=_CampoSenhaLigadoAPagina(self))
+            raise AssertionError(seletor)
+
+        def get_by_role(self, *a, **kw):
+            raise RuntimeError("sem esse papel nesta página falsa")
+
+        async def goto(self, url, **kw):
+            self.gotos.append(url)
+            self.url = url
+
+    pagina = _PaginaComNavegacaoFantasma()
+
+    asyncio.run(sy._abrir_login(pagina))
+
+    assert pagina.cliques == ["ajuda", "conta"], (
+        "ordem invertida esperada: o candidato errado é tentado antes do certo"
+    )
+    assert pagina.gotos == ["https://www.sympla.com.br/"], (
+        "tem que voltar pra página original antes do próximo candidato"
+    )
+    assert pagina.logado is True
 
 
 # ───────────── bug real: screenshot de falha nunca chegava ─────────────
