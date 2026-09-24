@@ -15,6 +15,7 @@ liberação pra gravar contra ele; ver o docstring de bot/services/sympla.py.
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -331,15 +332,23 @@ def test_dump_clicaveis_pagina_que_estoura_nao_derruba_o_caller() -> None:
 
 
 def _sem_comentarios(src: str) -> str:
-    """Remove linhas de comentário puro — evita que uma asserção sobre o
-    CÓDIGO passe só porque a string aparece num comentário/docstring
-    explicando a decisão (bug real do 1º rascunho deste teste: a mutação
-    que trocava o goto() continuava passando, porque "/#login" sobrevivia
-    no comentário logo acima)."""
-    return "\n".join(
+    """Remove comentários E a docstring da função — evita que uma asserção
+    sobre o CÓDIGO passe (ou falhe) só porque a string aparece em texto que
+    EXPLICA uma decisão, e não no código em si.
+
+    Dois bugs reais neste arquivo de teste vieram daqui: a 1ª versão só
+    filtrava linhas '#' e uma mutação que trocava o goto() continuava
+    passando porque "/#login" sobrevivia no comentário acima; depois, uma
+    asserção NEGATIVA ("location.hash" não deve aparecer) falhou porque a
+    PRÓPRIA docstring explica, em prosa, por que aquilo foi removido —
+    então o texto que documenta a correção acionava a checagem que existe
+    pra impedir a regressão."""
+    sem_hash = "\n".join(
         ln for ln in src.splitlines()
         if not ln.strip().startswith("#")
     )
+    # Docstring = 1º bloco entre aspas triplas logo após a linha "def ...:".
+    return re.sub(r'"""(?:.|\n)*?"""', "", sem_hash, count=1)
 
 
 def test_login_carrega_pagina_limpa_e_delega_a_abertura() -> None:
@@ -365,22 +374,37 @@ def test_login_usa_tipo_de_input_nao_label_ou_classe_css() -> None:
     assert "get_by_label" not in src, "voltou a depender de rótulo ARIA"
 
 
-def test_abrir_login_dispara_hashchange_de_verdade() -> None:
-    """Não pode voltar a ser um goto() com o hash já pronto — tem que ser
-    uma mudança de hash DEPOIS da página montada, pra disparar o evento."""
+def test_abrir_login_nao_confia_mais_em_hash() -> None:
+    """3ª reescrita (23/09/2026): fui direto no JS real da Sympla e
+    "openSignInModal" é método de um store que só mexe em flag interna
+    (setModalOpen) — SEM nenhuma referência a location.hash por perto. As
+    duas tentativas anteriores miravam essa hipótese errada (por isso o
+    dump saiu IDÊNTICO nas duas: a mudança de hash não fazia NADA). Guarda
+    de regressão: não pode voltar a depender disso."""
     import inspect
     src = _sem_comentarios(inspect.getsource(sy._abrir_login))
-    assert "window.location.hash = 'login'" in src
-    assert "page.evaluate(" in src
+    assert "location.hash" not in src
+    assert "hashchange" not in src
 
 
 def test_abrir_login_tenta_a_pista_open_dropdown() -> None:
     """A pista concreta do dump real: "Open Dropdown" é texto em inglês
-    solto numa tela em português — cara de rótulo de biblioteca não
-    traduzido, forte candidato a ícone de conta sem aria-label."""
+    solto numa tela em português — rótulo PADRÃO do Radix UI (confirmado no
+    HTML real: id="radix-...", aria-haspopup="menu", logo após o botão
+    id="btn-my-tickets") quando ninguém customiza."""
     import inspect
     src = inspect.getsource(sy._abrir_login)
     assert "open dropdown" in src.lower()
+
+
+def test_abrir_login_clica_item_do_menu_apos_abrir_o_dropdown() -> None:
+    """aria-haspopup="menu" no HTML real prova que o clique só abre um MENU
+    — faltava exatamente este passo nas duas tentativas anteriores: elas
+    checavam o campo de senha direto após clicar no gatilho, sem nunca
+    clicar em nada DENTRO do menu que abria."""
+    import inspect
+    src = inspect.getsource(sy._abrir_login)
+    assert '"menuitem"' in src
 
 
 def test_abrir_login_tenta_varias_ocorrencias_do_dropdown_nao_so_a_primeira() -> None:
@@ -397,6 +421,115 @@ def test_abrir_login_ainda_tenta_texto_candidato_como_ultimo_recurso() -> None:
     import inspect
     src = inspect.getsource(sy._abrir_login)
     assert "entrar" in src.lower() and "fazer login" in src.lower()
+
+
+# ───────────── bug real: screenshot de falha nunca chegava ─────────────
+# Dono, 23/09/2026, depois de reproduzir a falha: "Não mandou nada fora essa
+# msg" — nenhum print chegou em NENHUMA das três falhas reais até agora. A
+# causa: `finally: await browser.close()` fechava o navegador ANTES da
+# exceção alcançar o except de fora, e page.screenshot() numa página já
+# fechada estourava e era engolido em silêncio DENTRO do próprio
+# _screenshot_seguro — a mensagem de erro chegava, o print nunca.
+
+class _FakePageScreenshot:
+    def __init__(self, ordem: list[str]):
+        self._ordem = ordem
+        self.closed = False
+
+    async def screenshot(self, **kw):
+        if self.closed:
+            raise RuntimeError("página já fechada — Playwright recusaria isto")
+        self._ordem.append("screenshot")
+        return b"PNGDATA"
+
+    async def eval_on_selector_all(self, *a, **kw):
+        return []
+
+
+def _fake_playwright_module(page, ordem: list[str]):
+    """Dublê mínimo de `playwright.async_api` — só o suficiente pra exercitar
+    a ORDEM screenshot-antes-do-close, sem precisar de navegador real."""
+    import types
+
+    class _Ctx:
+        async def new_page(self):
+            return page
+
+    class _Browser:
+        async def new_context(self, **kw):
+            return _Ctx()
+
+        async def close(self):
+            ordem.append("close")
+            page.closed = True
+
+    class _Chromium:
+        async def launch(self, **kw):
+            return _Browser()
+
+    class _PlaywrightCtx:
+        def __init__(self):
+            self.chromium = _Chromium()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    return types.SimpleNamespace(async_playwright=lambda: _PlaywrightCtx())
+
+
+def test_screenshot_de_falha_e_capturada_antes_do_browser_fechar(monkeypatch) -> None:
+    import sys
+
+    ordem: list[str] = []
+    page = _FakePageScreenshot(ordem)
+    monkeypatch.setitem(sys.modules, "playwright.async_api",
+                        _fake_playwright_module(page, ordem))
+
+    async def _login_que_falha(_page, _creds):
+        raise RuntimeError("falha proposital deste teste")
+    monkeypatch.setattr(sy, "_login", _login_que_falha)
+
+    creds = sy.SymplaCredenciais(email="x@x.com", senha="1234x",
+                                 nome_completo="X Y", cpf=None)
+    resultado = asyncio.run(sy.retirar_ingresso(creds, "query", 2))
+
+    assert resultado.sucesso is False
+    assert resultado.screenshot == b"PNGDATA", (
+        "screenshot não chegou — o bug de 23/09/2026 voltou"
+    )
+    assert ordem == ["screenshot", "close"], (
+        f"ordem errada: {ordem} — screenshot TEM que vir antes do close"
+    )
+
+
+def test_resultado_sem_falha_no_login_tambem_tras_o_dump_de_elementos(monkeypatch) -> None:
+    """Falha em QUALQUER etapa depois do login (não só nela) também precisa
+    do screenshot vivo — o bug não era específico do _login."""
+    import sys
+
+    ordem: list[str] = []
+    page = _FakePageScreenshot(ordem)
+    monkeypatch.setitem(sys.modules, "playwright.async_api",
+                        _fake_playwright_module(page, ordem))
+
+    async def _login_ok(_page, _creds):
+        return None
+    monkeypatch.setattr(sy, "_login", _login_ok)
+
+    async def _localizar_que_falha(*a, **kw):
+        raise RuntimeError("falha na busca do evento, proposital")
+    monkeypatch.setattr(sy, "_localizar_evento", _localizar_que_falha)
+
+    creds = sy.SymplaCredenciais(email="x@x.com", senha="1234x",
+                                 nome_completo="X Y", cpf=None)
+    resultado = asyncio.run(sy.retirar_ingresso(creds, "query", 2))
+
+    assert resultado.sucesso is False
+    assert resultado.screenshot == b"PNGDATA"
+    assert "elementos visíveis" in resultado.detalhe
 
 
 def test_abrir_login_sem_estrategia_nenhuma_reporta_com_diagnostico() -> None:

@@ -320,55 +320,69 @@ async def _dump_clicaveis(page, limite: int = 40) -> str:
 
 
 async def _abrir_login(page) -> None:
-    """3 estratégias, na ordem do mais barato/provável pro mais genérico —
-    cada uma só roda se a anterior não revelou o campo de senha.
+    """2 estratégias — reescrita pela 3ª vez (23/09/2026) com base em HTML
+    REAL, não mais em texto adivinhado.
 
-    Reescrita depois do 2º uso real (23/09/2026): a 1ª versão ia direto pra
-    URL "…/#login" (fato verificado: sympla.com.br/login redireciona pra
-    lá) — mas o dump de elementos visíveis que ELA MESMA trouxe na falha
-    provou que não abriu nada: nenhuma palavra de login/conta apareceu na
-    tela. Isso bate com um comportamento comum de SPA: o roteador só reage
-    ao EVENTO hashchange, não ao hash já presente na URL no carregamento
-    inicial — page.goto(url + "#login") nunca dispara esse evento porque
-    não há transição de hash nenhum→"login", só carrega já com ele setado.
+    As duas tentativas anteriores miravam a hipótese de que o hash da URL
+    ("…/#login") CONTROLA o modal. Falso: fui direto no JS da Sympla e
+    "openSignInModal" é método de um store (estilo MobX) que só mexe em
+    flags internas (`setModalOpen(!0)`) — nenhuma referência a
+    `location.hash` por perto. O hashchange que existe no bundle é de OUTRO
+    modal (fale-com-o-organizador) e de um carrossel; nada a ver com login.
+    Por isso o dump saiu IDÊNTICO nas duas tentativas — a mudança de hash
+    não fazia nada, silenciosamente.
 
-    O mesmo dump trouxe uma pista concreta: "Open Dropdown" — texto em
-    INGLÊS solto numa tela toda em português, cara de rótulo padrão de
-    biblioteca que ninguém traduziu. Forte candidato a ser o ícone de
-    conta/usuário sem aria-label customizado."""
+    Fui então direto no HTML real da página (baixado durante o levantamento
+    original) em vez de continuar advinhando, e achei o botão exato:
+
+        <button aria-haspopup="menu" aria-expanded="false"
+                data-state="closed" aria-label="Open Dropdown"
+                id="radix-..."><svg>hambúrguer</svg></button>
+
+    logo depois de <button id="btn-my-tickets">. É Radix UI (prefixo
+    "radix-" no id) — "Open Dropdown" é o rótulo PADRÃO da biblioteca
+    quando ninguém customiza, exatamente por isso não existe como texto
+    traduzido em lugar nenhum do bundle. `aria-haspopup="menu"` prova que
+    clicar SÓ abre um menu — um ITEM dentro dele precisa ser clicado em
+    seguida. Faltava esse passo nas duas tentativas anteriores: eu checava
+    o campo de senha direto após o clique no gatilho, sem nunca clicar em
+    nada DENTRO do menu que abria."""
     campo_senha = page.locator("input[type=password]").first
+    pistas: list[str] = []
 
-    # 1) Dispara hashchange DE VERDADE (muda o hash depois da página já
-    # montada, em vez de carregar com ele pronto).
+    # 1) O menu de conta (Radix DropdownMenu, ver docstring). Pode não ser
+    # único — tenta CADA gatilho com esse rótulo genérico, e dentro de cada
+    # um procura um ITEM de menu com texto de login antes de checar a senha.
     try:
-        await page.evaluate("() => { window.location.hash = 'login'; }")
-        await campo_senha.wait_for(state="visible", timeout=5_000)
-        return
+        candidatos = await page.get_by_role(
+            "button", name=re.compile(r"^open dropdown$", re.I)).all()
     except Exception:
-        pass
-
-    # 2) "Open Dropdown" pode não ser único (ex.: idioma, moeda, notificação
-    # também usam esse rótulo genérico) — tenta CADA ocorrência, fechando
-    # com Escape antes da próxima se não revelar o campo de senha.
-    try:
-        candidatos_dropdown = await page.get_by_text(
-            re.compile(r"^open dropdown$", re.I)).all()
-    except Exception:
-        candidatos_dropdown = []
-    for el in candidatos_dropdown[:5]:
+        candidatos = []
+    for el in candidatos[:5]:
         try:
             await el.click(timeout=3_000)
-            await campo_senha.wait_for(state="visible", timeout=3_000)
+        except Exception:
+            continue
+        try:
+            item = page.get_by_role(
+                "menuitem",
+                name=re.compile(r"entrar|login|fazer login|acessar", re.I),
+            ).first
+            await item.click(timeout=3_000)
+            await campo_senha.wait_for(state="visible", timeout=5_000)
             return
         except Exception:
+            # Registra o que o menu MOSTROU antes de fechar — se nada
+            # funcionar, isso substitui outra rodada de tentativa cega.
+            pistas.append(f"menu aberto mostrou: {await _dump_clicaveis(page)}")
             try:
                 await page.keyboard.press("Escape")
             except Exception:
                 pass
             continue
 
-    # 3) Texto candidato de botão/link, plano C — pode não ser "Entrar",
-    # mas é barato tentar antes de desistir.
+    # 2) Texto candidato de botão/link direto (sem passar por menu) — plano
+    # B pro caso de o gatilho real ter outro rótulo.
     for termo in ("entrar", "login", "fazer login", "acessar conta",
                   "minha conta", "acessar"):
         try:
@@ -383,9 +397,10 @@ async def _abrir_login(page) -> None:
             continue
 
     visiveis = await _dump_clicaveis(page)
+    detalhe_pistas = (" | " + " || ".join(pistas)) if pistas else ""
     raise SymplaError(
-        "não achei como abrir o login (hashchange, 'Open Dropdown' nem "
-        f"botão de texto). Elementos visíveis na tela: {visiveis}"
+        "não achei como abrir o login (menu do 'Open Dropdown' nem botão de "
+        f"texto). Elementos visíveis na tela: {visiveis}{detalhe_pistas}"
     )
 
 
@@ -515,15 +530,28 @@ async def retirar_ingresso(
     """Orquestra o fluxo inteiro. Qualquer exceção numa etapa vira resultado
     de FALHA com screenshot — nunca propaga pro chamador como traceback cru,
     porque quem chama precisa poder avisar o dono mesmo quando algo aqui
-    quebra de um jeito que eu não previ."""
+    quebra de um jeito que eu não previ.
+
+    Achado no 3º uso real (23/09/2026): "não mandou nada fora essa msg" — a
+    screenshot de falha NUNCA chegava, desde a 1ª versão. O `finally:
+    await browser.close()` fechava o navegador ANTES da exceção alcançar o
+    except de fora; `_screenshot_seguro(page)` numa página já fechada
+    estoura e é engolido em silêncio DENTRO da própria função (ela existe
+    pra não derrubar o fluxo por causa do print, não pra esconder que
+    falhou). Por isso a captura agora acontece no except INTERNO, com o
+    browser ainda vivo — só o caso "evento não encontrado" (um `return`
+    direto, não uma exceção) escapava do bug, e foi o único que já
+    funcionava."""
     from playwright.async_api import async_playwright
 
     hoje = (agora or datetime.now(BRT)).astimezone(BRT).date()
     etapa = "iniciar navegador"
-    page = None
+    falha_screenshot: bytes | None = None
+    falha_extra = ""
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=CHROMIUM_ARGS)
+            page = None
             try:
                 context = await browser.new_context(locale="pt-BR")
                 page = await context.new_page()
@@ -563,19 +591,26 @@ async def retirar_ingresso(
                     evento_titulo=evento.titulo, evento_url=evento.url,
                     screenshot=await _screenshot_seguro(page),
                 )
+            except Exception as exc:
+                # CAPTURA AQUI, com o browser ainda vivo — é a correção do
+                # bug do print que nunca chegava (ver docstring). O
+                # re-raise devolve pro except de fora, que só MONTA a
+                # mensagem; não precisa mais tocar a página.
+                if page is not None:
+                    falha_screenshot = await _screenshot_seguro(page)
+                    # SymplaError já embute o dump de elementos visíveis
+                    # quando faz sentido (ver _abrir_login). Pras demais
+                    # etapas, monta aqui — transforma "estourou de novo" em
+                    # "aqui está o texto certo do botão".
+                    if not isinstance(exc, SymplaError):
+                        visiveis = await _dump_clicaveis(page)
+                        falha_extra = f" | elementos visíveis: {visiveis}"
+                raise
             finally:
                 await browser.close()
     except Exception as exc:
         logger.exception("sympla: falha na etapa '%s'", etapa)
-        shot = await _screenshot_seguro(page) if page is not None else None
-        detalhe = f"{type(exc).__name__}: {exc}"
-        # SymplaError já embute o dump de elementos visíveis quando faz
-        # sentido (ver _login). Pras demais etapas, anexa aqui — é o que
-        # transforma "estourou de novo" em "aqui está o texto certo do
-        # botão", sem precisar de outra rodada de tentativa cega.
-        if page is not None and not isinstance(exc, SymplaError):
-            visiveis = await _dump_clicaveis(page)
-            detalhe += f" | elementos visíveis: {visiveis}"
+        detalhe = f"{type(exc).__name__}: {exc}{falha_extra}"
         return SymplaResultado(
-            False, etapa, detalhe, screenshot=shot,
+            False, etapa, detalhe, screenshot=falha_screenshot,
         )
