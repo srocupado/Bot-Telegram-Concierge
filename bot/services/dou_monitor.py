@@ -1598,6 +1598,27 @@ def format_telegram_message(mp: dict, nota: dict | None) -> str:
     return "\n".join(lines)
 
 
+def mensagem_grupo(mp: dict, nota: dict | None) -> str:
+    """Aviso que o dono manda no grupo junto com a nota (pedido dele,
+    26/09/2026). Texto dele, com o negrito do WhatsApp (*...*) — vai como
+    texto puro pro Telegram, pronto pra copiar e colar. Prazo de emendas =
+    o mesmo compute_prazos do card e do DOCX (publicação até +6 dias)."""
+    pub = date.fromisoformat(mp["data_publicacao"])
+    prazos = compute_prazos(pub)
+    ementa = (mp.get("ementa") or (nota or {}).get("ementa") or "").strip()
+    ementa = ementa.rstrip(" .;")
+    return (
+        "Senhoras Deputadas e Senhores Deputados,\n\n"
+        "A Assessoria desta Liderança encaminha Nota Técnica elaborada a "
+        f"respeito da *Medida Provisória nº {_num_fmt(mp['numero'])}/{mp['ano']} "
+        f"({ementa}).*\n\n"
+        "O prazo para apresentação de emenda a essa Medida Provisória será do "
+        f"dia *{_br(pub)} até {_br(prazos['emendas_fim'])}.*\n\n"
+        "Respeitosamente,\n"
+        "LIDERANÇA DO PODEMOS"
+    )
+
+
 _TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "..", "assets", "nota_template.docx")
 
 
@@ -1901,6 +1922,14 @@ async def gerar_e_enviar_nota(bot, user, mp: dict, *, caption_extra: str | None 
         BufferedInputFile(docx_bytes, filename=docx_filename(mp)),
         caption="\n".join(partes) or None,
     )
+    # Aviso pro grupo, logo depois da nota. Falha aqui NÃO propaga: a nota já
+    # foi entregue, e uma exceção faria o caller tratar a nota como falha e
+    # gerá-la de novo (DOCX duplicado).
+    try:
+        await bot.send_message(user.id, mensagem_grupo(mp, nota), parse_mode=None)
+    except Exception:
+        logger.exception("dou: falha ao enviar a mensagem do grupo da MP %s",
+                         mp.get("numero"))
 
 
 async def deliver_to_user(
