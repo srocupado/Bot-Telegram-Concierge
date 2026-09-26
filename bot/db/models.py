@@ -103,6 +103,9 @@ class User(Base):
     # quando o provider efetivo for gemini.
     dou_mp_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
     dou_mp_model: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    # Esforço do Claude na nota (/dou_provider esforco). NULL = não envia o
+    # parâmetro (padrão do modelo; no Opus 5.5 é "medium").
+    dou_mp_effort: Mapped[str | None] = mapped_column(String(8), nullable=True)
     # MARCA D'ÁGUA: último dia de DOU checado com sucesso. Sem ela, dia que o
     # bot NUNCA olhou (container fora, queda de luz, deploy longo) não deixava
     # rastro nenhum — a pendência só nascia de uma tentativa que falhou, então

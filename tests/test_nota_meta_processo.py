@@ -72,7 +72,7 @@ def test_marcadores_casam_com_e_sem_acento() -> None:
 def test_generate_nota_tecnica_aplica_o_filtro(monkeypatch) -> None:
     """O filtro fica no ponto único (generate_nota_tecnica) pra valer pros
     dois providers — nota vazada por qualquer um chega limpa à entrega."""
-    async def _fake(mp, *, model_override=None):
+    async def _fake(mp, *, model_override=None, effort=None):
         return {"ementa": "Abre crédito.", "p1_contexto": _FRASE_DO_CASO,
                 "p2_dispositivos": "O art. 1º abre o crédito."}
 
@@ -84,7 +84,7 @@ def test_generate_nota_tecnica_aplica_o_filtro(monkeypatch) -> None:
 
 
 def test_generate_nota_tecnica_none_passa_reto(monkeypatch) -> None:
-    async def _fake(mp, *, model_override=None):
+    async def _fake(mp, *, model_override=None, effort=None):
         return None
 
     monkeypatch.setattr(dou_monitor, "_gen_nota_anthropic", _fake)

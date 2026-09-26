@@ -37,6 +37,10 @@ _ANTHROPIC_VARIANTS = {
     "opus": "claude-opus-4-8",
 }
 
+# Níveis de esforço da API (output_config.effort). Modelo que não aceita o
+# nível escolhido recusa a chamada e a nota sai sem análise da IA (com aviso).
+_ESFORCOS = ("low", "medium", "high", "xhigh", "max")
+
 
 async def _list_claude_models() -> list[tuple[str, str]]:
     """[(id, display_name)] dos modelos Claude via Models API — DINÂMICO, então
@@ -480,17 +484,22 @@ async def cmd_dou_provider(
             label = f"gemini ({user.dou_mp_model or settings.dou_mp_gemini_model})"
         else:
             label = f"anthropic ({user.dou_mp_model or settings.anthropic_model})"
+        esforco = (f"<b>{user.dou_mp_effort}</b>" if user.dou_mp_effort
+                   else "padrão do modelo (não enviado; no Opus 5.5 é medium)")
         gem_aliases = ", ".join(sorted(set(_GEMINI_VARIANTS)))
         ant_aliases = ", ".join(sorted(_ANTHROPIC_VARIANTS))
         await message.answer(
             f"Motor da nota técnica: <b>{label}</b>\n"
-            f"Fallback gemini (fixo no .env): <code>{settings.dou_mp_gemini_model_fallback}</code>\n\n"
+            f"Fallback gemini (fixo no .env): <code>{settings.dou_mp_gemini_model_fallback}</code>\n"
+            f"Esforço do Claude: {esforco}\n\n"
             "<b>Comandos:</b>\n"
             "<code>/dou_provider anthropic [alias]</code> · Claude (web_search)\n"
             "<code>/dou_provider gemini [alias]</code> · Gemini\n"
             "<code>/dou_provider &lt;alias&gt;</code> · atalho (infere o provider)\n"
             "<code>/dou_provider modelos</code> · lista os modelos Claude da API\n"
             "<code>/dou_provider anthropic &lt;id&gt;</code> · qualquer id (ex.: claude-sonnet-5)\n"
+            "<code>/dou_provider esforco &lt;nível&gt;</code> · esforço do Claude "
+            f"({' | '.join(_ESFORCOS)} | padrao)\n"
             "<code>/dou_provider padrao</code> · volta ao .env\n\n"
             f"<b>Aliases Gemini:</b> {gem_aliases}\n"
             f"<b>Aliases Claude:</b> {ant_aliases} <i>(ou use o id completo — veja /dou_provider modelos)</i>",
@@ -515,6 +524,36 @@ async def cmd_dou_provider(
             "<b>Modelos Claude disponíveis</b> (direto da API):\n" + "\n".join(linhas)
             + "\n\nPra usar na nota: <code>/dou_provider anthropic &lt;id&gt;</code>",
             parse_mode="HTML",
+        )
+        return
+
+    if tokens[0] in ("esforco", "esforço", "effort"):
+        nivel = tokens[1] if len(tokens) > 1 else None
+        if nivel in ("padrao", "padrão", "none", "limpar"):
+            user.dou_mp_effort = None
+            await session.commit()
+            await message.answer(
+                "✅ Esforço do Claude na nota: padrão do modelo (o bot não "
+                "envia o parâmetro; no Opus 5.5 o padrão é medium).",
+                parse_mode=None,
+            )
+            return
+        if nivel not in _ESFORCOS:
+            await message.answer(
+                f"Use: /dou_provider esforco {' | '.join(_ESFORCOS)} | padrao",
+                parse_mode=None,
+            )
+            return
+        user.dou_mp_effort = nivel
+        await session.commit()
+        prov = user.dou_mp_provider or settings.dou_mp_provider
+        aviso = ("" if prov != "gemini" else
+                 "\n⚠️ O motor atual é Gemini: o esforço só vale quando a nota "
+                 "for pelo Claude (/dou_provider anthropic …).")
+        await message.answer(
+            f"✅ Esforço do Claude na nota: {nivel}. Esforço maior = nota mais "
+            f"lenta e mais cara.{aviso}",
+            parse_mode=None,
         )
         return
 

@@ -34,7 +34,8 @@ HELP_TEXT = (
     "• <code>/mp_dou_on</code> / <code>/mp_dou_off</code> — assina/desassina o digest diário de MPs novas no DOU\n"
     "• <code>/mp_dou_agora [AAAA-MM-DD]</code> — busca agora; cada MP encontrada vem com o card completo (ementa, prazos, Planalto) e um <b>botão próprio de gerar a nota técnica</b> — você escolhe qual MP merece nota, uma a uma (a geração roda em segundo plano e leva alguns minutos). Checagem conclusiva (dia fechado, fonte completa) também dá baixa na fila de re-checagem\n"
     "• <code>/mp_em_fila</code> (ou <code>/mp_fila</code>) — mostra o que está na fila: notas técnicas aguardando geração e dias ainda não verificados, re-tentados sozinhos pelo portal oficial e pela rede do Planalto. Só consulta; havendo nota na fila, aparece o botão <b>\"✅ Já recebi as notas de DD/MM\"</b> pra dar baixa quando a nota já chegou (ou quando você não a quer mais) — o bot não gera de novo\n"
-    "• <code>/dou_provider</code> — escolhe o motor da nota técnica (ex.: <code>/dou_provider 3.5</code>, <code>/dou_provider gemini 3.1-lite</code>, <code>/dou_provider anthropic sonnet</code>, <code>/dou_provider opus</code>, <code>/dou_provider padrao</code>). Ajusta latência/qualidade sem mexer no .env\n"
+    "• <code>/dou_provider</code> — escolhe o motor da nota técnica (ex.: <code>/dou_provider 3.5</code>, <code>/dou_provider gemini 3.1-lite</code>, <code>/dou_provider anthropic sonnet</code>, <code>/dou_provider opus</code>, <code>/dou_provider padrao</code>). Ajusta latência/qualidade sem mexer no .env. Pra usar o Opus 5.5: <code>/dou_provider anthropic claude-opus-5-5</code>\n"
+    "• <code>/dou_provider esforco high</code> — esforço do Claude na nota (<code>low</code>, <code>medium</code>, <code>high</code>, <code>xhigh</code>, <code>max</code>; <code>padrao</code> deixa o do modelo — no Opus 5.5 é <code>medium</code>). Mais esforço = nota mais caprichada, mais lenta e mais cara. Só vale com o Claude\n"
     "• Por voz/texto: <i>\"saiu MP nova hoje?\"</i> → lista número + ementa\n"
     "• Cobre edição normal E extra — inclusive a edição extra de sábado/feriado que o DOU publica SÓ em PDF (sem o XML). O bot lê a pasta do dia, extrai o texto do PDF e entrega a MP normalmente\n"
     "• <b>Conferência automática</b> (1x/dia, no briefing): o bot compara o que te entregou com a lista oficial de MPs da Câmara. Se alguma escapou (fonte fora do ar, dia em que o bot ficou desligado), ele avisa QUAL escapou e busca sozinho no DOU pra te mandar com a nota. Dia que ele não conseguiu checar vira pendência e é re-tentado por 14 dias — e se desistir, ele DIZ; nunca vira silêncio\n"
@@ -361,6 +362,7 @@ _HELP_KEYWORDS: dict[str, str] = {
     "fuso": "viagens", "modo viagem": "viagens",
     "viajar": "viagens", "viajo": "viagens", "viajando": "viagens",
     "mp": "diario oficial", "dou": "diario oficial", "medida provisoria": "diario oficial",
+    "esforco": "diario oficial", "effort": "diario oficial",
     "nota tecnica": "diario oficial", "nota": "diario oficial",
     "demora": "diario oficial", "demorando": "diario oficial",
     "travando": "diario oficial", "travou": "diario oficial",

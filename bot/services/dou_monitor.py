@@ -1253,6 +1253,7 @@ def _filtrar_meta_processo(nota: dict) -> dict:
 
 async def generate_nota_tecnica(
     mp: dict, *, provider: str | None = None, model: str | None = None,
+    effort: str | None = None,
 ) -> dict | None:
     """Gera o conteúdo da nota técnica (pesquisa + redação estruturada).
     `provider`/`model` são overrides por usuário (/dou_provider); quando None,
@@ -1263,13 +1264,25 @@ async def generate_nota_tecnica(
     if prov == "gemini":
         nota = await _gen_nota_gemini(mp, model_override=model)
     else:
-        nota = await _gen_nota_anthropic(mp, model_override=model)
+        nota = await _gen_nota_anthropic(mp, model_override=model, effort=effort)
     return _filtrar_meta_processo(nota) if nota else nota
 
 
 # ── Anthropic (Claude + web_search) ──
 
-async def _gen_nota_anthropic(mp: dict, *, model_override: str | None = None) -> dict | None:
+# Mesmo schema da ferramenta, no formato de saída estruturada (JSON validado
+# pela API): todo objeto precisa de additionalProperties=false, e os campos
+# "vazio se MP curta" viram obrigatórios — o modelo devolve "" neles.
+_NOTA_JSON_SCHEMA = {
+    **_NOTA_TOOL["input_schema"],
+    "required": list(_NOTA_TOOL["input_schema"]["properties"]),
+    "additionalProperties": False,
+}
+
+
+async def _gen_nota_anthropic(
+    mp: dict, *, model_override: str | None = None, effort: str | None = None,
+) -> dict | None:
     if not settings.anthropic_api_key:
         logger.warning("dou: ANTHROPIC_API_KEY ausente; nota pulada")
         return None
@@ -1281,15 +1294,47 @@ async def _gen_nota_anthropic(mp: dict, *, model_override: str | None = None) ->
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
     dossie = await _pesquisar_contexto(client, mp, model=model)
     user_content = _nota_user_content(mp, dossie)
+    kwargs: dict = dict(
+        model=model,
+        max_tokens=16384,
+        system=[{"type": "text", "text": _NOTA_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+        tools=[_NOTA_TOOL],
+        tool_choice={"type": "tool", "name": "nota_tecnica"},
+        messages=[{"role": "user", "content": user_content + " Chame a ferramenta nota_tecnica."}],
+    )
+    # Esforço escolhido pelo dono (/dou_provider esforco). Sem escolha, não
+    # manda nada: vale o padrão de cada modelo (no Opus 5.5 é "medium").
+    # Vai por extra_body: o SDK fixado (anthropic 0.69) não conhece
+    # output_config e daria TypeError antes de chegar na API.
+    output_config: dict = {"effort": effort} if effort else {}
+    if output_config:
+        kwargs["extra_body"] = {"output_config": output_config}
+    api = client.with_options(timeout=240.0, max_retries=1).messages
     try:
-        resp = await client.with_options(timeout=240.0, max_retries=1).messages.create(
-            model=model,
-            max_tokens=16384,
-            system=[{"type": "text", "text": _NOTA_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-            tools=[_NOTA_TOOL],
-            tool_choice={"type": "tool", "name": "nota_tecnica"},
-            messages=[{"role": "user", "content": user_content + " Chame a ferramenta nota_tecnica."}],
-        )
+        try:
+            resp = await api.create(**kwargs)
+        except anthropic.BadRequestError as exc:
+            if "tool_choice" not in str(exc):
+                raise
+            # Opus 5.5 / Fable 5.1 recusam ferramenta FORÇADA (400). Mesma
+            # nota por saída estruturada, com o mesmo schema. Os demais
+            # modelos seguem pelo caminho de antes, sem mudança.
+            logger.info("dou: %s recusou tool_choice forçado; nota via JSON "
+                        "estruturado", model)
+            kwargs.pop("tools")
+            kwargs.pop("tool_choice")
+            kwargs["extra_body"] = {"output_config": {
+                **output_config,
+                "format": {"type": "json_schema", "schema": _NOTA_JSON_SCHEMA},
+            }}
+            kwargs["messages"] = [{"role": "user", "content": user_content}]
+            resp = await api.create(**kwargs)
+            if resp.stop_reason != "end_turn":
+                logger.warning("dou: nota MP %s/%s terminou com stop_reason=%s",
+                               mp["numero"], mp["ano"], resp.stop_reason)
+            texto = "".join(b.text for b in resp.content
+                            if getattr(b, "type", None) == "text")
+            return json.loads(texto)
         for block in resp.content:
             if getattr(block, "type", None) == "tool_use":
                 return block.input
@@ -1829,6 +1874,7 @@ async def gerar_e_enviar_nota(bot, user, mp: dict, *, caption_extra: str | None 
             mp,
             provider=getattr(user, "dou_mp_provider", None),
             model=getattr(user, "dou_mp_model", None),
+            effort=getattr(user, "dou_mp_effort", None),
         )
     with _fase(f"docx MP {mp['numero']}"):
         docx_bytes = await asyncio.to_thread(build_docx, mp, nota)
