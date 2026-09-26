@@ -29,12 +29,18 @@ _NOTA = {"ementa": "Desenrola", "p1_contexto": "c", "p2_dispositivos": "d",
          "p3_continuacao": "", "p4_sintese": "", "p5_fechamento": ""}
 
 
+def _eh_pesquisa(corpo: dict) -> bool:
+    return any(t.get("name") == "web_search" for t in corpo.get("tools", []))
+
+
 class _API:
     """Servidor local no lugar de api.anthropic.com. `recusa_forcado`
     imita o Opus 5.5 (400 em tool_choice forçado)."""
 
-    def __init__(self, recusa_forcado: bool, erro_400: str | None = None):
+    def __init__(self, recusa_forcado: bool, erro_400: str | None = None,
+                 dossie: str = "sem cobertura web ainda", stop_dossie: str = "end_turn"):
         self.corpos: list[dict] = []
+        self.dossie, self.stop_dossie = dossie, stop_dossie
         api = self
 
         class H(BaseHTTPRequestHandler):
@@ -44,8 +50,9 @@ class _API:
             def do_POST(self):
                 corpo = json.loads(self.rfile.read(int(self.headers["content-length"])))
                 api.corpos.append(corpo)
-                if corpo["max_tokens"] == 1024:  # pesquisa de contexto
-                    return self._ok([{"type": "text", "text": "sem cobertura web ainda"}])
+                if _eh_pesquisa(corpo):
+                    return self._ok([{"type": "text", "text": api.dossie}],
+                                    stop=api.stop_dossie)
                 forcado = corpo.get("tool_choice", {}).get("type") == "tool"
                 if erro_400:
                     return self._erro(erro_400)
@@ -82,7 +89,10 @@ class _API:
         self.url = f"http://127.0.0.1:{self.srv.server_address[1]}"
 
     def notas(self):
-        return [c for c in self.corpos if c["max_tokens"] != 1024]
+        return [c for c in self.corpos if not _eh_pesquisa(c)]
+
+    def pesquisas(self):
+        return [c for c in self.corpos if _eh_pesquisa(c)]
 
 
 def _gerar(monkeypatch, api: _API, model: str, effort: str | None):
@@ -190,3 +200,22 @@ def test_comando_esforco_avisa_quando_o_motor_e_gemini() -> None:
     u = _user()
     u.dou_mp_provider = "gemini"
     assert "Gemini" in _cmd("esforco high", u)
+
+
+# ───────────── pesquisa web (dossiê) ─────────────
+
+def test_pesquisa_web_tem_espaco_pra_escrever(monkeypatch) -> None:
+    """Medido na API real: com 1024 tokens o Sonnet 5 dizia "sem cobertura"
+    e o Opus 5.5 devolvia dossiê vazio; com 4096 os dois trouxeram contexto."""
+    api = _API(recusa_forcado=False)
+    _gerar(monkeypatch, api, "claude-sonnet-5", None)
+    (pesquisa,) = api.pesquisas()
+    assert pesquisa["max_tokens"] >= 4096
+
+
+def test_pesquisa_cortada_no_teto_avisa_no_log(monkeypatch, caplog) -> None:
+    import logging
+    api = _API(recusa_forcado=False, dossie="", stop_dossie="max_tokens")
+    with caplog.at_level(logging.WARNING, logger="bot.services.dou_monitor"):
+        _gerar(monkeypatch, api, "claude-opus-5-5", None)
+    assert any("cortada no teto" in r.getMessage() for r in caplog.records)

@@ -1117,6 +1117,12 @@ _NOTA_TOOL = {
 _WEB_TOOLS = [
     {"type": "web_search_20260209", "name": "web_search", "max_uses": 2},
 ]
+# Medido na API real (26/09/2026, MP 1.393): com 1024 o Sonnet 5 respondia
+# "sem cobertura web ainda" (2 de 2) mesmo com 19 resultados na busca, e o
+# Opus 5.5 esgotava o teto pensando/filtrando e devolvia dossiê VAZIO. Com
+# 4096 os dois trouxeram o dossiê de verdade (1,7-3,3 mil caracteres, com
+# fontes), em 22-32s. Só é cobrado o que o modelo escreve.
+_DOSSIE_MAX_TOKENS = 4096
 
 
 async def _pesquisar_contexto(client, mp: dict, *, model: str | None = None) -> str:
@@ -1143,18 +1149,25 @@ async def _pesquisar_contexto(client, mp: dict, *, model: str | None = None) -> 
     # e não esbarra no guard de 'requisição longa' do SDK; o timeout aperta o
     # resto. Sem loop de pause_turn (raro com max_uses=2; se vier, o texto pode
     # estar vazio → fallback gracioso).
-    bounded = client.with_options(timeout=50.0, max_retries=1)
+    bounded = client.with_options(timeout=75.0, max_retries=1)
     try:
         resp = await asyncio.wait_for(
             bounded.messages.create(
                 model=model,
-                max_tokens=1024,
+                max_tokens=_DOSSIE_MAX_TOKENS,
                 tools=_WEB_TOOLS,
                 messages=[{"role": "user", "content": prompt}],
             ),
-            timeout=55.0,
+            timeout=80.0,
         )
-        return "\n".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+        texto = "\n".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+        if resp.stop_reason == "max_tokens":
+            # Cortado no teto: a nota sai sem (ou com meio) contexto web. Não
+            # é erro, mas não pode passar calado.
+            logger.warning("dou: pesquisa web da MP %s cortada no teto de %d "
+                           "tokens (%d caracteres aproveitados)", mp["numero"],
+                           _DOSSIE_MAX_TOKENS, len(texto))
+        return texto
     except Exception as exc:
         logger.warning("dou: pesquisa web indisponível/lenta p/ MP %s (%s); seguindo sem dossiê",
                        mp["numero"], exc)
