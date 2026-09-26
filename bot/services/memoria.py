@@ -213,7 +213,6 @@ def _provider_do_resumo(user):
             gemini_model=modelo if prov == "gemini" else None,
             anthropic_model=modelo if prov == "anthropic" else None,
             openai_model=modelo if prov == "openai" else None,
-            openrouter_model=modelo if prov == "openrouter" else None,
         )
     except Exception:
         logger.warning(

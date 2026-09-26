@@ -7,10 +7,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 Provider = Literal["anthropic", "openai", "gemini"]
-# Chat/visão aceitam também o OpenRouter. A nota técnica (DOU_MP_PROVIDER) NÃO:
-# ela usa recursos próprios de cada provedor (web_search do Claude, grounding
-# do Gemini), então segue no Provider de 3.
-ChatProvider = Literal["anthropic", "openai", "gemini", "openrouter"]
 
 
 class Settings(BaseSettings):
@@ -24,16 +20,11 @@ class Settings(BaseSettings):
     database_url: str = Field("sqlite+aiosqlite:////app/data/concierge.db", alias="DATABASE_URL")
 
     # LLM
-    ai_provider: ChatProvider = Field("anthropic", alias="AI_PROVIDER")
+    ai_provider: Provider = Field("anthropic", alias="AI_PROVIDER")
     anthropic_api_key: str | None = Field(None, alias="ANTHROPIC_API_KEY")
     anthropic_model: str = Field("claude-sonnet-4-6", alias="ANTHROPIC_MODEL")
     openai_api_key: str | None = Field(None, alias="OPENAI_API_KEY")
     openai_model: str = Field("gpt-4.1", alias="OPENAI_MODEL")
-    # OpenRouter: modelos de vários provedores (DeepSeek, Qwen, Grok, Llama,
-    # Mistral…) por uma API compatível com a da OpenAI. Id com o fornecedor
-    # na frente; o padrão foi testado chamando tools pelo laço do bot.
-    openrouter_api_key: str | None = Field(None, alias="OPENROUTER_API_KEY")
-    openrouter_model: str = Field("deepseek/deepseek-v4.1-flash", alias="OPENROUTER_MODEL")
     gemini_api_key: str | None = Field(None, alias="GEMINI_API_KEY")
     gemini_model: str = Field("gemini-2.5-pro", alias="GEMINI_MODEL")
     # Orçamento de "thinking" do agente Gemini (tokens). -1 = automático
@@ -44,7 +35,7 @@ class Settings(BaseSettings):
     # Override opcional só pra entrada de imagens. Quando setado, fotos vão
     # pra esse provider independente do /provider do usuário. Vazio = usa o
     # provider atual do usuário.
-    vision_provider: ChatProvider | None = Field(None, alias="VISION_PROVIDER")
+    vision_provider: Provider | None = Field(None, alias="VISION_PROVIDER")
 
     # Trânsito (Google Directions API — replicado do Telegram-Travels)
     google_maps_api_key: SecretStr | None = Field(None, alias="GOOGLE_MAPS_API_KEY")

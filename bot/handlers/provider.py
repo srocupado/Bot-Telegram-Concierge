@@ -19,34 +19,10 @@ def _html_escape(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-# Mensagem do Telegram tem teto de 4096 caracteres: o OpenRouter tem ~390
-# modelos com tools, e a lista inteira faria o envio falhar.
-_MAX_LINHAS = 60
-
-
-async def _format_model_list(
-    provider: str, modality: str = "text", filtro: str | None = None,
-) -> str:
+async def _format_model_list(provider: str, modality: str = "text") -> str:
     """Lista dinâmica (Models API) dos modelos do provider que aceitam
-    `modality` na entrada (text/vision/audio), em HTML. `filtro` restringe
-    por trecho do id/nome (ex.: "deepseek")."""
+    `modality` na entrada (text/vision/audio), em HTML."""
     modelos = await catalog.list_models(provider, modality)
-    if modelos and filtro:
-        f = filtro.lower()
-        modelos = [(m, n) for m, n in modelos if f in m.lower() or f in (n or "").lower()]
-        if not modelos:
-            return (f"Nenhum modelo de <b>{_html_escape(provider)}</b> com "
-                    f"<code>{_html_escape(filtro)}</code> no nome.")
-    if len(modelos) > _MAX_LINHAS and not filtro:
-        # Resumo por fornecedor (prefixo antes da "/"), com como filtrar.
-        from collections import Counter
-        por_fornecedor = Counter(m.split("/", 1)[0] for m, _ in modelos)
-        linhas = [f"<b>Modelos {_html_escape(provider)}:</b> {len(modelos)} — "
-                  "lista longa demais pra uma mensagem. Por fornecedor:"]
-        linhas += [f"• {_html_escape(f)}: {n}" for f, n in por_fornecedor.most_common()]
-        linhas.append(f"\nFiltre: <code>/provider modelos {_html_escape(provider)} "
-                      "&lt;trecho&gt;</code> (ex.: deepseek, qwen, grok)")
-        return "\n".join(linhas)
     if not modelos:
         _por_modalidade = {
             "audio": " que aceitem áudio",
@@ -58,15 +34,11 @@ async def _format_model_list(
             "API indisponível)."
         )
     linhas = [f"<b>Modelos {_html_escape(provider)}:</b>"]
-    sobra = len(modelos) - _MAX_LINHAS
-    modelos = modelos[:_MAX_LINHAS]
     for mid, nome in modelos:
         if nome and nome != mid:
             linhas.append(f"<code>{_html_escape(mid)}</code> · {_html_escape(nome)}")
         else:
             linhas.append(f"<code>{_html_escape(mid)}</code>")
-    if sobra > 0:
-        linhas.append(f"… e mais {sobra}. Refine o filtro.")
     return "\n".join(linhas)
 
 
@@ -131,20 +103,16 @@ async def cmd_provider(
             atual += f" ({user.anthropic_model or settings.anthropic_model})"
         elif atual == "openai":
             atual += f" ({user.openai_model or settings.openai_model})"
-        elif atual == "openrouter":
-            atual += f" ({user.openrouter_model or settings.openrouter_model})"
         await message.answer(
             f"Provider atual: *{atual}*\n\nUse: /provider {opts}\n"
             "Modelos disponíveis (lista dinâmica da API):\n"
-            "• `/provider modelos` (gemini) | `/provider modelos anthropic` | `/provider modelos openai`\n"
-            "• `/provider modelos openrouter <trecho>` — ex.: `deepseek`, `qwen`, `grok`\n\n"
+            "• `/provider modelos` (gemini) | `/provider modelos anthropic` | `/provider modelos openai`\n\n"
             "Teto de raciocínio do Gemini:\n"
             "• `/provider thinking` (mostra) | `auto` | `0` | `512` | `padrao`\n\n"
             "Pra escolher o modelo (id completo da lista; NULL = volta ao .env):\n"
             "• `/provider gemini <id>` — ou alias: `3.5` | `3.1-pro` | `pro` | `flash`\n"
             "• `/provider anthropic <id>` — ex.: `/provider anthropic claude-sonnet-5`\n"
-            "• `/provider openai <id>` — ex.: `/provider openai gpt-5.1`\n"
-            "• `/provider openrouter <id>` — ex.: `/provider openrouter deepseek/deepseek-v4.1-flash`",
+            "• `/provider openai <id>` — ex.: `/provider openai gpt-5.1`",
             parse_mode="Markdown",
         )
         return
@@ -222,8 +190,7 @@ async def cmd_provider(
             opts = ", ".join(SUPPORTED_PROVIDERS)
             await message.answer(f"Provider inválido. Opções: {opts}", parse_mode=None)
             return
-        filtro = tokens[2] if len(tokens) > 2 else None
-        await message.answer(await _format_model_list(prov, filtro=filtro), parse_mode="HTML")
+        await message.answer(await _format_model_list(prov), parse_mode="HTML")
         return
 
     prov = tokens[0]
@@ -308,30 +275,6 @@ async def cmd_provider(
                 parse_mode=None,
             )
             return
-    elif prov == "openrouter":
-        if variant is None:
-            user.openrouter_model = None  # volta ao OPENROUTER_MODEL do .env
-        elif "/" in variant:
-            ok = await _is_valid_id("openrouter", variant)
-            if ok is False:
-                await message.answer(
-                    f"Não achei <code>{_html_escape(variant)}</code> entre os "
-                    "modelos do OpenRouter que aceitam ferramentas (o chat do "
-                    "bot depende delas). Veja <code>/provider modelos "
-                    "openrouter &lt;trecho&gt;</code>.",
-                    parse_mode="HTML",
-                )
-                return
-            user.openrouter_model = variant
-            sem_conferir = ok is None
-        else:
-            await message.answer(
-                "Passe o id completo do OpenRouter, com o fornecedor na frente "
-                "(ex.: /provider openrouter deepseek/deepseek-v4.1-flash). "
-                "Lista: /provider modelos openrouter <trecho>.",
-                parse_mode=None,
-            )
-            return
     user.provider = prov
     await session.commit()
 
@@ -342,8 +285,6 @@ async def cmd_provider(
         label = f"anthropic ({user.anthropic_model or settings.anthropic_model})"
     elif prov == "openai":
         label = f"openai ({user.openai_model or settings.openai_model})"
-    elif prov == "openrouter":
-        label = f"openrouter ({user.openrouter_model or settings.openrouter_model})"
     aviso = ""
     if sem_conferir:
         # Honesto sobre o que NÃO foi feito: "✅ definido" com a mesma cara de

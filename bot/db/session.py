@@ -135,9 +135,6 @@ async def _ensure_columns(conn) -> None:
     if "dou_mp_effort" not in cols:
         await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN dou_mp_effort VARCHAR(8)")
         logger.info("migrated: added users.dou_mp_effort")
-    if "openrouter_model" not in cols:
-        await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN openrouter_model VARCHAR(96)")
-        logger.info("migrated: added users.openrouter_model")
     if "anthropic_model" not in cols:
         await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN anthropic_model VARCHAR(64)")
         logger.info("migrated: added users.anthropic_model")

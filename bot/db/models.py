@@ -36,9 +36,6 @@ class User(Base):
     # do .env. Só vale quando o provider efetivo for o respectivo.
     anthropic_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
     openai_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    # /provider openrouter <id> (ex.: deepseek/deepseek-v4.1-flash). NULL =
-    # OPENROUTER_MODEL do .env.
-    openrouter_model: Mapped[str | None] = mapped_column(String(96), nullable=True)
     # Override opcional só pra entrada de imagens (foto). Quando NULL, segue
     # VISION_PROVIDER do .env (também opcional) e depois cai em `provider`.
     vision_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
