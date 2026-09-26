@@ -45,6 +45,8 @@ async def list_models(provider: str, modality: str = "text") -> list[tuple[str, 
                 return await _gemini(c, modality)
             if provider == "openai":
                 return await _openai(c, modality)
+            if provider == "openrouter":
+                return await _openrouter(c, modality)
     except Exception:
         logger.exception("catalog: falha listando modelos de %s", provider)
     return []
@@ -124,5 +126,31 @@ async def _openai(c: httpx.AsyncClient, modality: str) -> list[tuple[str, str]]:
             if modality == "vision" and mid.startswith("gpt-3.5"):
                 continue
             out.append((mid, mid))
+    out.sort()
+    return out
+
+
+async def _openrouter(c: httpx.AsyncClient, modality: str) -> list[tuple[str, str]]:
+    """Só modelos que aceitam TOOLS: o chat do bot depende delas (lembrete,
+    gasto, agenda…). O catálogo diz isso em `supported_parameters`. Fora as
+    variantes `:batch` (processamento em lote, não servem pra chat)."""
+    if modality == "audio" or not settings.openrouter_api_key:
+        return []
+    r = await c.get(
+        "https://openrouter.ai/api/v1/models",
+        headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
+    )
+    r.raise_for_status()
+    out: list[tuple[str, str]] = []
+    for m in r.json().get("data", []):
+        mid = m.get("id", "")
+        if not mid or mid.endswith(":batch"):
+            continue
+        if "tools" not in (m.get("supported_parameters") or []):
+            continue
+        entrada = (m.get("architecture") or {}).get("input_modalities") or []
+        if modality == "vision" and "image" not in entrada:
+            continue
+        out.append((mid, m.get("name") or mid))
     out.sort()
     return out

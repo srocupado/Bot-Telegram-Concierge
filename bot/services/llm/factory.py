@@ -6,7 +6,7 @@ from bot.config import settings
 from bot.services.llm.anthropic_impl import AnthropicProvider
 from bot.services.llm.base import LLMProvider
 from bot.services.llm.gemini_impl import GeminiProvider
-from bot.services.llm.openai_impl import OpenAIProvider
+from bot.services.llm.openai_impl import OpenAIProvider, OpenRouterProvider
 
 
 @lru_cache(maxsize=32)
@@ -16,11 +16,16 @@ def _build(
     anthropic_model: str | None = None,
     openai_model: str | None = None,
     gemini_thinking_budget: int | None = None,
+    openrouter_model: str | None = None,
 ) -> LLMProvider:
     if name == "anthropic":
         return AnthropicProvider(settings.anthropic_api_key or "", anthropic_model or settings.anthropic_model)
     if name == "openai":
         return OpenAIProvider(settings.openai_api_key or "", openai_model or settings.openai_model)
+    if name == "openrouter":
+        return OpenRouterProvider(
+            settings.openrouter_api_key or "", openrouter_model or settings.openrouter_model,
+        )
     if name == "gemini":
         return GeminiProvider(
             settings.gemini_api_key or "", gemini_model or settings.gemini_model,
@@ -36,11 +41,12 @@ def get_provider(
     anthropic_model: str | None = None,
     openai_model: str | None = None,
     gemini_thinking_budget: int | None = None,
+    openrouter_model: str | None = None,
 ) -> LLMProvider:
     """Overrides de modelo por usuário (/provider <prov> <id>). Cada um só vale
     quando o provider efetivo for o respectivo; os outros são ignorados."""
     return _build(name or settings.ai_provider, gemini_model, anthropic_model,
-                  openai_model, gemini_thinking_budget)
+                  openai_model, gemini_thinking_budget, openrouter_model)
 
 
 def get_provider_for_user(user, name: str | None = None) -> LLMProvider:
@@ -53,6 +59,7 @@ def get_provider_for_user(user, name: str | None = None) -> LLMProvider:
         anthropic_model=user.anthropic_model,
         openai_model=user.openai_model,
         gemini_thinking_budget=getattr(user, "gemini_thinking_budget", None),
+        openrouter_model=getattr(user, "openrouter_model", None),
     )
 
 
@@ -69,4 +76,4 @@ def modelo_do_user(user) -> str:
         return "?"
 
 
-SUPPORTED_PROVIDERS = ("anthropic", "openai", "gemini")
+SUPPORTED_PROVIDERS = ("anthropic", "openai", "gemini", "openrouter")

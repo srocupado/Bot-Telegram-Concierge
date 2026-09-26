@@ -186,7 +186,7 @@ class OpenAIProvider(LLMProvider):
                 # Toda tool call fica no log — sem isto, "por que o bot me
                 # respondeu ISSO?" não tem resposta na fonte real (ver
                 # resumo_tool_call em llm/base.py).
-                logger.info("openai tool call: %s", resumo_tool_call(fn_name, fn_args))
+                logger.info("%s tool call: %s", self.name, resumo_tool_call(fn_name, fn_args))
                 tool = tool_by_name.get(fn_name)
                 if tool is None:
                     result = f"erro: tool '{fn_name}' não existe"
@@ -209,7 +209,7 @@ class OpenAIProvider(LLMProvider):
         # Limite estourado: última rodada SEM tools pro modelo contar o que já
         # executou (ver instrucao_limite em llm/base.py — turno que só LEU não
         # inventaria ação nenhuma).
-        logger.warning("openai: max_iterations (%d) estourado", max_iterations)
+        logger.warning("%s: max_iterations (%d) estourado", self.name, max_iterations)
         oa_messages.append({"role": "user", "content": instrucao_limite(ctx)})
 
         def _final():
@@ -227,3 +227,35 @@ class OpenAIProvider(LLMProvider):
             logger.exception("openai: rodada final pós-limite falhou")
             texto = ""
         return texto or fallback_limite(ctx)
+
+
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+
+class OpenRouterProvider(OpenAIProvider):
+    """Modelos de vários provedores (DeepSeek, Qwen, Grok, Llama, Mistral…)
+    pela API do OpenRouter, que é compatível com a da OpenAI: mesmo cliente,
+    mesmo laço de tools — muda só o endereço e a chave. Ids vêm com o
+    fornecedor na frente (ex.: deepseek/deepseek-v4.1-flash)."""
+
+    name = "openrouter"
+
+    def __init__(self, api_key: str, model: str) -> None:
+        if not api_key:
+            raise ValueError("OPENROUTER_API_KEY ausente")
+        self.client = OpenAI(
+            api_key=api_key, base_url=OPENROUTER_BASE_URL,
+            default_headers={"X-Title": "Concierge"},
+        )
+        self.model = model
+
+    def _create(self, *, max_tokens: int, **kwargs: Any):
+        # O OpenRouter traduz `max_tokens` pra cada provedor (não há a troca
+        # por max_completion_tokens da OpenAI direta). Piso de tokens: muitos
+        # modelos de lá raciocinam antes de responder e o raciocínio conta no
+        # teto — medido (26/09/2026): qwen3.8-max-prime gastou 908 de 1024
+        # (897 raciocinando), no limite de voltar vazio. Só se paga o que o
+        # modelo escreve.
+        return self.client.chat.completions.create(
+            **kwargs, max_tokens=max(max_tokens, _MIN_REASONING_TOKENS),
+        )

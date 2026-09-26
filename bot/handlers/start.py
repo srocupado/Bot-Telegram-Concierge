@@ -114,10 +114,11 @@ HELP_TEXT = (
     "• Recorrência por chat: <i>\"todo dia útil 7h…\"</i>, <i>\"a cada 2 horas…\"</i> (aceita padrão cron)\n\n"
     "<b>LLM</b>:\n"
     "• <code>/ping</code> — testa o LLM atual (mostra provider e modelo)\n"
-    "• <code>/provider anthropic|openai|gemini</code> — troca de LLM. Dá pra fixar o modelo por id: <code>/provider gemini gemini-3.5-flash</code> | <code>/provider anthropic claude-sonnet-5</code> | <code>/provider openai gpt-5.1</code> (sem id = volta ao .env; no Gemini ainda valem aliases <code>pro</code>|<code>flash</code>)\n"
+    "• <code>/provider anthropic|openai|gemini|openrouter</code> — troca de LLM. Dá pra fixar o modelo por id: <code>/provider gemini gemini-3.5-flash</code> | <code>/provider anthropic claude-sonnet-5</code> | <code>/provider openai gpt-5.1</code> (sem id = volta ao .env; no Gemini ainda valem aliases <code>pro</code>|<code>flash</code>)\n"
     "• <code>/provider modelos [provider]</code> — lista dinâmica dos modelos (vem da API; modelo novo aparece sozinho)\n"
+    "• <b>OpenRouter</b> — modelos de vários provedores (DeepSeek, Qwen, Grok, Llama, Mistral, Kimi, GLM…) numa chave só: <code>/provider modelos openrouter deepseek</code> busca por trecho; <code>/provider openrouter deepseek/deepseek-v4.1-flash</code> escolhe (id com o fornecedor na frente). Só entram modelos que usam ferramentas — o chat depende delas. Vale pro chat e pras fotos (<code>/provider_visao openrouter</code>); a nota técnica continua no Claude/Gemini\n"
     "• <code>/provider thinking [auto|0|N|padrao]</code> — quanto o Gemini pode \"pensar\" antes de responder. <code>auto</code> deixa o modelo decidir (sempre aceito); <code>0</code> desliga e economiza tokens, mas modelo novo costuma recusar; <code>N</code> fixa um teto; <code>padrao</code> volta ao .env. Sem argumento, mostra o valor atual. Antes só existia no .env, e o valor certo depende do modelo — trocar de modelo exigia deploy\n"
-    "• <code>/provider_visao anthropic|openai|gemini|auto</code> — provider só pra fotos (auto = segue /provider). <code>/provider_visao modelos</code> lista só modelos com entrada de imagem\n"
+    "• <code>/provider_visao anthropic|openai|gemini|openrouter|auto</code> — provider só pra fotos (auto = segue /provider). <code>/provider_visao modelos</code> lista só modelos com entrada de imagem\n"
     "• <code>/voice gemini|openai</code> — provider da transcrição de voz. Gemini converte voz→/comando; OpenAI (Whisper) é literal mas mais estável. <code>/voice modelos</code> lista só modelos com entrada de áudio\n"
     "• <code>/reset</code> — limpa o contexto da conversa livre\n"
     "• <code>/reset_memoria [tudo]</code> — zera a memória de longo prazo "
@@ -455,6 +456,8 @@ _HELP_KEYWORDS: dict[str, str] = {
     "thinking": "llm", "raciocinio": "llm", "pensar": "llm", "pensando": "llm",
     "budget": "llm", "gemini": "llm", "token": "llm", "tokens": "llm",
     "memoria": "llm", "lembra": "llm",
+    "openrouter": "llm", "deepseek": "llm", "qwen": "llm", "grok": "llm",
+    "llama": "llm", "mistral": "llm", "kimi": "llm",
     "foto": "imagens", "imagem": "imagens", "recibo": "imagens", "boleto": "imagens",
     "sympla": "sympla", "ingresso": "sympla", "ingressos": "sympla",
     "orquestra": "sympla", "concerto": "sympla", "sinfonica": "sympla",
