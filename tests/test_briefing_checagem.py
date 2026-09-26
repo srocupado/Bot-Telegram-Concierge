@@ -46,6 +46,21 @@ def _ultima_ok_limpa():
     dou_monitor._ultima_ok.clear()
 
 
+def _relogio(monkeypatch, hora: int, minuto: int) -> None:
+    """Fixa o relógio do collect_mp em HOJE às hora:minuto BRT. A frase de
+    fechamento depende da hora (antes das 21h30 ainda há a checagem da
+    noite) — sem isto o teste passava ou falhava conforme a hora da execução."""
+    real = datetime
+
+    class _DT(real):
+        @classmethod
+        def now(cls, tz=None):
+            base = real.now(proactive.BRT).replace(
+                hour=hora, minute=minuto, second=0, microsecond=0)
+            return base.astimezone(tz) if tz else base.replace(tzinfo=None)
+    monkeypatch.setattr(proactive, "datetime", _DT)
+
+
 def _facts(monkeypatch, resultado, *, conferir=True, restantes=(13, 19)):
     """Roda collect_mp de HOJE com o fetch devolvendo `resultado` (MPList ou
     exceção) e as janelas restantes controladas."""
@@ -108,6 +123,7 @@ def test_abertura_edicao_sem_mp(monkeypatch) -> None:
 def test_fechamento_na_ultima_janela(monkeypatch) -> None:
     """19h (sem janelas restantes): a palavra final do dia, com a ressalva —
     o dia só fecha às 6h e a extra tardia chega no briefing."""
+    _relogio(monkeypatch, 21, 40)
     facts = _facts(monkeypatch, MPList(), conferir=False, restantes=())
     bat = _batimentos(facts)
     assert len(bat) == 1
@@ -119,12 +135,31 @@ def test_fechamento_na_ultima_janela(monkeypatch) -> None:
 def test_fechamento_domingo_sem_edicao(monkeypatch) -> None:
     """Dia sem Diário nenhum (domingo/feriado): o fechamento não fala em
     'extra tardia' de uma edição que nunca existiu."""
+    _relogio(monkeypatch, 21, 40)
     ml = MPList()
     ml.sem_edicao = True
     ml.provisorio = True
     bat = _batimentos(_facts(monkeypatch, ml, conferir=False, restantes=()))
     assert len(bat) == 1
     assert "sem edição publicada até as" in bat[0].text
+    assert "chega no briefing de amanhã" in bat[0].text
+
+
+def test_fechamento_das_19h_aponta_a_checagem_da_noite(monkeypatch) -> None:
+    """Às 19h05 ainda falta a checagem do fechamento do dia (21h30): dizer
+    "chega no briefing de amanhã" ali seria falso."""
+    _relogio(monkeypatch, 19, 5)
+    monkeypatch.setattr(proactive.settings, "night_summary_enabled", True)
+    bat = _batimentos(_facts(monkeypatch, MPList(), conferir=False, restantes=()))
+    assert len(bat) == 1
+    assert "chega na última checagem do dia, às 21h30" in bat[0].text
+    assert "briefing de amanhã" not in bat[0].text
+
+
+def test_fechamento_das_19h_sem_rotina_noturna_aponta_o_briefing(monkeypatch) -> None:
+    _relogio(monkeypatch, 19, 5)
+    monkeypatch.setattr(proactive.settings, "night_summary_enabled", False)
+    bat = _batimentos(_facts(monkeypatch, MPList(), conferir=False, restantes=()))
     assert "chega no briefing de amanhã" in bat[0].text
 
 

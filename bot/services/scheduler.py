@@ -676,6 +676,9 @@ async def run_card_closing_summary(
                 logger.exception("card summary send crashed for user %d", u.id)
 
 
+_MP_NOTURNO_PENDENTE: dict[tuple[int, str], list] = {}
+
+
 def _noturno_devido(now_local: datetime) -> bool:
     """True da hora-alvo (NIGHT_SUMMARY_HOUR:MINUTE) até a meia-noite LOCAL.
     A janela larga é o catch-up: bot fora do ar às 21h30 manda quando voltar,
@@ -696,7 +699,8 @@ async def run_resumo_noturno(
     if not (settings.night_summary_enabled and settings.proactive_enabled):
         return
     from bot.services.proactive import (
-        _send, already_notified, mark_notified, montar_resumo_noturno,
+        _pos_envio, _send, _teclado_nota_mp, already_notified,
+        checagem_mp_noturna, mark_notified, montar_resumo_noturno,
     )
 
     now_utc = datetime.now(timezone.utc)
@@ -723,10 +727,26 @@ async def run_resumo_noturno(
                 # seção lá dentro): loga e tenta no próximo tick.
                 logger.exception("resumo noturno: montagem falhou (user %s)", u.id)
                 continue
+            # Última checagem de MP do dia (dono, 26/09/2026). Resultado
+            # guardado em memória até o envio dar certo: a re-tentativa de
+            # envio (a cada tick) não pode refazer portal/Inlabs/Planalto a
+            # cada 20s. Restart no meio só custa uma checagem a mais.
+            cache_key = (u.id, key)
+            mp_facts = _MP_NOTURNO_PENDENTE.get(cache_key)
+            if mp_facts is None:
+                mp_facts = await checagem_mp_noturna(session, u)
+                _MP_NOTURNO_PENDENTE[cache_key] = mp_facts
+            if mp_facts:
+                texto += ("\n\n📜 <b>Diário Oficial</b>\n"
+                          + "\n".join(f.text for f in mp_facts))
             # Marca só após envio OK — falha de envio re-tenta no tick
-            # seguinte, até a meia-noite local.
-            if await _send(bot, u.id, texto):
+            # seguinte, até a meia-noite local. As MPs anunciadas aqui seguem
+            # a MESMA regra da janela: dedup/baixa só com a mensagem entregue.
+            if await _send(bot, u.id, texto,
+                           reply_markup=_teclado_nota_mp(mp_facts)):
                 await mark_notified(session, u.id, "noturno", key)
+                await _pos_envio(session, u, mp_facts, force=False)
+                _MP_NOTURNO_PENDENTE.pop(cache_key, None)
                 logger.info("resumo noturno enviado (user %s)", u.id)
 
 

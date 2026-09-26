@@ -1079,7 +1079,7 @@ class _Colheita:
 
 async def collect_mp(
     session: AsyncSession, user: User, dates: list[date], *,
-    force: bool = False, conferir: bool = False,
+    force: bool = False, conferir: bool = False, apurado: dict | None = None,
 ) -> list[ProactiveFact]:
     if not user.dou_mp_subscribed:
         return []
@@ -1401,14 +1401,20 @@ async def collect_mp(
             # (/proativo_agora) às 21h43 dizia "checagem das 21h05" — minuto
             # da config colado numa checagem que não aconteceu ali.
             hora_txt = f"{agora_.hour}h{agora_.minute:02d}"
+            # Antes das 21h30 ainda há a checagem do fechamento do dia.
+            noite = (settings.night_summary_hour, settings.night_summary_minute)
+            if settings.night_summary_enabled and (agora_.hour, agora_.minute) < noite:
+                proxima = (f"na última checagem do dia, às "
+                           f"{noite[0]}h{noite[1]:02d}")
+            else:
+                proxima = "no briefing de amanhã"
             if colheita_hoje.sem_edicao:
                 texto = (f"📄 DOU de hoje: sem edição publicada até as "
-                         f"{hora_txt} — se sair alguma, "
-                         "chega no briefing de amanhã.")
+                         f"{hora_txt} — se sair alguma, chega {proxima}.")
             else:
                 texto = (f"📄 DOU de hoje: sem MP na checagem das "
                          f"{hora_txt} — extra tardia (se "
-                         "houver) chega no briefing de amanhã.")
+                         f"houver) chega {proxima}.")
             facts.append(ProactiveFact(
                 "mp", "mp_checagem", f"{hoje_.isoformat()}:fecha", texto,
                 date_iso=None,
@@ -1420,6 +1426,17 @@ async def collect_mp(
     for d in failed + provisorios:
         if not await already_notified(session, user.id, "mp_pendente", d.isoformat()):
             await mark_notified(session, user.id, "mp_pendente", d.isoformat())
+
+    # O que ESTA execução apurou sobre hoje, independente do dedup dos
+    # avisos: o fechamento das 21h30 precisa dizer "não consegui checar"
+    # mesmo quando o aviso de falha já saiu mais cedo (e por isso não volta).
+    if apurado is not None:
+        apurado.update(
+            falhou=hoje_ in failed,
+            pendente=hoje_ in provisorios,
+            completo=bool(colheita_hoje and colheita_hoje.completo),
+            mps_no_dia=colheita_hoje.mps_no_dia if colheita_hoje else None,
+        )
 
     # CRÍTICO: se NÃO conseguiu checar o DOU, AVISA — senão o usuário vê o
     # briefing sem MP e conclui (errado) que não houve MP publicada.
@@ -2142,6 +2159,66 @@ async def collect_carteira(
     return [ProactiveFact("carteira", "carteira_review", key, text)]
 
 
+async def checagem_mp_noturna(
+    session: AsyncSession, user: User,
+) -> list[ProactiveFact]:
+    """Última checagem de MP do dia, no fechamento das ~21h30 (pedido do
+    dono, 26/09/2026). As janelas param às 19h05; uma MP de edição extra
+    publicada depois disso só era vista no briefing das 7h05.
+
+    Roda o MESMO collect_mp das janelas (portal, Inlabs, Planalto,
+    pendências) e SEMPRE termina com uma linha de status: a checagem extra
+    que não aparece na mensagem seria indistinguível de "não rodou". Se o
+    aviso de falha já saiu mais cedo (e por isso não se repete), a linha
+    ainda diz que agora também falhou."""
+    if not user.dou_mp_subscribed:
+        return []
+    agora = datetime.now(BRT)
+    hora = f"{agora.hour}h{agora.minute:02d}"
+    hoje_dou = agora.date()
+    apurado: dict = {}
+    try:
+        facts = await collect_mp(session, user, [hoje_dou], apurado=apurado)
+    except Exception as exc:
+        logger.exception("resumo noturno: checagem de MP quebrou (user %s)", user.id)
+        return [ProactiveFact(
+            "mp", "mp_noturno", f"{hoje_dou.isoformat()}:erro",
+            f"⚠️ A checagem de MP das {hora} quebrou ({type(exc).__name__}) — "
+            "<b>NÃO assuma que não houve MP</b>. Confira com "
+            "<code>/mp_dou_agora</code>.",
+        )]
+
+    if any(f.kind in ("mp", "mp_checagem") for f in facts):
+        # MP nova (a própria linha fala) ou o "sem MP na checagem das HHhMM"
+        # que o collect_mp já escreve quando não restam janelas no dia.
+        return facts
+    if apurado.get("falhou"):
+        if not any(f.kind == "mp_fail" for f in facts):
+            facts.append(ProactiveFact(
+                "mp", "mp_noturno", f"{hoje_dou.isoformat()}:falhou",
+                f"⚠️ Checagem de MP das {hora}: <b>não consegui checar o DOU "
+                "de hoje</b> — NÃO assuma que não houve MP. Sigo tentando "
+                "sozinho; confira com <code>/mp_dou_agora</code>.",
+            ))
+        return facts
+    n = apurado.get("mps_no_dia") or 0
+    if apurado.get("completo") and n > 0:
+        texto = (f"📄 Checagem de MP das {hora}: nenhuma MP nova além "
+                 f"da(s) {n} de hoje.")
+    elif apurado.get("pendente"):
+        texto = (f"📄 Checagem de MP das {hora}: o DOU de hoje ainda não tem "
+                 "veredito (dia aberto) — sigo checando; MP que sair chega "
+                 "no briefing de amanhã.")
+    else:
+        # Estado que não sei classificar: na dúvida, é pendência — nunca
+        # "sem MP".
+        texto = (f"ℹ️ Checagem de MP das {hora}: sem veredito claro pra hoje "
+                 "— sigo re-checando; se quiser, confira com "
+                 "<code>/mp_dou_agora</code>.")
+    facts.append(ProactiveFact("mp", "mp_noturno", f"{hoje_dou.isoformat()}:status", texto))
+    return facts
+
+
 # ──────────────────────── orquestrador ────────────────────────
 
 _CAT_HEADER = {
@@ -2215,6 +2292,74 @@ async def _redigir(user: User, deterministic: str) -> str:
     except Exception:
         logger.exception("proactive: LLM redação falhou; usando texto determinístico")
         return deterministic
+
+
+def _teclado_nota_mp(facts: list[ProactiveFact]):
+    """Botão de nota técnica quando houver MP nos facts."""
+    mp_facts = [f for f in facts if f.category == "mp" and f.date_iso]
+    if not mp_facts:
+        return None
+    from bot.handlers.dou_mp import nota_keyboard
+    latest_date = max(f.date_iso for f in mp_facts)
+    numeros = [f.key.split("/")[0] for f in mp_facts if f.date_iso == latest_date]
+    return nota_keyboard(latest_date, numeros)
+
+
+async def _pos_envio(
+    session: AsyncSession, user: User, facts: list[ProactiveFact], *, force: bool,
+) -> None:
+    """Baixas e dedup que só valem com a mensagem ENTREGUE. Compartilhado
+    entre a janela proativa e a checagem de MP do fechamento do dia (21h30):
+    uma cópia divergente disto é o jeito mais fácil de perder MP."""
+    for f in facts:
+        # Retroativa do DOU ENTREGUE → o dia sai da pendência. Isso NÃO é
+        # dedup de aviso: é baixa de estado — o dia foi mesmo re-checado e
+        # o resultado já foi entregue. Por isso vale inclusive no
+        # /proativo_agora (force), que antes caía fora do bloco inteiro:
+        # a pendência nunca era baixada, cada execução manual re-baixava
+        # os ZIPs daquele dia (~100-200MB no Orange Pi) e a linha
+        # "✅ retroativa concluída" se repetia pra sempre.
+        # Se o envio falhar, a pendência fica e a retro repete na janela
+        # seguinte — que é o comportamento desejado.
+        if f.kind == "mp_retro":
+            dia_iso = f.key.removeprefix("retro:")
+            await unmark_notified(session, user.id, "mp_pendente", dia_iso)
+            # Entrada de CHECAGEM "DATA:all" da mesma data morre junto: o
+            # dia acabou de ser verificado (Inlabs ou portal). As entradas
+            # com NÚMEROS ficam — são notas reais ainda não entregues.
+            await unmark_notified(session, user.id, "nota_pendente",
+                                  f"{dia_iso}:all")
+        # Desistência da retroativa: o dia expirado só sai da fila com o
+        # aviso ENTREGUE (mesma lógica do mp_retro) — envio falho mantém
+        # a pendência e o aviso volta na próxima janela.
+        if f.kind == "mp_desisti":
+            await unmark_notified(session, user.id, "mp_pendente",
+                                  f.key.removeprefix("desisti:"))
+        # Lacuna avisada: a marca d'água só avança com o aviso ENTREGUE
+        # (o alvo vem no 4º campo da chave "lacuna:ini:fim:alvo").
+        if f.kind == "mp_lacuna":
+            partes = f.key.split(":")
+            if len(partes) == 4:
+                try:
+                    user.dou_ultimo_dia_ok = date.fromisoformat(partes[3])
+                    await session.commit()
+                except ValueError:
+                    logger.warning("proactive: chave mp_lacuna corrompida: %s",
+                                   f.key)
+        # Daqui pra baixo é DEDUP de aviso, e o force pula de propósito:
+        # execução de teste não pode silenciar a janela real.
+        if force:
+            continue
+        # clima, trânsito e vencimentos não têm dedup: repetem a cada
+        # janela (clima/trânsito = leitura fresca; vencimento = lembrar
+        # até pagar).
+        if f.category in ("clima", "transito", "venc", "tarefas"):
+            continue
+        # nota_fila é linha de STATUS: repete a cada janela até a entrega
+        # dar baixa na pendência (sem dedup).
+        if f.kind == "nota_fila":
+            continue
+        await mark_notified(session, user.id, f.kind, f.key)
 
 
 def run_key_da_janela(window: str, today: date, hour: int) -> str:
@@ -2320,66 +2465,12 @@ async def run_for_user(
     # pode chamar /mp_dou_agora <data> pras outras. Passa os NÚMEROS detectados
     # nesta notificação (key = "numero/ano") pra nota cobrir só essas MPs — sem
     # isso o botão regerava todas as MPs do dia (ex.: 19h refazia as das 13h).
-    reply_markup = None
-    mp_facts = [f for f in facts if f.category == "mp" and f.date_iso]
-    if mp_facts:
-        from bot.handlers.dou_mp import nota_keyboard
-        latest_date = max(f.date_iso for f in mp_facts)
-        numeros = [f.key.split("/")[0] for f in mp_facts if f.date_iso == latest_date]
-        reply_markup = nota_keyboard(latest_date, numeros)
+    reply_markup = _teclado_nota_mp(facts)
 
     sent = await _send(bot, user.id, text, reply_markup=reply_markup)
     logger.info("proactive: user %d window=%s %d fatos enviado=%s", user.id, window, len(facts), sent)
     if sent:
-        for f in facts:
-            # Retroativa do DOU ENTREGUE → o dia sai da pendência. Isso NÃO é
-            # dedup de aviso: é baixa de estado — o dia foi mesmo re-checado e
-            # o resultado já foi entregue. Por isso vale inclusive no
-            # /proativo_agora (force), que antes caía fora do bloco inteiro:
-            # a pendência nunca era baixada, cada execução manual re-baixava
-            # os ZIPs daquele dia (~100-200MB no Orange Pi) e a linha
-            # "✅ retroativa concluída" se repetia pra sempre.
-            # Se o envio falhar, a pendência fica e a retro repete na janela
-            # seguinte — que é o comportamento desejado.
-            if f.kind == "mp_retro":
-                dia_iso = f.key.removeprefix("retro:")
-                await unmark_notified(session, user.id, "mp_pendente", dia_iso)
-                # Entrada de CHECAGEM "DATA:all" da mesma data morre junto: o
-                # dia acabou de ser verificado (Inlabs ou portal). As entradas
-                # com NÚMEROS ficam — são notas reais ainda não entregues.
-                await unmark_notified(session, user.id, "nota_pendente",
-                                      f"{dia_iso}:all")
-            # Desistência da retroativa: o dia expirado só sai da fila com o
-            # aviso ENTREGUE (mesma lógica do mp_retro) — envio falho mantém
-            # a pendência e o aviso volta na próxima janela.
-            if f.kind == "mp_desisti":
-                await unmark_notified(session, user.id, "mp_pendente",
-                                      f.key.removeprefix("desisti:"))
-            # Lacuna avisada: a marca d'água só avança com o aviso ENTREGUE
-            # (o alvo vem no 4º campo da chave "lacuna:ini:fim:alvo").
-            if f.kind == "mp_lacuna":
-                partes = f.key.split(":")
-                if len(partes) == 4:
-                    try:
-                        user.dou_ultimo_dia_ok = date.fromisoformat(partes[3])
-                        await session.commit()
-                    except ValueError:
-                        logger.warning("proactive: chave mp_lacuna corrompida: %s",
-                                       f.key)
-            # Daqui pra baixo é DEDUP de aviso, e o force pula de propósito:
-            # execução de teste não pode silenciar a janela real.
-            if force:
-                continue
-            # clima, trânsito e vencimentos não têm dedup: repetem a cada
-            # janela (clima/trânsito = leitura fresca; vencimento = lembrar
-            # até pagar).
-            if f.category in ("clima", "transito", "venc", "tarefas"):
-                continue
-            # nota_fila é linha de STATUS: repete a cada janela até a entrega
-            # dar baixa na pendência (sem dedup).
-            if f.kind == "nota_fila":
-                continue
-            await mark_notified(session, user.id, f.kind, f.key)
+        await _pos_envio(session, user, facts, force=force)
 
     return sent
 

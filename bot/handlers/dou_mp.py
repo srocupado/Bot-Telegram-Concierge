@@ -630,10 +630,14 @@ async def cmd_on(message: Message, user: User, session: AsyncSession) -> None:
             "(PROACTIVE_ENABLED=false no .env) — é ele que roda este monitor. "
             "Sem ligá-lo, as MPs NÃO chegam automaticamente."
         )
+    noite = ""
+    if settings.night_summary_enabled:
+        noite = (f" Mais uma, a última do dia, às "
+                 f"{settings.night_summary_hour}h{settings.night_summary_minute:02d}, "
+                 "no fechamento do dia.")
     await message.answer(
         f"✅ Monitor de MPs no DOU ativado. As checagens rodam nas janelas "
-        f"do proativo ({janelas}), com abertura no briefing e fechamento do "
-        f"dia na última janela.{aviso}\n"
+        f"do proativo ({janelas}), com abertura no briefing.{noite}{aviso}\n"
         "Use /mp_dou_agora pra checar agora.",
         parse_mode=None,
     )

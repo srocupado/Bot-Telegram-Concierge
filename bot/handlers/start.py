@@ -40,7 +40,8 @@ HELP_TEXT = (
     "• <b>Conferência automática</b> (1x/dia, no briefing): o bot compara o que te entregou com a lista oficial de MPs da Câmara. Se alguma escapou (fonte fora do ar, dia em que o bot ficou desligado), ele avisa QUAL escapou e busca sozinho no DOU pra te mandar com a nota. Dia que ele não conseguiu checar vira pendência e é re-tentado por 14 dias — e se desistir, ele DIZ; nunca vira silêncio\n"
     "• <b>Portal público como verificador PRIMÁRIO</b>: toda checagem (janelas, retroativa e <code>/mp_dou_agora</code>) consulta primeiro o portal oficial (in.gov.br) — MP achada é avisada (card + botão de nota; a nota usa o texto do próprio portal), e dia fechado com evidência positiva (\"houve DOU sem MP\" ou \"não houve edição\") recebe baixa na hora. Cobre inclusive edição extra retroativa (foi assim que a MP 1.382, da extra de 01/08 que o Inlabs só materializou 9 dias depois, foi detectada)\n"
     "• <b>Rede do Planalto</b>: a cada janela o bot pergunta <i>\"existe MP com número acima da última que entreguei?\"</i> direto no planalto.gov.br. Como a numeração é sequencial e a URL é fixa, isso não depende do índice do DOU — pega MP de <b>edição extra</b> que o portal não indexa, e pega até de dia que já recebeu baixa. Foi o buraco por onde a MP 1.391 (extra de 11/09/2026) passou: o portal tinha o despacho que a encaminhava ao Congresso, mas não a MP, e respondeu \"houve DOU e NENHUMA MP\"\n"
-    "• <b>Despacho como pista</b>: o bot também lê o <i>\"Encaminhamento ao Congresso Nacional do texto da Medida Provisória nº X\"</i> no índice — quando ele aparece, a MP existe, mesmo que o índice não a traga. E dia que teve edição EXTRA sem MP encontrada <b>não recebe baixa</b>: o bot diz que não dá pra afirmar, em vez de dizer que não houve MP\n\n"
+    "• <b>Despacho como pista</b>: o bot também lê o <i>\"Encaminhamento ao Congresso Nacional do texto da Medida Provisória nº X\"</i> no índice — quando ele aparece, a MP existe, mesmo que o índice não a traga. E dia que teve edição EXTRA sem MP encontrada <b>não recebe baixa</b>: o bot diz que não dá pra afirmar, em vez de dizer que não houve MP\n"
+    "• <b>Última checagem do dia (~21h30)</b>: além das janelas (7h05, 13h05, 19h05), o fechamento do dia roda a mesma checagem completa (portal, Inlabs, Planalto) e traz uma linha de MP no resumo da noite — MP nova (com botão da nota), \"nenhuma nova\", ou \"não consegui checar\". Pega a edição extra publicada depois das 19h05 sem esperar o briefing de amanhã\n\n"
     "<b>Agente proativo</b> (opt-in):\n"
     "• <code>/proativo_on</code> / <code>/proativo_off</code> — liga/desliga avisos automáticos (vencimentos chegando, briefing matinal, MP nova, lembretes de hábito)\n"
     "• <code>/proativo</code> — status e janelas\n"
@@ -57,6 +58,7 @@ HELP_TEXT = (
     "• <b>Rotina noturna</b> (~21h30): o bot fecha o dia sozinho — o que você "
     "lançou hoje no financeiro (com total), os lembretes e a previsão de "
     "amanhã; sem lançamento no dia, ele pergunta se ficou gasto de fora. "
+    "Com o monitor de MP ligado, traz também a última checagem de MP do dia. "
     "Horário em <code>NIGHT_SUMMARY_HOUR</code>/<code>NIGHT_SUMMARY_MINUTE</code>; "
     "<code>NIGHT_SUMMARY_ENABLED=false</code> desliga\n\n"
     "<b>Rota com sua localização</b>:\n"
@@ -456,6 +458,7 @@ _HELP_KEYWORDS: dict[str, str] = {
     "fim de semana": "proativo", "fds": "proativo", "sexta": "proativo",
     "noturno": "proativo", "noturna": "proativo", "noite": "proativo",
     "resumo": "proativo", "fechando o dia": "proativo",
+    "fechamento do dia": "proativo", "fecha o dia": "proativo",
     "fecha o dia": "proativo", "fechar o dia": "proativo",
     # estreias/em cartaz → seção Cinema (a consulta manual continua lá)
     "estreia": "cinema", "estreias": "cinema", "em cartaz": "cinema",
