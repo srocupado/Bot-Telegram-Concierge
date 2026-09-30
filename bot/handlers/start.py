@@ -197,7 +197,11 @@ HELP_TEXT = (
     "precisar pedir nada. Avisa o resultado (sucesso ou onde travou), com "
     "print da tela.\n"
     "• <code>/sympla_testar</code> — roda o fluxo agora, fora da janela de "
-    "quarta (serve pra confirmar login/busca sem esperar a próxima liberação).\n\n"
+    "quarta (serve pra confirmar login/busca sem esperar a próxima liberação). "
+    "Também retira um lote que abre em outro horário — ex.: o \"Ingresso "
+    "Antecipado 12h (Quinta-feira)\": mande <code>/sympla_testar</code> às 12h. "
+    "O bot escolhe o primeiro lote com retirada aberta (pula esgotado e \"Não "
+    "iniciado\") e diz qual pegou.\n\n"
     "<b>Imagens</b>:\n"
     "• Mande uma foto (com ou sem caption) — o bot analisa via LLM agente. "
     "Casos típicos: OCR de recibo/boleto, leitura de placa de rua, resumo "
@@ -458,6 +462,7 @@ _HELP_KEYWORDS: dict[str, str] = {
     "foto": "imagens", "imagem": "imagens", "recibo": "imagens", "boleto": "imagens",
     "sympla": "sympla", "ingresso": "sympla", "ingressos": "sympla",
     "orquestra": "sympla", "concerto": "sympla", "sinfonica": "sympla",
+    "lote": "sympla", "retirar": "sympla",
     "proativo": "proativo", "briefing": "proativo", "aviso": "proativo",
     # resumo de fim de semana + rotina noturna (seção do agente proativo)
     "fim de semana": "proativo", "fds": "proativo", "sexta": "proativo",

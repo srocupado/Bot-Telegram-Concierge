@@ -15,6 +15,7 @@ liberação pra gravar contra ele; ver o docstring de bot/services/sympla.py.
 from __future__ import annotations
 
 import asyncio
+import types
 import re
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -970,60 +971,152 @@ def test_cloudflare_depois_do_entrar_nao_conta_como_login_feito(monkeypatch) -> 
         asyncio.run(sy._login(_Pagina(), creds))
 
 
-# ───────────── seleção de ingresso (conferida ao vivo, 24/09/2026) ─────────────
+# ───────────── seleção do lote + clique em comprar ─────────────
+# Formato visto ao vivo: "+" = aria-label "Increase Amount" (lote esgotado ou
+# "Não iniciado" NÃO tem o botão — 30/09/2026, Solistas da OSTNCS); avançar =
+# data-testid="buy-button" com "N Comprar Ingressos". 1º uso real (30/09): o
+# clique em comprar saiu e o checkout não abriu, sem pista do porquê.
+
+class _Lote:
+    def __init__(self, pagina, nome, pos, visivel=True, habilitado=True):
+        self._p, self.nome, self.pos = pagina, nome, pos
+        self.visivel, self.habilitado = visivel, habilitado
+
+    first = property(lambda self: self)
+
+    async def is_visible(self):
+        return self.visivel
+
+    async def is_enabled(self):
+        return self.habilitado
+
+    async def evaluate(self, _js):
+        return self.nome
+
+    async def wait_for(self, **kw):
+        pass
+
+    async def bounding_box(self, **kw):
+        return {"x": self.pos[0], "y": self.pos[1], "width": 0, "height": 0}
+
+
+class _Comprar(_Lote):
+    async def inner_text(self, **kw):
+        q = self._p.qtd
+        return f"{q}\nComprar Ingressos" if q else "Selecione um Ingresso"
+
+
+class _Aviso:
+    def __init__(self, texto):
+        self.texto = texto
+
+    async def inner_text(self, **kw):
+        return self.texto
+
+
+class _RespostaFalsa:
+    def __init__(self, url, status, corpo, metodo="POST"):
+        self.url, self.status, self._corpo = url, status, corpo
+        self.request = types.SimpleNamespace(method=metodo)
+
+    async def text(self):
+        return self._corpo
+
 
 class _PaginaIngressoFalsa:
-    """Formato visto num evento aberto de verdade: "+" = aria-label
-    "Increase Amount"; avançar = data-testid="buy-button" com o texto
-    "N Comprar Ingressos". `limite` simula máximo por pessoa."""
+    """`lotes`: [(nome, visível, habilitado)]. `abre_checkout`: o clique em
+    comprar leva à página de checkout? `respostas`: o que a Sympla responde
+    ao clique. `limite`: máximo por pessoa."""
 
-    def __init__(self, limite=10):
+    def __init__(self, lotes=(("Ingresso Antecipado 18h", True, True),),
+                 abre_checkout=True, respostas=(), avisos=(), limite=10):
         self.qtd = 0
         self.limite = limite
         self.comprou = False
+        self.url = "https://www.sympla.com.br/evento/x/1"
         self.mouse = self
-        self.roles: list = []
+        self.abre_checkout = abre_checkout
+        self._respostas, self._avisos = list(respostas), list(avisos)
+        self._ouvintes: list = []
+        self.lotes = [_Lote(self, n, (10 + i, 10), v, h) for i, (n, v, h) in enumerate(lotes)]
+        self.escolhido = None
 
     async def click(self, x, y):
-        if (x, y) == (10, 10):
-            self.qtd = min(self.qtd + 1, self.limite)
-        else:
+        if (x, y) == (50, 50):
             self.comprou = True
+            if self.abre_checkout:
+                self.url = "https://www.sympla.com.br/checkout/abc"
+            for r in self._respostas:
+                for f in self._ouvintes:
+                    f(r)
+            return
+        lote = next(l for l in self.lotes if l.pos == (x, y))
+        self.escolhido = lote.nome
+        self.qtd = min(self.qtd + 1, self.limite)
 
     async def wait_for_timeout(self, ms):
-        pass
+        await asyncio.sleep(0)
+
+    async def wait_for_url(self, padrao, timeout=None):
+        if not padrao.search(self.url):
+            raise TimeoutError("checkout não abriu")
+
+    async def screenshot(self, **kw):
+        return b"PRINT-3S"
+
+    async def eval_on_selector_all(self, *a):
+        return ["Esgotado", "Não iniciado"]
+
+    def on(self, evento, f):
+        self._ouvintes.append(f)
+
+    def remove_listener(self, evento, f):
+        self._ouvintes.remove(f)
 
     def get_by_role(self, role, name=None):
-        self.roles.append(name.pattern)
         assert name.search("Increase Amount")
-        return self._loc((10, 10))
-
-    def locator(self, sel):
-        assert sel == "[data-testid=buy-button]:visible"
-        return self._loc((50, 50))
-
-    def _loc(self, pos):
         pagina = self
 
-        class L:
-            first = property(lambda s: s)
+        class _Todos:
+            async def all(self):
+                return list(pagina.lotes)
+        return _Todos()
 
-            async def wait_for(self, **kw):
-                pass
+    def locator(self, sel):
+        if "buy-button" in sel:
+            return _Comprar(self, "", (50, 50))
+        pagina = self
 
-            async def bounding_box(self, **kw):
-                return {"x": pos[0], "y": pos[1], "width": 0, "height": 0}
-
-            async def inner_text(self, **kw):
-                return (f"{pagina.qtd}\nComprar Ingressos" if pagina.qtd
-                        else "Selecione um Ingresso")
-        return L()
+        class _Avisos:
+            async def all(self):
+                return [_Aviso(t) for t in pagina._avisos]
+        return _Avisos()
 
 
-def test_seleciona_pelo_increase_amount_e_compra_pelo_buy_button() -> None:
+def test_compra_no_primeiro_lote_e_so_volta_com_o_checkout_aberto() -> None:
     pagina = _PaginaIngressoFalsa()
-    asyncio.run(sy._selecionar_e_reservar(pagina, 2))
+    lote = asyncio.run(sy._selecionar_e_reservar(pagina, 2))
+    assert lote == "Ingresso Antecipado 18h"
     assert pagina.qtd == 2 and pagina.comprou
+    assert pagina._ouvintes == [], "o ouvinte de rede tem que ser removido"
+
+
+def test_pula_lote_sem_botao_habilitado_e_usa_o_disponivel() -> None:
+    """Quinta às 12h: o lote de quarta está esgotado em cima do de quinta."""
+    pagina = _PaginaIngressoFalsa(lotes=(
+        ("Ingresso Antecipado 18h (Quarta-feira)", False, False),
+        ("Ingresso Antecipado 12h (Quinta-feira)", True, True),
+    ))
+    lote = asyncio.run(sy._selecionar_e_reservar(pagina, 2))
+    assert lote == "Ingresso Antecipado 12h (Quinta-feira)"
+    assert pagina.escolhido == lote
+
+
+def test_sem_lote_aberto_diz_isso_sem_clicar_em_nada() -> None:
+    pagina = _PaginaIngressoFalsa(lotes=())
+    with pytest.raises(sy.SymplaError, match="nenhum lote com retirada aberta"):
+        asyncio.run(sy._selecionar_e_reservar(pagina, 2))
+    assert not pagina.comprou
 
 
 def test_quantidade_diferente_na_tela_para_antes_de_comprar() -> None:
@@ -1031,3 +1124,33 @@ def test_quantidade_diferente_na_tela_para_antes_de_comprar() -> None:
     with pytest.raises(sy.SymplaError, match="pedi 2"):
         asyncio.run(sy._selecionar_e_reservar(pagina, 2))
     assert not pagina.comprou
+
+
+def test_checkout_que_nao_abre_traz_a_resposta_da_sympla_e_o_print() -> None:
+    """O caso do 1º uso real: o erro tem que dizer o que a Sympla respondeu
+    ao clique e mostrar a tela 3s depois — não só o print do fim."""
+    pagina = _PaginaIngressoFalsa(
+        abre_checkout=False,
+        respostas=[
+            _RespostaFalsa("https://event-page.svc.sympla.com.br/api/event-bff/purchase/reservation",
+                           409, '{"message": "Ingressos esgotados"}'),
+            _RespostaFalsa("https://www.sympla.com.br/analytics/collect", 200, "ruido"),
+            _RespostaFalsa("https://event-page.svc.sympla.com.br/api/x", 200, "get", metodo="GET"),
+        ],
+        avisos=["Ops! Os ingressos esgotaram."],
+    )
+    with pytest.raises(sy.SymplaError) as ei:
+        asyncio.run(sy._selecionar_e_reservar(pagina, 2))
+    msg = str(ei.value)
+    assert "409" in msg and "Ingressos esgotados" in msg
+    assert "ruido" not in msg and "get" not in msg.split("Resposta")[1][:40]
+    assert "Ops! Os ingressos esgotaram." in msg
+    assert "Ingresso Antecipado 18h" in msg
+    assert ei.value.print_meio == b"PRINT-3S"
+    assert pagina._ouvintes == []
+
+
+def test_checkout_que_nao_abre_sem_resposta_diz_que_nao_houve_chamada() -> None:
+    pagina = _PaginaIngressoFalsa(abre_checkout=False)
+    with pytest.raises(sy.SymplaError, match="nenhuma chamada de reserva registrada"):
+        asyncio.run(sy._selecionar_e_reservar(pagina, 2))

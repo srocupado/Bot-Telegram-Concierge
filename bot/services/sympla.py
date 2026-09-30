@@ -39,6 +39,7 @@ não renderiza mais o formulário ativo. Por isso:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -583,20 +584,60 @@ async def _localizar_evento(
     return None
 
 
-async def _selecionar_e_reservar(page, qty: int) -> None:
-    """Seleciona `qty` ingressos do PRIMEIRO tipo da lista e avança.
+_JS_NOME_DO_LOTE = """e => { let n = e; for (let i = 0; i < 10 && n; i++) {
+  n = n.parentElement;
+  if (n && /Vendas até|Grátis|R\\$/.test(n.innerText || ''))
+    return (n.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean)[0] || '';
+} return ''; }"""
 
-    Conferido ao vivo (24/09/2026) num evento aberto de verdade, sem
-    comprar: o "+" é um botão com aria-label "Increase Amount" (um por tipo
-    de ingresso; NÃO existe botão chamado "+", que era o que a versão
-    anterior procurava — falharia na quarta), e o avançar é
-    data-testid="buy-button" (há dois na página, um escondido), que muda de
-    "Selecione um Ingresso" pra "2 Comprar Ingressos" com 2 selecionados.
+# Chamadas de rede que NÃO são a reserva (telemetria, desafio do Cloudflare).
+_RUIDO_REDE = re.compile(r"analytic|collect|track|log|pixel|challenge|recommend", re.I)
 
-    Não conferido: se o concerto grátis tem um tipo só (o código pega o
-    primeiro) e o que vem depois do clique em comprar."""
-    mais = page.get_by_role(
-        "button", name=re.compile(r"^increase amount$", re.I)).first
+
+async def _escolher_lote(page):
+    """Primeiro lote com o "+" visível e habilitado.
+
+    Visto ao vivo (30/09/2026, concerto Solistas da OSTNCS): lote esgotado
+    ("Esgotado") ou ainda fechado ("Não iniciado") NÃO tem o botão "+" — com
+    os dois lotes assim, a página não tinha nenhum. Então o primeiro "+"
+    habilitado é o primeiro lote que dá pra retirar AGORA; não o primeiro
+    da lista (na quinta às 12h, o de quarta estará esgotado em cima)."""
+    for el in await page.get_by_role(
+            "button", name=re.compile(r"^increase amount$", re.I)).all():
+        try:
+            if await el.is_visible() and await el.is_enabled():
+                nome = ""
+                try:
+                    nome = (await el.evaluate(_JS_NOME_DO_LOTE)) or ""
+                except Exception:
+                    pass
+                return el, nome
+        except Exception:
+            continue
+    return None, ""
+
+
+async def _selecionar_e_reservar(page, qty: int) -> str:
+    """Seleciona `qty` ingressos do primeiro lote disponível, clica em
+    comprar e só volta quando a página de checkout abriu. Devolve o nome do
+    lote escolhido.
+
+    Conferido ao vivo (24/09/2026), sem comprar: o "+" é aria-label
+    "Increase Amount" (um por lote) e o avançar é data-testid="buy-button"
+    (dois na página, um escondido), que vira "2 Comprar Ingressos".
+
+    1º uso real (30/09/2026): o clique em comprar saiu, mas o checkout não
+    abriu em 20s — e o print do fim não mostrava por quê. Agora a etapa
+    guarda a resposta da Sympla às chamadas feitas depois do clique (é aí
+    que a reserva é aceita ou recusada) e tira um print 3s depois dele."""
+    import time as _time
+
+    mais, lote = await _escolher_lote(page)
+    if mais is None:
+        painel = await _dump_clicaveis(page)
+        raise SymplaError(
+            "nenhum lote com retirada aberta agora (esgotado ou ainda não "
+            f"iniciado). Elementos visíveis na tela: {painel}")
     for _ in range(qty):
         await _clicar(page, mais, 30_000)
         await page.wait_for_timeout(500)
@@ -607,13 +648,64 @@ async def _selecionar_e_reservar(page, qty: int) -> None:
     # seguir com a quantidade errada.
     if not re.match(rf"^{qty}\b", texto):
         raise SymplaError(
-            f"pedi {qty} ingresso(s), mas o botão de compra mostra "
-            f"'{' '.join(texto.split())}'.")
-    await _clicar(page, comprar, 30_000)
+            f"pedi {qty} ingresso(s) do lote '{lote}', mas o botão de compra "
+            f"mostra '{' '.join(texto.split())}'.")
+
+    respostas: list[str] = []
+
+    async def _guardar(resp) -> None:
+        try:
+            if resp.request.method not in ("POST", "PUT", "PATCH"):
+                return
+            if "sympla" not in resp.url or _RUIDO_REDE.search(resp.url):
+                return
+            corpo = " ".join((await resp.text())[:300].split())
+            respostas.append(f"{resp.status} {resp.url.split('?')[0][-70:]}: {corpo}")
+        except Exception:
+            pass
+
+    def _ouvir(resp) -> None:
+        asyncio.ensure_future(_guardar(resp))
+
+    page.on("response", _ouvir)
+    try:
+        await _clicar(page, comprar, 30_000)
+        inicio = _time.monotonic()
+        await page.wait_for_timeout(3_000)
+        print_meio = await _screenshot_seguro(page)
+        try:
+            await page.wait_for_url(re.compile(r"/checkout/"), timeout=17_000)
+            return lote
+        except Exception:
+            pass
+        await page.wait_for_timeout(500)  # respostas ainda sendo lidas
+        avisos: list[str] = []
+        for loc in await page.locator(
+                "[role=alert], [role=status], [role=dialog], [aria-live]").all():
+            try:
+                t = " ".join((await loc.inner_text(timeout=1_000)).split())
+                if t and t not in avisos:
+                    avisos.append(t[:200])
+            except Exception:
+                continue
+        raise SymplaError(
+            f"cliquei em comprar ({qty} do lote '{lote}') e o checkout não "
+            f"abriu em {_time.monotonic() - inicio:.0f}s. "
+            f"Resposta da Sympla depois do clique: "
+            f"{' || '.join(respostas[-6:]) or 'nenhuma chamada de reserva registrada'}. "
+            f"Avisos na tela: {' | '.join(avisos[:5]) or 'nenhum'}. "
+            f"Página: {getattr(page, 'url', '?')}",
+            print_meio=print_meio,
+        )
+    finally:
+        try:
+            page.remove_listener("response", _ouvir)
+        except Exception:
+            pass
 
 
 async def _preencher_checkout(page, creds: SymplaCredenciais) -> None:
-    await page.wait_for_url(re.compile(r"/checkout/"), timeout=20_000)
+    # A página de checkout já foi confirmada por _selecionar_e_reservar.
     campos = (
         (re.compile(r"nome completo|nome do participante", re.I), creds.nome_completo),
         (re.compile(r"e-?mail", re.I), creds.email),
@@ -719,14 +811,15 @@ async def retirar_ingresso(
                 await _ir(page, evento.url)
 
                 await _avisar("selecionar ingressos e reservar")
-                await _selecionar_e_reservar(page, qty)
+                lote = await _selecionar_e_reservar(page, qty)
 
                 await _avisar("preencher checkout")
                 await _preencher_checkout(page, creds)
 
                 return SymplaResultado(
                     True, "concluído",
-                    f"{qty} ingresso(s) retirado(s) para '{evento.titulo}'.",
+                    f"{qty} ingresso(s) retirado(s) para '{evento.titulo}'"
+                    + (f" — lote '{lote}'." if lote else "."),
                     evento_titulo=evento.titulo, evento_url=evento.url,
                     screenshot=await _screenshot_seguro(page),
                 )
