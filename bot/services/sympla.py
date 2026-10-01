@@ -248,6 +248,25 @@ def proxima_janela(agora: datetime, weekday: int, hora: int) -> datetime:
     return alvo
 
 
+_DIAS = ("segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo")
+
+
+def parse_janela(valor: str | None) -> tuple[int, int] | None:
+    """"dia@hora" (0=segunda … 6=domingo) → (dia, hora). Vazio ou inválido →
+    None (janela desligada)."""
+    try:
+        dia, hora = (int(x) for x in (valor or "").strip().split("@"))
+    except ValueError:
+        return None
+    if 0 <= dia <= 6 and 0 <= hora <= 23:
+        return dia, hora
+    return None
+
+
+def nome_janela(dia: int, hora: int) -> str:
+    return f"{_DIAS[dia]} {hora}h"
+
+
 # Margem antes da hora-alvo pra já estar logado e com a busca carregada
 # quando o evento for publicado (1 min antes da liberação, ver módulo).
 INICIO_ANTECEDENCIA = timedelta(minutes=5)
@@ -255,6 +274,11 @@ INICIO_ANTECEDENCIA = timedelta(minutes=5)
 POLL_INTERVALO_S = 2.0
 # Desiste de procurar o evento depois disso (publicação atrasada/sumida).
 POLL_TIMEOUT_S = 180.0
+# Depois da hora de abertura, recarrega a página do evento até um lote abrir.
+# Na quinta o evento JÁ existe às 11h55 e o lote está "Não iniciado" até as
+# 12h00 — sem esperar, o bot desistia antes de abrir.
+LOTE_ESPERA_S = 180.0
+LOTE_RECARGA_S = 5.0
 # Prazo pra abrir o formulário de login. Medido com a CPU limitada: 6x
 # levou ~19s, 12x ~40s (do goto até o formulário). O Pi real não foi medido.
 LOGIN_ABRIR_TIMEOUT_S = 120.0
@@ -617,6 +641,31 @@ async def _escolher_lote(page):
     return None, ""
 
 
+async def _esperar_lote_abrir(page, url: str, abre_em: datetime | None) -> None:
+    """Espera (parado) até a hora de abertura e depois recarrega a página do
+    evento a cada LOTE_RECARGA_S até aparecer um lote aberto, por no máximo
+    LOTE_ESPERA_S. Não levanta: se nenhum lote abrir, quem diz isso (com o
+    que a tela mostra) é _selecionar_e_reservar.
+
+    Recarregar com pausa, e não a cada instante: cada recarga é uma visita a
+    mais à Sympla, e excesso de visitas é o que costuma acionar a verificação
+    anti-bot do Cloudflare."""
+    if abre_em is None:
+        return
+    import time as _time
+    falta = (abre_em - datetime.now(BRT)).total_seconds()
+    if falta > 0:
+        await page.wait_for_timeout(int(falta * 1000))
+        await _ir(page, url)
+    prazo = _time.monotonic() + LOTE_ESPERA_S
+    while True:
+        el, _ = await _escolher_lote(page)
+        if el is not None or _time.monotonic() >= prazo:
+            return
+        await page.wait_for_timeout(int(LOTE_RECARGA_S * 1000))
+        await _ir(page, url)
+
+
 async def _selecionar_e_reservar(page, qty: int) -> str:
     """Seleciona `qty` ingressos do primeiro lote disponível, clica em
     comprar e só volta quando a página de checkout abriu. Devolve o nome do
@@ -731,6 +780,7 @@ async def _preencher_checkout(page, creds: SymplaCredenciais) -> None:
 async def retirar_ingresso(
     creds: SymplaCredenciais, query: str, qty: int, *, agora: datetime | None = None,
     poll_timeout_s: float = POLL_TIMEOUT_S, on_etapa=None,
+    abre_em: datetime | None = None,
 ) -> SymplaResultado:
     """Orquestra o fluxo inteiro. Qualquer exceção numa etapa vira resultado
     de FALHA com screenshot — nunca propaga pro chamador como traceback cru,
@@ -809,6 +859,9 @@ async def retirar_ingresso(
 
                 await _avisar("abrir o evento")
                 await _ir(page, evento.url)
+
+                await _avisar("esperar o lote abrir")
+                await _esperar_lote_abrir(page, evento.url, abre_em)
 
                 await _avisar("selecionar ingressos e reservar")
                 lote = await _selecionar_e_reservar(page, qty)

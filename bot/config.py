@@ -177,6 +177,11 @@ class Settings(BaseSettings):
     # 0=segunda … 6=domingo (convenção de datetime.weekday()).
     sympla_weekday: int = Field(2, alias="SYMPLA_WEEKDAY")
     sympla_release_hour: int = Field(18, alias="SYMPLA_RELEASE_HOUR")  # BRT
+    # Segunda tentativa na semana, "dia@hora" (pedido do dono, 01/10/2026):
+    # na semana de 30/09 a Sympla abriu um 2º lote ("Ingresso Antecipado 12h
+    # (Quinta-feira)", vendas até 13h). Só roda se a de quarta NÃO deu certo.
+    # Vazio desliga.
+    sympla_segunda_janela: str = Field("3@12", alias="SYMPLA_SEGUNDA_JANELA")
 
     # Scheduler
     scheduler_tick_seconds: int = Field(60, alias="SCHEDULER_TICK_SECONDS")

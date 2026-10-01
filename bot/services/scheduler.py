@@ -911,24 +911,26 @@ async def run_finance_backup(
 
 
 _KIND_SYMPLA = "sympla_pickup"
+_KIND_SYMPLA_OK = "sympla_ok"
 
 
 async def run_sympla_pickup(
     sessionmaker: async_sessionmaker[AsyncSession],
     bot: Bot,
 ) -> None:
-    """Dispara a retirada automática de ingresso na Sympla, uma vez por
-    semana, na janela em torno do horário de liberação (padrão: quarta,
-    17h55–18h55 BRT — liberação às 18h00, mas o EVENTO só é publicado às
-    17h59; a margem de 5min antes é pra já estar logado quando ele aparecer).
+    """Dispara a retirada automática de ingresso na Sympla nas janelas da
+    semana: quarta 18h (o evento é publicado às 17h59) e, se a de quarta não
+    deu certo, quinta 12h (2º lote, "Ingresso Antecipado 12h"). Cada janela
+    vai de 5min antes da hora de abertura até 1h depois.
 
     Roda em BACKGROUND (jobs.spawn): o fluxo inteiro leva minutos (login +
-    espera pelo evento + reserva + checkout) e não pode travar o tick, que
-    também precisa rodar DOU/proativo/etc. na mesma janela.
+    espera pelo evento e pelo lote + reserva + checkout) e não pode travar o
+    tick, que também precisa rodar DOU/proativo/etc.
 
-    Dedup DUPLO: jobs.spawn (mesmo processo, ticks repetidos na janela) e
-    ProactiveNotice por semana (sobrevive a um restart no meio da janela —
-    sem isso um reboot do Pi às 17h58 disparava tudo de novo às 17h59).
+    Dedup DUPLO por janela: jobs.spawn (mesmo processo) e ProactiveNotice por
+    data (sobrevive a um restart no meio — sem isso um reboot às 17h58
+    disparava tudo de novo às 17h59). Sucesso grava a semana: a janela de
+    quinta não roda se a de quarta já retirou.
 
     Owner-only e opt-in: sem credencial configurada (/sympla_setup), a
     função não faz nada — nem avisa, porque quem não configurou não está
@@ -936,59 +938,79 @@ async def run_sympla_pickup(
     from bot.services import jobs
     from bot.services.proactive import already_notified, mark_notified
     from bot.services.sympla import (
-        INICIO_ANTECEDENCIA, get_credenciais, proxima_janela, retirar_ingresso,
+        INICIO_ANTECEDENCIA, get_credenciais, nome_janela, parse_janela,
+        proxima_janela, retirar_ingresso,
     )
 
     if not settings.owner_telegram_id:
         return
 
+    janelas = [(settings.sympla_weekday, settings.sympla_release_hour)]
+    segunda = parse_janela(settings.sympla_segunda_janela)
+    if segunda:
+        janelas.append(segunda)
+
     now_brt = datetime.now(BRT)
-    alvo = proxima_janela(now_brt, settings.sympla_weekday, settings.sympla_release_hour)
-    inicio_janela = alvo - INICIO_ANTECEDENCIA
-    fim_janela = alvo + timedelta(hours=1)
-    if not (inicio_janela <= now_brt <= fim_janela):
-        return
-
-    semana_key = alvo.date().isoformat()
-    async with sessionmaker() as session:
-        dono = await session.get(User, settings.owner_telegram_id)
-        if dono is None or not dono.is_authorized:
-            return
-        if await already_notified(session, dono.id, _KIND_SYMPLA, semana_key):
-            return
-        creds = await get_credenciais(session)
-        if creds is None:
-            return
-        # Marca ANTES de começar (mesmo princípio do outbox usado em todo o
-        # projeto pro DOU): trabalho caro registrado antes de rodar, não
-        # depois — um restart no meio não pode fazer duas tentativas na
-        # mesma janela.
-        await mark_notified(session, dono.id, _KIND_SYMPLA, semana_key)
-        dono_id = dono.id
-
-    async def _rodar() -> None:
-        resultado = await retirar_ingresso(
-            creds, settings.sympla_search_query, settings.sympla_qty, agora=now_brt,
-        )
-        emoji = "🎫" if resultado.sucesso else "⚠️"
-        texto = f"{emoji} <b>Sympla</b> — {resultado.etapa}\n{resultado.detalhe}"
-        if resultado.evento_url:
-            texto += f"\n{resultado.evento_url}"
-        await _send_html_with_fallback(bot, dono_id, texto)
-        from aiogram.types import BufferedInputFile
-        for imagem, legenda in ((resultado.print_meio, "Tela no meio da etapa"),
-                                (resultado.screenshot, "Tela no fim")):
-            if not imagem:
+    duracao = timedelta(hours=1)
+    for i, (dia, hora) in enumerate(janelas):
+        # Ocorrência CORRENTE da janela (não a próxima): a partir de agora-1h,
+        # pra que às 18h05 (bot reiniciado no meio) ainda seja a de hoje —
+        # proxima_janela(now) já apontava pra semana seguinte depois das 18h.
+        alvo = proxima_janela(now_brt - duracao, dia, hora)
+        if not (alvo - INICIO_ANTECEDENCIA <= now_brt <= alvo + duracao):
+            continue
+        chave = alvo.date().isoformat()
+        ano, semana, _ = alvo.isocalendar()
+        semana_key = f"{ano}-W{semana:02d}"
+        async with sessionmaker() as session:
+            dono = await session.get(User, settings.owner_telegram_id)
+            if dono is None or not dono.is_authorized:
+                return
+            if await already_notified(session, dono.id, _KIND_SYMPLA, chave):
                 continue
-            try:
-                await bot.send_photo(
-                    dono_id, BufferedInputFile(imagem, filename="sympla.png"),
-                    caption=legenda,
-                )
-            except Exception:
-                logger.exception("sympla: falha ao enviar screenshot")
+            if i > 0 and await already_notified(
+                    session, dono.id, _KIND_SYMPLA_OK, semana_key):
+                continue  # a de quarta já retirou
+            creds = await get_credenciais(session)
+            if creds is None:
+                return
+            # Marca ANTES de começar (mesmo princípio do outbox usado em todo
+            # o projeto pro DOU): um restart no meio não pode fazer duas
+            # tentativas na mesma janela.
+            await mark_notified(session, dono.id, _KIND_SYMPLA, chave)
+            dono_id = dono.id
 
-    jobs.spawn(f"sympla:{semana_key}", _rodar)
+        rotulo = nome_janela(dia, hora)
+
+        async def _rodar(alvo=alvo, rotulo=rotulo, semana_key=semana_key,
+                         creds=creds, dono_id=dono_id) -> None:
+            resultado = await retirar_ingresso(
+                creds, settings.sympla_search_query, settings.sympla_qty,
+                agora=now_brt, abre_em=alvo,
+            )
+            if resultado.sucesso:
+                async with sessionmaker() as session:
+                    await mark_notified(session, dono_id, _KIND_SYMPLA_OK, semana_key)
+            emoji = "🎫" if resultado.sucesso else "⚠️"
+            texto = (f"{emoji} <b>Sympla</b> ({rotulo}) — {resultado.etapa}\n"
+                     f"{resultado.detalhe}")
+            if resultado.evento_url:
+                texto += f"\n{resultado.evento_url}"
+            await _send_html_with_fallback(bot, dono_id, texto)
+            from aiogram.types import BufferedInputFile
+            for imagem, legenda in ((resultado.print_meio, "Tela no meio da etapa"),
+                                    (resultado.screenshot, "Tela no fim")):
+                if not imagem:
+                    continue
+                try:
+                    await bot.send_photo(
+                        dono_id, BufferedInputFile(imagem, filename="sympla.png"),
+                        caption=legenda,
+                    )
+                except Exception:
+                    logger.exception("sympla: falha ao enviar screenshot")
+
+        jobs.spawn(f"sympla:{chave}", _rodar)
 
 
 def _parse_dia_mes(s: str) -> tuple[int, int] | None:
