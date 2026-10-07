@@ -179,9 +179,10 @@ async def transcribe(
         client = genai.Client(api_key=settings.gemini_api_key)
         # Nível mínimo de thinking (STT não precisa raciocinar). "minimal" não
         # existe em todo modelo: o `gerar` cai pra "low" e depois pro padrão.
-        # temperature=0.0 MANTIDA por ora (decisão pendente do dono): o Google
-        # a descontinuou, mas medido em 07/10/2026 ela ainda estabiliza a
-        # transcrição no gemini-3.1-flash-lite (1 versão em 6 com ela, 3 sem).
+        # temperature=0.0 MANTIDA (decisão do dono, 07/10/2026): o Google a
+        # descontinuou, mas medido que ela ainda estabiliza a transcrição no
+        # gemini-3.1-flash-lite (1 versão em 6 com ela, 3 sem). Modelo que a
+        # recusar: o `gerar` repete sem ela e memoriza.
         resp = gerar(
             client, model,
             [

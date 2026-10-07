@@ -119,48 +119,81 @@ def _e_argumento_invalido(exc: Exception) -> bool:
     return "INVALID_ARGUMENT" in str(exc)
 
 
+# Parâmetros de amostragem descontinuados pelo Google (e-mail 07/10/2026):
+# "requests that include temperature, top_p, and top_k parameters will
+# return an error" nos próximos modelos. Ainda MANDAMOS temperature (decisão
+# do dono): medido que no gemini-3.1-flash-lite ela estabiliza a transcrição
+# de voz (1 versão em 6 com ela, 3 sem). Modelo que recusar entra aqui.
+_AMOSTRAGEM = ("temperature", "top_p", "top_k")
+_SEM_AMOSTRAGEM: set[str] = set()
+
+
 def gerar(client, model: str, contents, onde: str, nivel: str | None = None,
           **config_kwargs):
-    """`generate_content` com o nível de thinking e queda automática.
+    """`generate_content` com o nível de thinking e quedas automáticas.
 
     PÚBLICO porque não é só o chat: nota técnica do DOU, STT de voz e tradutor
-    também fixam nível e quebrariam igual num modelo que recuse.
+    também fixam nível/temperature e quebrariam igual num modelo que recuse.
 
-    Cada modelo aceita um conjunto de níveis, e o 400 INVALID_ARGUMENT não diz
-    qual argumento é o inválido. Em vez de manter lista, tenta: se levar 400
-    COM thinking_config, desce pro próximo candidato (minimal → low → padrão)
-    e memoriza o que funcionou pro par (modelo, nível). 400 sem
-    thinking_config, ou que persiste até o padrão, é outro problema (imagem,
-    schema): propaga.
+    O 400 INVALID_ARGUMENT nem sempre diz qual argumento é o inválido. Duas
+    quedas, sem lista de "quem aceita o quê":
+    - 400 que fala de thinking (ex. real: "Thinking level MINIMAL is not
+      supported") → próximo nível (minimal → low → padrão), memorizado por
+      (modelo, nível);
+    - outro 400 com temperature/top_p/top_k no pedido → repete o MESMO
+      pedido sem eles; só memoriza "este modelo recusa amostragem" se essa
+      repetição funcionar (senão a culpa era de outra coisa).
+    400 que persiste, ou erro que não é 400, propaga (imagem, schema, 503).
     """
+    amostragem = {k: config_kwargs.pop(k) for k in _AMOSTRAGEM if k in config_kwargs}
+    if model in _SEM_AMOSTRAGEM:
+        amostragem = {}
     candidatos = _candidatos(model, nivel)
 
-    def _chamar(n):
+    def _chamar(n, extra):
         thinking = types.ThinkingConfig(thinking_level=n.upper()) if n else None
         return client.models.generate_content(
             model=model, contents=contents,
-            config=types.GenerateContentConfig(thinking_config=thinking, **config_kwargs),
+            config=types.GenerateContentConfig(
+                thinking_config=thinking, **config_kwargs, **extra),
         )
 
-    for i, n in enumerate(candidatos):
+    i = 0
+    com_amostragem = bool(amostragem)
+    tirou_amostragem_em: int | None = None
+    while True:
+        n = candidatos[i]
         try:
-            resultado = _chamar(n)
+            resultado = _chamar(n, amostragem if com_amostragem else {})
         except Exception as exc:
-            ultimo = i == len(candidatos) - 1
-            if n is None or not _e_argumento_invalido(exc) or ultimo:
+            if not _e_argumento_invalido(exc):
                 _log_payload(onde, model, contents, config_kwargs, n)
                 raise
-            logger.warning("gemini[%s]: %s deu 400 com thinking_level=%s — "
-                           "tentando %s", onde, model, n,
-                           candidatos[i + 1] or "sem ajuste")
-            continue
+            fala_de_thinking = "thinking" in str(exc).lower()
+            if com_amostragem and not fala_de_thinking:
+                logger.warning("gemini[%s]: %s deu 400 com %s — tentando sem",
+                               onde, model, "/".join(amostragem))
+                com_amostragem = False
+                tirou_amostragem_em = i
+                continue
+            if n is not None and i < len(candidatos) - 1:
+                logger.warning("gemini[%s]: %s deu 400 com thinking_level=%s — "
+                               "tentando %s", onde, model, n,
+                               candidatos[i + 1] or "sem ajuste")
+                i += 1
+                continue
+            _log_payload(onde, model, contents, config_kwargs, n)
+            raise
+        if tirou_amostragem_em == i:
+            _SEM_AMOSTRAGEM.add(model)
+            logger.warning("gemini[%s]: %s não aceita %s — enviando sem daqui "
+                           "pra frente", onde, model, "/".join(amostragem))
         if i > 0 and nivel is not None:
             _NIVEL_SUBSTITUTO[(model, nivel)] = n
             logger.warning("gemini[%s]: %s não aceita thinking_level=%s — "
                            "usando %s daqui pra frente", onde, model, nivel,
                            n or "o padrão do modelo")
         return resultado
-    raise RuntimeError("gerar: nenhum candidato")  # inalcançável
 
 
 def _log_payload(onde, model, contents, config_kwargs, nivel) -> None:

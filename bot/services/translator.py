@@ -137,7 +137,7 @@ async def _translate_gemini(
         # Thinking no mínimo: gemini-3.x é 'thinking' e o texto de pensamento
         # contaminava resp.text (a outra metade do bug). A queda automática
         # (modelo sem "minimal" → "low" → padrão) vive no `gerar`.
-        # temperature mantida por ora (decisão pendente — ver voice.py).
+        # temperature mantida, com queda automática no `gerar` (ver voice.py).
         resp = gerar(
             client, model_id,
             [

@@ -33,8 +33,10 @@ from bot.services.llm.factory import get_provider_for_user
 @pytest.fixture(autouse=True)
 def _limpa():
     gi._NIVEL_SUBSTITUTO.clear()
+    gi._SEM_AMOSTRAGEM.clear()
     yield
     gi._NIVEL_SUBSTITUTO.clear()
+    gi._SEM_AMOSTRAGEM.clear()
 
 
 class _Resp:
@@ -46,7 +48,8 @@ class _Cliente:
     `erro_sempre`: 400 que não tem a ver com thinking (imagem, schema)."""
 
     def __init__(self, aceita=("minimal", "low", "medium", "high"),
-                 erro_sempre=None):
+                 erro_sempre=None, recusa_temperature=False):
+        self.recusa_temperature = recusa_temperature
         self.aceita = {n.upper() for n in aceita}
         self.erro_sempre = erro_sempre
         self.pedidos: list[str | None] = []
@@ -64,6 +67,8 @@ class _Cliente:
         self.configs.append(config)
         if self.erro_sempre:
             raise RuntimeError(self.erro_sempre)
+        if self.recusa_temperature and config.temperature is not None:
+            raise RuntimeError("400 INVALID_ARGUMENT. Request contains an invalid argument.")
         if nivel is not None and nivel not in self.aceita:
             raise RuntimeError("400 INVALID_ARGUMENT. Thinking level "
                                f"{nivel} is not supported for this model.")
@@ -200,7 +205,7 @@ def test_nenhum_codigo_manda_thinking_budget_nem_top_p_top_k() -> None:
     for arq in Path(bot.__path__[0]).rglob("*.py"):
         fonte = arq.read_text(encoding="utf-8")
         assert "ThinkingConfig(thinking_budget" not in fonte, arq
-        assert "top_p" not in fonte and "top_k" not in fonte, arq
+        assert "top_p=" not in fonte and "top_k=" not in fonte, arq
 
 
 def test_helper_e_publico() -> None:
@@ -243,3 +248,52 @@ def test_comando_recusa_numero_de_tokens() -> None:
     u = _user()
     assert "descontinuado" in _cmd("thinking 512", u)
     assert u.gemini_thinking_level is None
+
+
+# ───────────── temperature: mantida, com queda automática (opção b do dono) ─────────────
+
+def test_temperature_continua_indo_pra_quem_aceita() -> None:
+    """3.1-flash-lite: medido que ela ainda estabiliza a voz."""
+    cli = _Cliente()
+    gi.gerar(cli, "gemini-3.1-flash-lite", [], "voice:stt", nivel="minimal", temperature=0.0)
+    assert len(cli.configs) == 1 and cli.configs[0].temperature == 0.0
+
+
+def test_modelo_que_recusa_temperature_repete_sem_e_memoriza() -> None:
+    """O modelo do futuro, como o e-mail anuncia."""
+    cli = _Cliente(recusa_temperature=True)
+    assert gi.gerar(cli, "gemini-futuro", [], "voice:stt", nivel="minimal",
+                    temperature=0.0).text == "ok"
+    assert [c.temperature for c in cli.configs] == [0.0, None]
+    assert cli.pedidos == ["MINIMAL", "MINIMAL"], "o nível não pode cair à toa"
+    assert "gemini-futuro" in gi._SEM_AMOSTRAGEM
+    gi.gerar(cli, "gemini-futuro", [], "voice:stt", nivel="minimal", temperature=0.0)
+    assert len(cli.configs) == 3, "da 2ª vez já vai sem, numa chamada só"
+
+
+def test_400_de_thinking_mantem_a_temperature() -> None:
+    """O caso real do 3.8-flash: recusa minimal, aceita temperature — que
+    não pode ser descartada por engano."""
+    cli = _Cliente(aceita=("low", "medium", "high"))
+    gi.gerar(cli, "gemini-3.8-flash", [], "voice:stt", nivel="minimal", temperature=0.0)
+    assert cli.pedidos == ["MINIMAL", "LOW"]
+    assert [c.temperature for c in cli.configs] == [0.0, 0.0]
+    assert gi._SEM_AMOSTRAGEM == set()
+
+
+def test_recusa_os_dois_cai_nos_dois() -> None:
+    cli = _Cliente(aceita=("low",), recusa_temperature=True)
+    gi.gerar(cli, "gemini-futuro", [], "x", nivel="minimal", temperature=0.0)
+    assert cli.pedidos[-1] == "LOW" and cli.configs[-1].temperature is None
+
+
+def test_400_que_nao_era_da_temperature_nao_a_marca_como_culpada() -> None:
+    cli = _Cliente(erro_sempre="400 INVALID_ARGUMENT. Unsupported image.")
+    with pytest.raises(RuntimeError, match="image"):
+        gi.gerar(cli, "gemini-3.1-flash-lite", [], "x", nivel="low", temperature=0.0)
+    assert gi._SEM_AMOSTRAGEM == set()
+
+
+def test_voz_e_tradutor_mandam_temperature() -> None:
+    assert "temperature=0.0" in inspect.getsource(voice)
+    assert "temperature=0.2" in inspect.getsource(translator._translate_gemini)
