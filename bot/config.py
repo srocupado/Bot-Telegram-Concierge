@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     # flash-lite — acelera muito); N>0 = orçamento fixo (ex.: 128 = pensa
     # pouco, válido também no pro). Use pra reduzir latência das respostas.
     gemini_thinking_budget: int = Field(-1, alias="GEMINI_THINKING_BUDGET")
+    # Nível de thinking do chat Gemini: auto | minimal | low | medium | high.
+    # Substitui o GEMINI_THINKING_BUDGET (descontinuado pelo Google); vazio =
+    # usa o budget antigo convertido pro nível mais próximo (-1 → auto).
+    gemini_thinking_level: str = Field("", alias="GEMINI_THINKING_LEVEL")
     # Override opcional só pra entrada de imagens. Quando setado, fotos vão
     # pra esse provider independente do /provider do usuário. Vazio = usa o
     # provider atual do usuário.

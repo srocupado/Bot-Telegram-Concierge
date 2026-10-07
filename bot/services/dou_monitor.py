@@ -1414,12 +1414,12 @@ async def _pesquisar_contexto_gemini(client, mp: dict, *, model_override: str | 
     )
 
     def _call(model: str) -> str:
-        # budget=-1: nenhum thinking_config no corpo (é o comportamento atual
-        # — a pesquisa se beneficia de raciocínio). Passa pelo `gerar` mesmo
+        # Sem nível: nenhum thinking_config no corpo (a pesquisa se beneficia
+        # de raciocínio; vale o padrão do modelo). Passa pelo `gerar` mesmo
         # assim pra manter a invariante "ninguém chama a API direto": é o que
         # garante o log do payload quando o Gemini recusar algo aqui.
         resp = gerar(
-            client, model, prompt, "dou:pesquisa", budget=-1,
+            client, model, prompt, "dou:pesquisa", nivel=None,
             tools=[types.Tool(google_search=types.GoogleSearch())],
             max_output_tokens=1500,
         )
@@ -1464,15 +1464,13 @@ async def _gen_nota_gemini(mp: dict, *, model_override: str | None = None) -> di
     )
 
     def _call(model: str) -> str:
-        # max_output_tokens alto + thinking_budget=0: o thinking automático
+        # max_output_tokens alto + thinking no MÍNIMO: o thinking automático
         # do 3.5-flash/3.1 consome o orçamento de saída e o JSON estruturado
-        # vem TRUNCADO (JSONDecodeError "Unterminated string"). Desligar o
-        # thinking devolve todos os tokens pra resposta.
-        # budget=0 pelo `gerar`: mantém o thinking desligado (motivo acima) MAS
-        # com queda automática — modelo que recuse o 0 responde sem o ajuste em
-        # vez de derrubar a nota inteira com 400 INVALID_ARGUMENT.
+        # vem TRUNCADO (JSONDecodeError "Unterminated string"). "minimal" não
+        # existe em todo modelo (3.8-flash recusa): o `gerar` cai pra "low" e
+        # depois pro padrão, em vez de derrubar a nota com 400.
         resp = gerar(
-            client, model, user_content, "dou:nota", budget=0,
+            client, model, user_content, "dou:nota", nivel="minimal",
             system_instruction=_NOTA_SYSTEM,
             response_mime_type="application/json",
             response_schema=schema,

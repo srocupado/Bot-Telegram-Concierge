@@ -177,16 +177,18 @@ async def transcribe(
 
     def _call(model: str) -> str:
         client = genai.Client(api_key=settings.gemini_api_key)
-        # budget=0 via `gerar`: segue desligando o thinking (STT não precisa
-        # raciocinar), mas com queda automática — modelo que recuse o 0
-        # transcreve sem o ajuste em vez de derrubar a voz com 400.
+        # Nível mínimo de thinking (STT não precisa raciocinar). "minimal" não
+        # existe em todo modelo: o `gerar` cai pra "low" e depois pro padrão.
+        # temperature=0.0 MANTIDA por ora (decisão pendente do dono): o Google
+        # a descontinuou, mas medido em 07/10/2026 ela ainda estabiliza a
+        # transcrição no gemini-3.1-flash-lite (1 versão em 6 com ela, 3 sem).
         resp = gerar(
             client, model,
             [
                 types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
                 types.Part.from_text(text=_TRANSCRIBE_PROMPT),
             ],
-            "voice:stt", budget=0,
+            "voice:stt", nivel="minimal",
             max_output_tokens=8192,
             temperature=0.0,
         )

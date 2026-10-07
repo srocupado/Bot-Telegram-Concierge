@@ -134,16 +134,17 @@ async def _translate_gemini(
             f"estiver em {target_lang} (ex.: a resposta de um atendente "
             "local), a tradução deve ser para português brasileiro"
         )
-        # Desliga o thinking: gemini-3.x é 'thinking' e o texto de pensamento
-        # contaminava resp.text (a outra metade do bug). O clamp do pro e a
-        # queda automática (modelo que recusa budget 0) vivem no `gerar`.
+        # Thinking no mínimo: gemini-3.x é 'thinking' e o texto de pensamento
+        # contaminava resp.text (a outra metade do bug). A queda automática
+        # (modelo sem "minimal" → "low" → padrão) vive no `gerar`.
+        # temperature mantida por ora (decisão pendente — ver voice.py).
         resp = gerar(
             client, model_id,
             [
                 types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
                 types.Part.from_text(text=prompt),
             ],
-            "tradutor", budget=0,
+            "tradutor", nivel="minimal",
             temperature=0.2,
             max_output_tokens=2048,
         )

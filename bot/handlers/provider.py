@@ -117,69 +117,53 @@ async def cmd_provider(
         )
         return
 
-    # /provider thinking [auto|0|N|padrao] — teto de raciocínio do Gemini.
-    # Mora aqui e não só no .env porque o valor útil depende do MODELO: o mesmo
-    # 0 que economiza no 2.5-flash é recusado com 400 pelo 3.6-flash, e trocar
-    # de modelo é um comando — não pode exigir deploy pra acompanhar.
-    if tokens[0] in ("thinking", "raciocinio", "budget"):
-        from bot.services.llm.gemini_impl import budget_efetivo
+    # /provider thinking [auto|minimal|low|medium|high|padrao] — nível de
+    # raciocínio do Gemini. Mora aqui e não só no .env porque o nível útil
+    # depende do MODELO (o 3.8-flash recusa "minimal"; o 3.1-flash-lite
+    # aceita), e trocar de modelo é um comando — não pode exigir deploy.
+    if tokens[0] in ("thinking", "raciocinio", "budget", "nivel", "nível"):
+        from bot.services.llm.gemini_impl import NIVEIS, _NIVEL_SUBSTITUTO, nivel_efetivo
+        _descr = {None: "automático (o modelo decide)", "minimal": "mínimo",
+                  "low": "baixo", "medium": "médio", "high": "alto"}
         if len(tokens) < 2:
-            atual = user.gemini_thinking_budget
-            efetivo = budget_efetivo(atual)
-            origem = "seu (/provider thinking)" if atual is not None else "do .env"
-            como = {-1: "automático (o modelo decide)", 0: "desligado"}.get(
-                efetivo, f"fixo em {efetivo} tokens")
+            proprio = user.gemini_thinking_level or user.gemini_thinking_budget is not None
+            efetivo = nivel_efetivo(user.gemini_thinking_level, user.gemini_thinking_budget)
+            origem = "seu (/provider thinking)" if proprio else "do .env"
             await message.answer(
-                f"<b>Thinking do Gemini:</b> {como} — valor {origem}.\n\n"
+                f"<b>Thinking do Gemini:</b> {_descr.get(efetivo, efetivo)} — "
+                f"valor {origem}.\n\n"
                 "• <code>/provider thinking auto</code> — o modelo decide "
-                "(recomendado: sempre aceito)\n"
-                "• <code>/provider thinking 0</code> — desliga; economiza, mas "
-                "modelo novo costuma recusar (o bot cai pro automático sozinho "
-                "e avisa no log)\n"
-                "• <code>/provider thinking 512</code> — teto fixo\n"
+                "(recomendado)\n"
+                "• <code>/provider thinking minimal|low|medium|high</code> — "
+                "nível fixo. Nem todo modelo aceita todos (o 3.8-flash não tem "
+                "<code>minimal</code>): se recusar, o bot desce sozinho pro "
+                "próximo que funcionar\n"
                 "• <code>/provider thinking padrao</code> — volta a seguir o .env",
                 parse_mode="HTML",
             )
             return
         arg = tokens[1]
         if arg in ("padrao", "padrão", "default", "null"):
+            user.gemini_thinking_level = None
             user.gemini_thinking_budget = None
-        elif arg in ("auto", "automatico", "automático"):
-            user.gemini_thinking_budget = -1
+        elif arg in ("auto", "automatico", "automático") or arg in NIVEIS:
+            user.gemini_thinking_level = "auto" if arg.startswith("aut") else arg
+            user.gemini_thinking_budget = None
         else:
-            try:
-                valor = int(arg)
-            except ValueError:
-                await message.answer(
-                    "Valor inválido. Use: auto | 0 | um número de tokens | padrao",
-                    parse_mode=None,
-                )
-                return
-            if valor < -1:
-                await message.answer(
-                    "Valor inválido: use -1 (automático), 0 (desliga) ou um "
-                    "número positivo de tokens.",
-                    parse_mode=None,
-                )
-                return
-            user.gemini_thinking_budget = valor
+            await message.answer(
+                "Valor inválido. Use: auto | minimal | low | medium | high | "
+                "padrao. (O número de tokens foi descontinuado pelo Google.)",
+                parse_mode=None,
+            )
+            return
         await session.commit()
-        # O provider é cacheado por (nome, modelos, budget) — trocar o budget
-        # já gera outra instância, mas o set de "modelo que recusou" é global e
-        # precisa esquecer o que aprendeu, senão um budget novo nunca seria
-        # tentado de novo naquele modelo.
-        from bot.services.llm.gemini_impl import _SEM_THINKING_BUDGET
-        _SEM_THINKING_BUDGET.clear()
-        efetivo = budget_efetivo(user.gemini_thinking_budget)
-        como = {-1: "automático (o modelo decide)", 0: "desligado"}.get(
-            efetivo, f"fixo em {efetivo} tokens")
-        extra = ""
-        if efetivo == 0:
-            extra = ("\n⚠️ Nem todo modelo aceita desligar. Se este recusar, o "
-                     "bot repete sem o ajuste e segue funcionando — sem quebrar "
-                     "o chat.")
+        # O "modelo X não aceita nível Y" é global e aprendido em runtime:
+        # esquece ao trocar, senão um nível novo nunca seria tentado de novo.
+        _NIVEL_SUBSTITUTO.clear()
+        efetivo = nivel_efetivo(user.gemini_thinking_level, user.gemini_thinking_budget)
         await message.answer(
-            f"✅ Thinking do Gemini: <b>{como}</b>.{extra}", parse_mode="HTML",
+            f"✅ Thinking do Gemini: <b>{_descr.get(efetivo, efetivo)}</b>.",
+            parse_mode="HTML",
         )
         return
 

@@ -55,106 +55,117 @@ def _log_usage(where: str, resp: Any) -> None:
 _MIN_OUTPUT_TOKENS = 8192
 
 
-# Pares (modelo, budget) que a API RECUSOU — aprendidos em runtime, provados
-# pelo fato de o retry SEM thinking ter funcionado. Chaveado por PAR, não só
-# pelo nome: um modelo que recusa budget 0 pode aceitar 512, e o tradutor pede
-# 0 justamente pra DESLIGAR o thinking — memorizar só o nome desligava o ajuste
-# pra qualquer budget e ressuscitava o bug de contaminação do resp.text no
-# tradutor. Adivinhar por nome já falhou antes (o clamp cobria só "pro"); quem
-# decide é a API.
-_SEM_THINKING_BUDGET: set[tuple[str, int | None]] = set()
+# Níveis de thinking da API. O thinking_budget numérico foi descontinuado pelo
+# Google (e-mail de 07/10/2026: nos próximos modelos, "requests that set
+# thinking_budget will no longer be remapped and will return 400").
+NIVEIS = ("minimal", "low", "medium", "high")
+
+# (modelo, nível pedido) → nível que FUNCIONOU no lugar (None = sem ajuste).
+# Aprendido em runtime, provado pelo retry ter dado certo. Cada modelo aceita
+# um conjunto diferente — medido na API real (07/10/2026): gemini-3.8-flash
+# recusa "minimal" com 400 ("Thinking level MINIMAL is not supported for this
+# model"); gemini-3.1-flash-lite aceita. Quem decide é a API, não uma lista.
+_NIVEL_SUBSTITUTO: dict[tuple[str, str], str | None] = {}
 
 
-def budget_efetivo(budget: int | None = None) -> int:
-    """Budget que vale: o do usuário (/provider thinking) ou o do .env.
+def _nivel_do_budget(budget: int | None) -> str | None:
+    """Converte o budget numérico antigo (GEMINI_THINKING_BUDGET no .env ou
+    /provider thinking salvo no banco) pro nível mais próximo — quem já tinha
+    configurado não precisa refazer nada. -1/None = automático; 0 = o mínimo
+    ("desligado" não existe como nível)."""
+    if budget is None or int(budget) < 0:
+        return None
+    b = int(budget)
+    if b == 0:
+        return "minimal"
+    if b <= 2048:
+        return "low"
+    if b <= 8192:
+        return "medium"
+    return "high"
 
-    O .env vira PADRÃO, não decisão final — o valor útil depende do modelo, e
-    trocar de modelo é um comando, não um deploy."""
+
+def nivel_efetivo(nivel: str | None = None, budget: int | None = None) -> str | None:
+    """Nível que vale: o do usuário (/provider thinking), senão o budget antigo
+    dele convertido, senão o do .env (GEMINI_THINKING_LEVEL, ou o antigo
+    GEMINI_THINKING_BUDGET convertido). None = automático (não envia nada)."""
+    if nivel:
+        return None if nivel == "auto" else nivel
     if budget is not None:
-        return int(budget)
+        return _nivel_do_budget(budget)
     from bot.config import settings as _s
-    # `or -1` aqui seria bug: 0 é valor VÁLIDO (desliga) e viraria automático.
-    v = getattr(_s, "gemini_thinking_budget", -1)
-    return -1 if v is None else int(v)
+    env = (getattr(_s, "gemini_thinking_level", "") or "").strip().lower()
+    if env:
+        return None if env == "auto" else env
+    return _nivel_do_budget(getattr(_s, "gemini_thinking_budget", -1))
 
 
-def _thinking_config(model: str, budget: int | None = None):
-    """ThinkingConfig conforme o budget efetivo. None = automático (sem
-    alteração); -1 idem; 0 desliga; N fixa. O pro não permite desligar
-    (mín ~128), então clampa pra 128 quando o budget for 0 — evita 400."""
-    budget = budget_efetivo(budget)
-    if budget == -1:
-        return None
-    budget = int(budget)
-    if "pro" in (model or "") and 0 <= budget < 128:
-        budget = 128
-    # Só pula quando ESTE modelo já recusou ESTE budget (par). Outro budget do
-    # mesmo modelo continua sendo tentado.
-    if (model, budget) in _SEM_THINKING_BUDGET:
-        return None
-    try:
-        return types.ThinkingConfig(thinking_budget=budget)
-    except Exception:
-        return None
+def _candidatos(model: str, nivel: str | None) -> list[str | None]:
+    """Ordem de tentativa: o pedido (ou o substituto já aprendido), depois
+    "low" se o pedido era "minimal" (o menor nível que os modelos sem
+    "minimal" aceitam), depois sem ajuste (padrão do modelo)."""
+    if nivel is None:
+        return [None]
+    if (model, nivel) in _NIVEL_SUBSTITUTO:
+        return [_NIVEL_SUBSTITUTO[(model, nivel)]]
+    out: list[str | None] = [nivel]
+    if nivel == "minimal":
+        out.append("low")
+    out.append(None)
+    return out
 
 
 def _e_argumento_invalido(exc: Exception) -> bool:
     return "INVALID_ARGUMENT" in str(exc)
 
 
-def gerar(client, model: str, contents, onde: str, budget: int | None = None,
+def gerar(client, model: str, contents, onde: str, nivel: str | None = None,
           **config_kwargs):
-    """`generate_content` com queda automática do thinking_config.
+    """`generate_content` com o nível de thinking e queda automática.
 
     PÚBLICO porque não é só o chat: nota técnica do DOU, STT de voz e tradutor
-    também fixam budget e quebrariam igual num modelo que recuse.
+    também fixam nível e quebrariam igual num modelo que recuse.
 
-    O budget que um modelo aceita, outro recusa com 400 INVALID_ARGUMENT — e a
-    resposta não diz qual argumento é o inválido, então o sintoma é "todo chat
-    quebrado" sem pista. Em vez de manter lista de quem aceita o quê, tenta;
-    se levar 400 COM thinking_config, repete UMA vez sem ele e memoriza o
-    modelo, pra não pagar a ida e volta dupla nas mensagens seguintes.
+    Cada modelo aceita um conjunto de níveis, e o 400 INVALID_ARGUMENT não diz
+    qual argumento é o inválido. Em vez de manter lista, tenta: se levar 400
+    COM thinking_config, desce pro próximo candidato (minimal → low → padrão)
+    e memoriza o que funcionou pro par (modelo, nível). 400 sem
+    thinking_config, ou que persiste até o padrão, é outro problema (imagem,
+    schema): propaga.
     """
-    tc = _thinking_config(model, budget)
+    candidatos = _candidatos(model, nivel)
 
-    def _chamar(thinking):
+    def _chamar(n):
+        thinking = types.ThinkingConfig(thinking_level=n.upper()) if n else None
         return client.models.generate_content(
             model=model, contents=contents,
             config=types.GenerateContentConfig(thinking_config=thinking, **config_kwargs),
         )
 
-    try:
-        return _chamar(tc)
-    except Exception as exc:
-        if tc is None or not _e_argumento_invalido(exc):
-            _log_payload(onde, model, contents, config_kwargs, tc)
-            raise
-        # 400 INVALID_ARGUMENT COM thinking setado: pode ser o thinking, mas
-        # também pode ser imagem/schema. Retry SEM thinking é barato e prova a
-        # causa: se funcionar, o thinking ERA o problema → memoriza o par. Se
-        # falhar de novo, o erro era outro → propaga o real e NÃO envenena o
-        # modelo (senão um 400 de imagem desligava o thinking pra sempre).
-        budget_rejeitado = getattr(tc, "thinking_budget", None)
-        logger.warning(
-            "gemini[%s]: %s deu 400 com thinking_budget=%s — tentando sem thinking",
-            onde, model, budget_rejeitado,
-        )
+    for i, n in enumerate(candidatos):
         try:
-            resultado = _chamar(None)
-        except Exception:
-            _log_payload(onde, model, contents, config_kwargs, None)
-            raise
-        _SEM_THINKING_BUDGET.add((model, budget_rejeitado))
-        logger.warning("gemini[%s]: %s rejeita thinking_budget=%s — desligado "
-                       "para este par (sem thinking funcionou)",
-                       onde, model, budget_rejeitado)
+            resultado = _chamar(n)
+        except Exception as exc:
+            ultimo = i == len(candidatos) - 1
+            if n is None or not _e_argumento_invalido(exc) or ultimo:
+                _log_payload(onde, model, contents, config_kwargs, n)
+                raise
+            logger.warning("gemini[%s]: %s deu 400 com thinking_level=%s — "
+                           "tentando %s", onde, model, n,
+                           candidatos[i + 1] or "sem ajuste")
+            continue
+        if i > 0 and nivel is not None:
+            _NIVEL_SUBSTITUTO[(model, nivel)] = n
+            logger.warning("gemini[%s]: %s não aceita thinking_level=%s — "
+                           "usando %s daqui pra frente", onde, model, nivel,
+                           n or "o padrão do modelo")
         return resultado
+    raise RuntimeError("gerar: nenhum candidato")  # inalcançável
 
 
-def _log_payload(onde, model, contents, config_kwargs, thinking) -> None:
+def _log_payload(onde, model, contents, config_kwargs, nivel) -> None:
     """Formato do que foi enviado (NÃO o conteúdo: sem vazar conversa)."""
     try:
-        budget = getattr(thinking, "thinking_budget", None) if thinking else None
         forma = [
             f"{getattr(c, 'role', '?')}:{len(getattr(c, 'parts', []) or [])}p"
             for c in contents
@@ -162,11 +173,11 @@ def _log_payload(onde, model, contents, config_kwargs, thinking) -> None:
         system = config_kwargs.get("system_instruction")
         logger.error(
             "gemini[%s] FALHOU — model=%s contents=%d %s system=%s "
-            "max_output_tokens=%s tools=%s thinking_budget=%s",
+            "max_output_tokens=%s tools=%s thinking_level=%s",
             onde, model, len(contents), forma,
             f"{len(system)}ch" if system else "ausente",
             config_kwargs.get("max_output_tokens"),
-            len(config_kwargs.get("tools") or []), budget,
+            len(config_kwargs.get("tools") or []), nivel,
         )
     except Exception:
         logger.error("gemini[%s] FALHOU (e o log do payload também)", onde)
@@ -202,14 +213,16 @@ def _messages_to_contents(messages: list[ChatMessage]) -> list[types.Content]:
 class GeminiProvider(LLMProvider):
     name = "gemini"
 
-    def __init__(self, api_key: str, model: str, thinking_budget: int | None = None) -> None:
+    def __init__(self, api_key: str, model: str, thinking_budget: int | None = None,
+                 thinking_level: str | None = None) -> None:
         if not api_key:
             raise ValueError("GEMINI_API_KEY ausente")
         self.client = genai.Client(api_key=api_key)
         self.model_name = model
         self.model = model  # alias p/ interface comum (ex.: /ping)
-        # None = segue o .env; o /provider thinking sobrescreve por usuário.
-        self.thinking_budget = thinking_budget
+        # Nível já resolvido: /provider thinking do usuário (nível novo ou
+        # budget antigo convertido), senão o .env. None = automático.
+        self.thinking_level = nivel_efetivo(thinking_level, thinking_budget)
 
     async def chat(
         self,
@@ -223,7 +236,7 @@ class GeminiProvider(LLMProvider):
         def _call() -> str:
             resp = gerar(
                 self.client, self.model_name, contents, "chat",
-                budget=self.thinking_budget,
+                nivel=self.thinking_level,
                 system_instruction=system,
                 max_output_tokens=max(max_tokens, _MIN_OUTPUT_TOKENS),
             )
@@ -270,7 +283,7 @@ class GeminiProvider(LLMProvider):
             def _call() -> Any:
                 return gerar(
                     self.client, self.model_name, contents, "chat_with_tools",
-                    budget=self.thinking_budget,
+                    nivel=self.thinking_level,
                     system_instruction=system,
                     tools=genai_tools,
                     max_output_tokens=max(max_tokens, _MIN_OUTPUT_TOKENS),
@@ -351,7 +364,7 @@ class GeminiProvider(LLMProvider):
             # com function calling em modo NONE: só texto sai daqui.
             return gerar(
                 self.client, self.model_name, contents, "chat_with_tools[limite]",
-                budget=self.thinking_budget,
+                nivel=self.thinking_level,
                 system_instruction=system,
                 tools=genai_tools,
                 tool_config=types.ToolConfig(

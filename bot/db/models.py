@@ -31,6 +31,9 @@ class User(Base):
     # mesmo 0 que economiza no 2.5-flash é recusado com 400 pelo 3.6-flash — e
     # trocar de modelo é um comando, não um deploy.
     gemini_thinking_budget: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Nível (/provider thinking auto|minimal|low|medium|high). Tem prioridade
+    # sobre o budget antigo acima, que só vale convertido.
+    gemini_thinking_level: Mapped[str | None] = mapped_column(String(8), nullable=True)
     # Modelo de chat escolhido pelo usuário pra Anthropic/OpenAI
     # (/provider anthropic|openai <id>). NULL = usa ANTHROPIC_MODEL/OPENAI_MODEL
     # do .env. Só vale quando o provider efetivo for o respectivo.
