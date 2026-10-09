@@ -353,12 +353,50 @@ async def _rodar_nota(
                 )
             except Exception:
                 logger.exception("baixa manual das pendências falhou (%s)", target)
+        if n == 0 and only_numeros is not None:
+            # Pedido de MP ESPECÍFICA que nenhuma fonte achou: a MP foi
+            # detectada antes, então "Nenhuma MP nova" seria falso negativo
+            # (bug de 09/10/2026, MP 1.395 procurada no dia errado). Diz o
+            # que não achou e deixa na fila — na dúvida, é pendência.
+            await _avisar_mp_nao_achada(bot, session, user, target, only_numeros,
+                                        regerar=regerar)
+            return
         if n == 0:
             from bot.services.dou_monitor import texto_sem_mp
             texto = texto_sem_mp(motivo, target)
             if baixado:
                 texto += " Dei baixa: o dia sai da fila de re-checagem."
             await bot.send_message(user.id, texto, parse_mode="HTML")
+
+
+async def _avisar_mp_nao_achada(bot, session, user, target: date,
+                                numeros: list[str], *, regerar: bool) -> None:
+    from bot.services.proactive import (
+        DIAS_BUSCA_SEGUINTES, _dias_seguintes, already_notified,
+        mark_notified, notas_entregues,
+    )
+    from bot.services.dou_monitor import _num_fmt
+    entregues = set() if regerar else await notas_entregues(session, user.id)
+    faltando = sorted(n for n in numeros if n not in entregues)
+    if not faltando:
+        return  # o portal entregou tudo (em outro dia) — as notas já chegaram
+    key = f"{target.isoformat()}:{','.join(faltando)}"
+    if not await already_notified(session, user.id, "nota_pendente", key):
+        await mark_notified(session, user.id, "nota_pendente", key)
+    ultimo = (_dias_seguintes(target, DIAS_BUSCA_SEGUINTES) or [target])[-1]
+    periodo = (target.strftime("%d/%m") if ultimo == target
+               else f"{target.strftime('%d/%m')} a {ultimo.strftime('%d/%m')}")
+    mps = ", ".join(_num_fmt(n) for n in faltando)
+    await bot.send_message(
+        user.id,
+        f"⚠️ Não achei a(s) MP(s) {mps} no Diário Oficial de {periodo} "
+        + ("(nem no portal, nem no Inlabs). " if inlabs_configurado()
+           else "(portal oficial). ")
+        + "Ela(s) foi(ram) detectada(s) antes, então "
+        "NÃO quer dizer que não existe(m): deixei a nota na fila e sigo "
+        "tentando sozinho. Se souber o dia do DOU, use /mp_dou_agora <data>.",
+        parse_mode=None,
+    )
 
 
 # A chave vive no serviço porque o proativo também dispara esse job: os dois

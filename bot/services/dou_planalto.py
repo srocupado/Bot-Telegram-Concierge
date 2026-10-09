@@ -88,6 +88,35 @@ def _data_do_titulo(m: re.Match) -> date | None:
         return None
 
 
+# Rodapé da página: "Este texto não substitui o publicado no DOU de
+# 9.10.2026". É a data de PUBLICAÇÃO. A data do título é a da ASSINATURA, e
+# as duas diferem: MP 1.395 é "DE 8 DE OUTUBRO DE 2026" e saiu no DOU de
+# 09/10 — tomar a do título fez o botão da nota procurar a MP no dia errado
+# e responder "Nenhuma MP nova" (09/10/2026).
+_PUBLICADO_DOU_RE = re.compile(
+    r"publicad[oa]\s+no\s+D\.?\s*O\.?\s*U\.?\s+de\s+(\d{1,2})\.(\d{1,2})\.(\d{4})",
+    re.IGNORECASE,
+)
+
+
+def _data_publicacao_dou(conteudo: bytes) -> date | None:
+    """Data do DOU em que a MP saiu, lida do rodapé ("publicado no DOU de
+    D.M.AAAA") na página INTEIRA — o rodapé fica depois das linhas que o
+    _parse guarda. None se a página não trouxer (aí vale a do título)."""
+    try:
+        html = conteudo.decode("utf-8")
+    except UnicodeDecodeError:
+        html = conteudo.decode("iso-8859-1", errors="replace")
+    plano = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html))
+    m = _PUBLICADO_DOU_RE.search(plano)
+    if not m:
+        return None
+    try:
+        return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+    except ValueError:
+        return None
+
+
 def _parse(conteudo: bytes) -> tuple[re.Match, str, str] | None:
     """(match do título, ementa, texto). None = página não é uma MP.
 
@@ -158,7 +187,11 @@ async def buscar_mp(
     m, ementa, texto = parsed
     num_canon = m.group("num").replace(".", "")
     ano_real = int(m.group("ano"))
-    pub = _data_do_titulo(m)
+    pub = _data_publicacao_dou(resp.content)
+    if pub is None:
+        # Sem o rodapé, o melhor que há é a data da assinatura — o DOU é o
+        # mesmo dia ou depois. O botão da nota procura nos dias seguintes.
+        pub = _data_do_titulo(m)
     if num_canon != str(numero).replace(".", ""):
         # Página do número X servindo a MP Y: não dá pra confiar em nada dela.
         logger.warning("planalto: %s trouxe MP %s — ignorando", url, num_canon)

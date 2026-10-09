@@ -420,6 +420,18 @@ async def _avisar_ja_entregue(bot, session: AsyncSession, user: User,
     ), reply_markup=teclado)
 
 
+# Quantos dias DEPOIS da data indicada a nota de uma MP específica ainda é
+# procurada (MP sai no DOU do dia da assinatura ou depois).
+DIAS_BUSCA_SEGUINTES = 3
+
+
+def _dias_seguintes(d: date, n: int) -> list[date]:
+    """d+1 … d+n, sem passar de hoje (BRT): DOU de amanhã não existe."""
+    hoje = datetime.now(BRT).date()
+    return [d + timedelta(days=i) for i in range(1, n + 1)
+            if d + timedelta(days=i) <= hoje]
+
+
 async def _tentar_nota_via_portal(
     bot, session: AsyncSession, user: User, d: date,
     numeros: list[str] | None, key: str, *,
@@ -452,6 +464,27 @@ async def _tentar_nota_via_portal(
         return False
     alvo = set(numeros)
     mps = [mp for mp in dia.mps if mp.numero in alvo]
+    dia_da_mp = {mp.numero: d for mp in mps}
+    # MP pedida que não está no dia indicado: procura nos dias SEGUINTES. MP
+    # assinada no dia D sai no DOU de D ou depois — a MP 1.395 ("DE 8 DE
+    # OUTUBRO") saiu no DOU de 09/10, e a data errada fez o botão responder
+    # "Nenhuma MP nova" (09/10/2026). Vale pro botão e pra fila de pendentes.
+    faltam = alvo - set(dia_da_mp)
+    for extra in _dias_seguintes(d, DIAS_BUSCA_SEGUINTES):
+        if not faltam:
+            break
+        try:
+            dia_x = await dou_portal.checar_dia_portal(extra)
+        except Exception as exc:
+            logger.info("nota %s: portal de %s indisponível (%s)", key, extra, exc)
+            continue
+        for mp in dia_x.mps:
+            if mp.numero in faltam:
+                mps.append(mp)
+                dia_da_mp[mp.numero] = extra
+                logger.warning("nota %s: MP %s não estava no DOU de %s — achada "
+                               "no de %s", key, mp.numero, d, extra)
+        faltam = alvo - set(dia_da_mp)
     # Filtro por NOTA ENTREGUE (não por MP vista — ver _KIND_NOTA_OK): MP
     # apenas anunciada continua com nota devida e TEM de ser gerada.
     from bot.services.dou_monitor import numero_canonico
@@ -480,7 +513,7 @@ async def _tentar_nota_via_portal(
                     key, sorted(faltam_no_portal))
     completou = not faltam_no_portal
     for mp in pendentes:
-        dc = dou_portal.mp_dict_para_nota(mp, d)
+        dc = dou_portal.mp_dict_para_nota(mp, dia_da_mp.get(mp.numero, d))
         if dc is None:
             logger.info("nota pendente %s: sem texto íntegro nem no portal "
                         "nem no Planalto (MP %s) — fica na fila", key, mp.numero)
@@ -513,8 +546,11 @@ async def _tentar_nota_via_portal(
     # Entradas-irmãs da mesma data (mesmos números noutra ordem) morrem
     # junto — sem isso o /mp_fila segurava a chave órfã pra sempre.
     await _baixar_entradas_cobertas(session, user.id, d, extras=alvo)
+    # Dia REAL do DOU de cada MP (pode não ser o pedido — ver dia_da_mp).
+    dias_txt = ", ".join(sorted({x.strftime("%d/%m") for x in dia_da_mp.values()})
+                         ) or d.strftime("%d/%m")
     await _send(bot, user.id, (
-        f"✅ Nota(s) de {d.strftime('%d/%m')} entregue(s) com o texto do "
+        f"✅ Nota(s) do DOU de {dias_txt} entregue(s) com o texto do "
         "PORTAL oficial do DOU (fonte primária)."
     ))
     logger.info("nota pendente %s entregue via PORTAL", key)
