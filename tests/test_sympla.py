@@ -1154,3 +1154,55 @@ def test_checkout_que_nao_abre_sem_resposta_diz_que_nao_houve_chamada() -> None:
     pagina = _PaginaIngressoFalsa(abre_checkout=False)
     with pytest.raises(sy.SymplaError, match="nenhuma chamada de reserva registrada"):
         asyncio.run(sy._selecionar_e_reservar(pagina, 2))
+
+
+# ───────────── quarta 14/10/2026: "Comprar" abaixo da dobra ─────────────
+
+class _BotaoAbaixoDaDobra:
+    """Visto ao vivo no evento da quarta: o buy-button começa em y=721 numa
+    janela de 720 — fora da tela até alguém rolar."""
+
+    def __init__(self):
+        self.rolado = False
+
+    async def wait_for(self, **kw):
+        pass
+
+    async def evaluate(self, js):
+        assert "scrollIntoView" in js
+        self.rolado = True
+
+    async def bounding_box(self, **kw):
+        y = 336 if self.rolado else 721
+        return {"x": 831, "y": y, "width": 308, "height": 48}
+
+
+class _PaginaComDobra:
+    viewport_size = {"width": 1280, "height": 720}
+
+    def __init__(self):
+        self.cliques: list = []
+        self.mouse = self
+
+    async def click(self, x, y):
+        self.cliques.append((x, y))
+
+    async def wait_for_timeout(self, ms):
+        pass
+
+
+def test_clicar_rola_o_elemento_pra_dentro_da_tela_antes() -> None:
+    pagina, botao = _PaginaComDobra(), _BotaoAbaixoDaDobra()
+    asyncio.run(sy._clicar(pagina, botao))
+    (x, y), = pagina.cliques
+    assert botao.rolado and 0 <= y < 720, "clique fora da tela não chega na Sympla"
+
+
+def test_elemento_que_continua_fora_da_tela_falha_dizendo_isso() -> None:
+    class _Teimoso(_BotaoAbaixoDaDobra):
+        async def bounding_box(self, **kw):
+            return {"x": 831, "y": 900, "width": 308, "height": 48}
+    pagina = _PaginaComDobra()
+    with pytest.raises(sy.SymplaError, match="fora da tela"):
+        asyncio.run(sy._clicar(pagina, _Teimoso()))
+    assert pagina.cliques == []

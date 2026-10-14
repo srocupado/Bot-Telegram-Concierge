@@ -411,11 +411,29 @@ async def _clicar(page, loc, timeout_ms: int = 10_000) -> None:
     não chegam numa CPU lenta — 20 re-cliques em 100s, todos falharam. O
     clique por coordenada abriu o modal nos mesmos cenários."""
     await loc.wait_for(state="visible", timeout=timeout_ms)
+    # Rola o elemento pro MEIO da tela antes de clicar: o clique por
+    # coordenada não rola sozinho (o locator.click rolava). Bug real da
+    # quarta 14/10/2026: o "Comprar" começava em y=721 numa janela de 720 de
+    # altura — o clique caía fora da tela e a Sympla nem recebia o pedido de
+    # reserva ("nenhuma chamada registrada"). Por JS, não pelo
+    # scroll_into_view_if_needed: esse faz o mesmo teste de "estável" que
+    # trava no Pi.
+    try:
+        await loc.evaluate("e => e.scrollIntoView({block: 'center'})")
+        await page.wait_for_timeout(300)
+    except Exception:
+        pass
     caixa = await loc.bounding_box(timeout=timeout_ms)
     if caixa is None:
         raise SymplaError("elemento sem posição na tela")
-    await page.mouse.click(caixa["x"] + caixa["width"] / 2,
-                           caixa["y"] + caixa["height"] / 2)
+    x = caixa["x"] + caixa["width"] / 2
+    y = caixa["y"] + caixa["height"] / 2
+    tela = getattr(page, "viewport_size", None)
+    if tela and not (0 <= x < tela["width"] and 0 <= y < tela["height"]):
+        raise SymplaError(
+            f"o elemento ficou fora da tela mesmo depois de rolar "
+            f"(centro em {x:.0f},{y:.0f}; tela {tela['width']}x{tela['height']})")
+    await page.mouse.click(x, y)
 
 
 async def _visivel(loc) -> bool:
