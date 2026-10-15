@@ -27,6 +27,7 @@ silenciosa, que aqui seria falso negativo de MP.
 """
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import logging
@@ -142,6 +143,10 @@ _MIN_PARAGRAFOS = 3
 _MIN_CHARS_TEXTO = 200
 
 
+_BUSCA_TENTATIVAS = 3
+_BUSCA_PAUSA_S = 3.0
+
+
 def _fmt_data(d: date) -> str:
     return d.strftime("%d-%m-%Y")
 
@@ -166,11 +171,28 @@ async def _buscar(client: httpx.AsyncClient, q: str, d: date, secao: str = "todo
         "sortType": "0",
         "delta": str(_DELTA),
     }
-    try:
-        resp = await client.get(BUSCA_URL, params=params)
-        resp.raise_for_status()
-    except httpx.HTTPError as e:
-        raise PortalError(f"busca no portal falhou: {e}") from e
+    # Falha passageira (timeout, conexão caída, 5xx) ganha nova tentativa
+    # ANTES de o caller cair no Inlabs: em 15/10/2026 uma única falha às
+    # 13h05 virou "não consegui checar o DOU" — 1 minuto depois o portal
+    # respondia normal. 4xx (fora 429) não melhora repetindo.
+    for tentativa in range(1, _BUSCA_TENTATIVAS + 1):
+        try:
+            resp = await client.get(BUSCA_URL, params=params)
+            resp.raise_for_status()
+            break
+        except httpx.HTTPError as e:
+            passageira = isinstance(e, httpx.TransportError) or (
+                isinstance(e, httpx.HTTPStatusError)
+                and (e.response.status_code >= 500 or e.response.status_code == 429)
+            )
+            # str() de timeout do httpx costuma vir VAZIO ("busca no portal
+            # falhou: " no log de 15/10) — o tipo é o que diz o que houve.
+            motivo = f"{type(e).__name__}: {e}".rstrip(": ")
+            if not passageira or tentativa == _BUSCA_TENTATIVAS:
+                raise PortalError(f"busca no portal falhou ({tentativa}x): {motivo}") from e
+            logger.warning("portal: busca falhou (%s), tentativa %d/%d — repetindo",
+                           motivo, tentativa, _BUSCA_TENTATIVAS)
+            await asyncio.sleep(_BUSCA_PAUSA_S * tentativa)
     m = _PARAMS_RE.search(resp.text)
     if not m:
         # Layout mudou (ou WAF serviu outra página): erro ALTO, nunca

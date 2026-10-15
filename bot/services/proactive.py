@@ -1183,6 +1183,11 @@ async def collect_mp(
     # Estado apurado pelo portal quando ele respondeu mas NÃO concluiu — vira
     # linha informativa se o Inlabs também falhar no desempate.
     portal_estado: dict[date, str] = {}
+    # Dias em que o portal LEVANTOU erro e o Inlabs também, com a causa de
+    # cada um — o alarme diz o que de fato falhou (antes culpava só o Inlabs,
+    # escondendo a falha da fonte primária).
+    portal_erro: set[date] = set()
+    inlabs_manutencao = False
 
     async def _portal_primeiro(d: date) -> _Colheita | None:
         """PORTAL PRIMEIRO (regra do dono, 11/08/2026): todo dia é checado no
@@ -1206,6 +1211,7 @@ async def collect_mp(
             )
         except Exception as exc:
             logger.warning("proactive: portal do DOU falhou p/ %s: %s", d, exc)
+            portal_erro.add(d)
             return None
         fechado = _dia_encerrado(d)
         # Checagem conclusiva alimenta a MESMA memória do Inlabs (furo 4 da
@@ -1397,6 +1403,8 @@ async def collect_mp(
             logger.warning("proactive: fetch_mps(%s) falhou: %s", d, exc)
             failed.append(d)
             inlabs_fora = True
+            from bot.services.dou_monitor import InlabsMaintenanceError
+            inlabs_manutencao = isinstance(exc, InlabsMaintenanceError)
 
     # Sinaliza pro run_for_user: se o fetch DESTE run não alcançou o Inlabs, não
     # adianta disparar job de nota (ele buscaria o mesmo Inlabs e falharia) — e
@@ -1535,11 +1543,17 @@ async def collect_mp(
             fkey = "fail:" + ",".join(sorted(d.isoformat() for d in fortes))
             if force or not await already_notified(session, user.id, "mp_fail", fkey):
                 datas = ", ".join(d.strftime("%d/%m") for d in fortes)
+                causas = []
+                if any(d in portal_erro for d in fortes):
+                    causas.append("portal do DOU fora do ar")
+                if inlabs_configurado():
+                    causas.append("Inlabs em manutenção" if inlabs_manutencao
+                                  else "Inlabs sem resposta")
+                causa = " e ".join(causas) or "nenhuma fonte concluiu"
                 facts.append(ProactiveFact(
                     "mp", "mp_fail", fkey,
                     f"⚠️ <b>Não consegui checar o DOU</b> de {datas} "
-                    + ("(Inlabs instável). " if inlabs_configurado()
-                       else "(nenhuma fonte concluiu). ")
+                    f"({causa}). "
                     + "NÃO assuma que não houve MP — confira depois com "
                     "<code>/mp_dou_agora</code>.",
                     date_iso=None,
