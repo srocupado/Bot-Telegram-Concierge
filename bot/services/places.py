@@ -126,3 +126,108 @@ def _format_place(p: dict, idx: int) -> str:
         lines.append(f"⭐ {rating} ({count} avaliações)")
 
     return "\n".join(lines)
+
+
+# ───────────── INDICAÇÃO de lugar ("me indica uma pizzaria") ─────────────
+#
+# Caso real (18/10/2026): pedido de "pizzaria delivery" respondido DE
+# MEMÓRIA pelo modelo — Don Nero (é de Caruaru) e Maiale (não existe em
+# Brasília), descobertos só quando o dono pediu o site. Indicação agora vem
+# do Google e vai VERBATIM ao usuário: nome que não veio daqui não aparece.
+
+SUGESTAO_MAX = 5
+# Pede mais que o necessário pra ordenar por nota com volume: a cobrança da
+# Text Search é por REQUISIÇÃO, não por resultado.
+_SUGESTAO_PAGINA = 15
+# Raio do viés de localização (não é restrição: "pizzaria em Goiânia" segue
+# indo pra Goiânia, porque a cidade no texto pesa mais).
+_SUGESTAO_RAIO_M = 20000.0
+# Média bayesiana: 4,9 com 8 avaliações não passa à frente de 4,7 com 3 mil.
+_PRIOR_NOTA = 4.3
+_PRIOR_PESO = 50
+
+
+def _score(p: dict) -> float:
+    nota = float(p.get("rating") or 0)
+    n = int(p.get("userRatingCount") or 0)
+    return (nota * n + _PRIOR_NOTA * _PRIOR_PESO) / (n + _PRIOR_PESO)
+
+
+def _vies(coords: str | None) -> dict | None:
+    try:
+        lat, lng = (float(x) for x in (coords or "").split(","))
+    except ValueError:
+        return None
+    return {"circle": {"center": {"latitude": lat, "longitude": lng},
+                       "radius": _SUGESTAO_RAIO_M}}
+
+
+async def sugerir_lugares(query: str, *, coords: str | None = None,
+                          entrega: bool = False) -> list[dict]:
+    """Até SUGESTAO_MAX lugares ABERTOS (em operação) pra uma categoria
+    ("pizzaria Brasília"), ordenados por nota ponderada pelo volume de
+    avaliações. `entrega=True` pede o campo delivery (SKU mais caro —
+    Enterprise + Atmosphere). Levanta PlacesError em falha de config/rede."""
+    if settings.google_maps_api_key is None:
+        raise PlacesError("GOOGLE_MAPS_API_KEY não configurada")
+    mascara = _FIELD_MASK + (",places.delivery" if entrega else "")
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": settings.google_maps_api_key.get_secret_value(),
+        "X-Goog-FieldMask": mascara,
+    }
+    body: dict = {"textQuery": query, "languageCode": "pt-BR", "regionCode": "BR",
+                  "pageSize": _SUGESTAO_PAGINA}
+    vies = _vies(coords)
+    if vies:
+        body["locationBias"] = vies
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+            resp = await client.post(PLACES_SEARCH_ENDPOINT, json=body, headers=headers)
+            resp.raise_for_status()
+    except httpx.HTTPError as e:
+        raise PlacesError(f"Places request failed: {type(e).__name__}: {e}") from e
+    lugares = [p for p in (resp.json().get("places") or [])
+               if p.get("businessStatus", "OPERATIONAL") == "OPERATIONAL"]
+    lugares.sort(key=_score, reverse=True)
+    logger.info("sugerir_lugares: %d resultado(s) para %r", len(lugares), query)
+    return lugares[:SUGESTAO_MAX]
+
+
+def formatar_sugestoes_html(query: str, lugares: list[dict]) -> str:
+    """Lista pronta pro Telegram (HTML). Telefone em <code>: tocar copia."""
+    import html as _h
+
+    def e(s) -> str:
+        return _h.escape(str(s), quote=False)
+
+    if not lugares:
+        return (f"Não achei no Google nenhum lugar em funcionamento para "
+                f"<i>{e(query)}</i>. Quer que eu tente com outras palavras "
+                "ou outro bairro?")
+    linhas = [f"📍 <b>Indicações do Google</b> para <i>{e(query)}</i> "
+              "(ordem: nota × número de avaliações):"]
+    for i, p in enumerate(lugares, 1):
+        nome = (p.get("displayName") or {}).get("text") or "(sem nome)"
+        bloco = [f"\n<b>{i}. {e(nome)}</b>"]
+        if p.get("rating"):
+            bloco.append(f"⭐ {p['rating']} ({p.get('userRatingCount') or 0} avaliações)")
+        extras = []
+        aberto = (p.get("currentOpeningHours") or {}).get("openNow")
+        if aberto is not None:
+            extras.append("🟢 aberto agora" if aberto else "🔴 fechado agora")
+        if p.get("delivery") is True:
+            extras.append("🛵 faz entrega")
+        if extras:
+            bloco.append(" · ".join(extras))
+        if p.get("formattedAddress"):
+            bloco.append(f"📍 {e(p['formattedAddress'])}")
+        tel = p.get("nationalPhoneNumber") or p.get("internationalPhoneNumber")
+        if tel:
+            bloco.append(f"📞 <code>{e(tel)}</code>")
+        if p.get("websiteUri"):
+            bloco.append(f"🔗 {e(p['websiteUri'])}")
+        if p.get("googleMapsUri"):
+            bloco.append(f'🗺️ <a href="{_h.escape(p["googleMapsUri"])}">abrir no Maps</a>')
+        linhas.append("\n".join(bloco))
+    return "\n".join(linhas)

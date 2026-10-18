@@ -43,6 +43,10 @@ class Settings(BaseSettings):
 
     # Trânsito (Google Directions API — replicado do Telegram-Travels)
     google_maps_api_key: SecretStr | None = Field(None, alias="GOOGLE_MAPS_API_KEY")
+    # Indicação de lugar marca "🛵 faz entrega" (campo delivery do Places).
+    # Muda o SKU da busca de indicação pra Enterprise + Atmosphere (US$ 40/mil
+    # vs 35/mil; 1.000 grátis/mês por SKU). Só a indicação paga isso.
+    places_entrega: bool = Field(False, alias="PLACES_ENTREGA")
     home_coords: str | None = Field(None, alias="HOME_COORDS")
     work_coords: str | None = Field(None, alias="WORK_COORDS")
     route_google_maps_url: str | None = Field(None, alias="ROUTE_GOOGLE_MAPS_URL")

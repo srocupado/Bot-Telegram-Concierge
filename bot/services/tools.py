@@ -252,6 +252,32 @@ async def _h_buscar_local(args: dict, ctx: ToolContext) -> str:
         return f"erro na consulta de local: {e}"
 
 
+async def _h_indicar_lugares(args: dict, ctx: ToolContext) -> str:
+    from bot.services.places import (PlacesError, formatar_sugestoes_html,
+                                     sugerir_lugares)
+    from bot.services.viagem import effective_coords
+
+    query = (args.get("query") or "").strip()
+    if not query:
+        return "erro: precisa de 'query' (tipo de lugar + cidade/bairro)"
+    coords = effective_coords(ctx.user) if ctx.user else None
+    try:
+        lugares = await sugerir_lugares(
+            query, coords=coords or settings.home_coords,
+            entrega=settings.places_entrega,
+        )
+    except PlacesError as e:
+        # Falha NÃO vira lista de memória: o modelo tem de dizer que não
+        # conseguiu consultar (regra do prompt), nunca chutar nomes.
+        return (f"erro na consulta ao Google: {e}. Diga ao usuário que não "
+                "conseguiu consultar agora — NÃO sugira nomes de memória.")
+    # VERBATIM: nome de lugar só chega ao usuário se veio do Google
+    # (18/10/2026: o modelo inventou 'Don Nero' e 'Maiale' em Brasília).
+    ctx.direct_html = formatar_sugestoes_html(query, lugares)
+    ctx.short_circuit = True
+    return "ok: indicações enviadas ao usuário verbatim (não escreva nada, a mensagem já foi enviada)"
+
+
 async def _h_buscar_preco(args: dict, ctx: ToolContext) -> str:
     from bot.services.precos import buscar_preco
 
@@ -3082,6 +3108,32 @@ TOOLS: list[Tool] = [
             "required": ["query"],
         },
         handler=_h_buscar_local,
+    ),
+    Tool(
+        name="indicar_lugares",
+        description=(
+            "INDICAÇÃO/SUGESTÃO de lugares pelo Google Maps: USE SEMPRE que "
+            "pedirem recomendação de estabelecimento SEM nomear um — 'sugere "
+            "uma pizzaria delivery', 'me indica um japonês na Asa Sul', 'bar "
+            "bom pra hoje', 'onde jantar?', 'tem padaria boa perto?'. NUNCA "
+            "responda isso de memória: nome de lugar fora do resultado do "
+            "Google é proibido (você já inventou pizzarias que não existem em "
+            "Brasília). Passe em 'query' o TIPO de lugar + bairro/cidade (ex: "
+            "'pizzaria delivery Brasília'); se o usuário não disse a cidade, "
+            "use Brasília. A lista vai direto ao usuário. Pra telefone/site de "
+            "UM lugar já nomeado, use buscar_local."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Tipo de lugar + bairro/cidade (ex: 'restaurante japonês Asa Sul Brasília')",
+                },
+            },
+            "required": ["query"],
+        },
+        handler=_h_indicar_lugares,
     ),
     Tool(
         name="buscar_preco",

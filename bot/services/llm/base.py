@@ -146,7 +146,7 @@ class Tool:
 # Numa busca web não há nada a duplicar — o inventário era só ruído.
 TOOLS_SOMENTE_LEITURA = frozenset({
     # consulta externa
-    "buscar_web", "ler_pagina", "buscar_local", "buscar_preco",
+    "buscar_web", "ler_pagina", "buscar_local", "indicar_lugares", "buscar_preco",
     "consultar_clima", "consultar_cotacao", "consultar_transito",
     "melhor_horario_sair", "buscar_voo", "buscar_hotel",
     # consulta ao estado do usuário

@@ -78,6 +78,11 @@ HELP_TEXT = (
     "• Lugar/estabelecimento: <i>\"telefone da farmácia X\"</i>, <i>\"que horas "
     "abre o shopping Y\"</i>, <i>\"endereço da clínica Z\"</i> → dados oficiais "
     "do Google.\n"
+    "• <b>Indicação de lugar</b>: <i>\"sugere uma pizzaria delivery\"</i>, "
+    "<i>\"me indica um japonês na Asa Sul\"</i>, <i>\"onde jantar hoje?\"</i> "
+    "→ até 5 lugares do Google Maps, ordenados pela nota e pelo número de "
+    "avaliações, com endereço, telefone, site e se está aberto agora. Só "
+    "aparece lugar que o Google achou — o bot não indica nada de cabeça.\n"
     "• Preço <b>numa loja específica</b>: <i>\"quanto custa o compressor X no "
     "site da Pires Martins?\"</i> — lê a página da própria loja (atravessa "
     "proteção anti-bot). Pra comparar: <i>\"compara o preço dessa loja com o "
@@ -487,6 +492,13 @@ _HELP_KEYWORDS: dict[str, str] = {
     "link": "busca web", "pagina": "busca web", "site": "busca web",
     "telefone": "busca web", "endereco": "busca web", "horario": "busca web",
     "shopping": "busca web",  # pt-BR: shopping = o lugar (não a lista)
+    # indicação de lugar (indicar_lugares) — verbos além dos substantivos
+    "indicacao": "busca web", "indicacoes": "busca web", "indica": "busca web",
+    "indicar": "busca web", "sugestao": "busca web", "sugestoes": "busca web",
+    "sugere": "busca web", "sugerir": "busca web", "recomenda": "busca web",
+    "recomendar": "busca web", "recomendacao": "busca web",
+    "restaurante": "busca web", "restaurantes": "busca web",
+    "pizzaria": "busca web", "delivery": "busca web", "jantar": "busca web",
     "clima": "clima", "tempo": "clima",  # seção Clima dedicada (consultar_clima)
     # inglês (a esposa fala PT, mas o LLM às vezes passa o assunto em EN)
     "reminder": "lembrete", "task": "lembrete", "shopping list": "compras",
