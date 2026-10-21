@@ -443,7 +443,8 @@ class _PaginaLoginFalsa:
     escuro e FECHA o modal (a corrida vista com a CPU limitada 6x)."""
 
     def __init__(self, hidrata_no_clique=1, modal_ja_aberto=False,
-                 opcao_atrasa=0):
+                 opcao_atrasa=0, rotulo="Open Dropdown"):
+        self.rotulo = rotulo
         self.opcao_atrasa = opcao_atrasa
         self.hidrata_no_clique = hidrata_no_clique
         self.cliques_gatilho = 0
@@ -482,7 +483,7 @@ class _PaginaLoginFalsa:
 
     def get_by_role(self, role, name=None):
         assert role == "button"
-        if name.search("Open Dropdown"):
+        if name.search(self.rotulo):
             return _LocFalso(self, "gatilho")
         if name.search("Continuar com e-mail e senha"):
             return _LocFalso(self, "opcao")
@@ -498,6 +499,15 @@ class _PaginaLoginFalsa:
 
 def test_abrir_login_caminho_visto_ao_vivo() -> None:
     pagina = _PaginaLoginFalsa()
+    asyncio.run(sy._abrir_login(pagina))
+    assert pagina.eventos == ["gatilho", "opcao"]
+    assert pagina.form_aberto
+
+
+def test_abrir_login_com_o_botao_novo_perfil() -> None:
+    """21/10/2026: a Sympla renomeou o botão pra aria-label "Perfil" (visto
+    ao vivo) e o login falhou 120s clicando num botão que não existia mais."""
+    pagina = _PaginaLoginFalsa(rotulo="Perfil")
     asyncio.run(sy._abrir_login(pagina))
     assert pagina.eventos == ["gatilho", "opcao"]
     assert pagina.form_aberto

@@ -465,8 +465,11 @@ async def _abrir_login(page) -> None:
     e apertavam Escape (fechando o modal), e o plano B por texto clicava no
     FAQ "Não consigo acessar minha conta" do rodapé da home — o print que
     parecia a Central de Ajuda era isso."""
+    # 21/10/2026: a Sympla trocou o aria-label do botão de "Open Dropdown"
+    # pra "Perfil" (visto ao vivo; o clique segue abrindo o mesmo modal).
+    # Aceita os dois pra não quebrar se voltarem atrás.
     gatilho = page.get_by_role(
-        "button", name=re.compile(r"^open dropdown$", re.I)).first
+        "button", name=re.compile(r"^(open dropdown|perfil)$", re.I)).first
     opcao = page.get_by_role(
         "button", name=re.compile(r"e-?mail e senha", re.I)).first
     senha = page.locator("input[type=password]:visible").first
