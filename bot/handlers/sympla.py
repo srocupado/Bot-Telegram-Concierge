@@ -28,6 +28,7 @@ from bot.services.sympla import (
     descrever_email,
     get_credenciais,
     retirar_ingresso,
+    testar_login,
     save_cpf,
     save_email,
     save_nome,
@@ -167,7 +168,8 @@ async def capturar_campo(message: Message, user: User, session: AsyncSession) ->
 
 
 @router.message(Command("sympla_testar"))
-async def cmd_testar(message: Message, user: User, session: AsyncSession) -> None:
+async def cmd_testar(message: Message, user: User, session: AsyncSession,
+                     command: CommandObject | None = None) -> None:
     if not user.is_authorized or not _is_owner(user):
         return
     creds = await get_credenciais(session)
@@ -178,11 +180,16 @@ async def cmd_testar(message: Message, user: User, session: AsyncSession) -> Non
         )
         return
 
-    cabecalho = (
-        "🎫 Testando: login + UMA busca do evento (fora da janela de quarta, "
-        "o esperado é 'não achei nenhum evento aberto' — isso já confirma "
-        "login e busca). Leva de 1 a 2 minutos."
-    )
+    so_login = ((command.args or "").strip().lower() == "login") if command else False
+    if so_login:
+        cabecalho = ("🎫 Testando SÓ o login (nada é reservado) — mando o "
+                     "print da conta logada. Leva ~1 minuto.")
+    else:
+        cabecalho = (
+            "🎫 Testando: login + UMA busca do evento (fora da janela de quarta, "
+            "o esperado é 'não achei nenhum evento aberto' — isso já confirma "
+            "login e busca). Leva de 1 a 2 minutos."
+        )
     aviso = await message.answer(cabecalho, parse_mode=None)
 
     async def _progresso(etapa: str) -> None:
@@ -194,10 +201,13 @@ async def cmd_testar(message: Message, user: User, session: AsyncSession) -> Non
     # (ex.: "<input ...>") e ia como HTML sem escape; o Telegram recusa e a
     # exceção morria no handler.
     try:
-        resultado = await retirar_ingresso(
-            creds, settings.sympla_search_query, settings.sympla_qty,
-            poll_timeout_s=0, on_etapa=_progresso,
-        )
+        if so_login:
+            resultado = await testar_login(creds)
+        else:
+            resultado = await retirar_ingresso(
+                creds, settings.sympla_search_query, settings.sympla_qty,
+                poll_timeout_s=0, on_etapa=_progresso,
+            )
         texto = (
             f"{'✅' if resultado.sucesso else 'ℹ️'} <b>{html.escape(resultado.etapa)}</b>\n"
             f"{html.escape(resultado.detalhe[:3500])}"
@@ -208,7 +218,8 @@ async def cmd_testar(message: Message, user: User, session: AsyncSession) -> Non
         if resultado.print_meio:
             await message.answer_photo(
                 BufferedInputFile(resultado.print_meio, filename="sympla_meio.png"),
-                caption="Tela no MEIO da etapa (1ª tentativa que falhou)",
+                caption=("Menu da conta (logado)" if so_login and resultado.sucesso
+                         else "Tela no MEIO da etapa (1ª tentativa que falhou)"),
             )
         if resultado.screenshot:
             await message.answer_photo(

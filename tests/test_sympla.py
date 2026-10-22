@@ -360,7 +360,7 @@ def test_login_carrega_pagina_limpa_e_delega_a_abertura() -> None:
     carregamento inicial. Agora a página carrega LIMPA e quem muda o hash
     é _abrir_login, depois de montada — ver os testes dela abaixo."""
     import inspect
-    src = _sem_comentarios(inspect.getsource(sy._login))
+    src = _sem_comentarios(inspect.getsource(sy._login) + inspect.getsource(sy._entrar))
     assert '_ir(page, BASE_URL)' in src
     assert '"{BASE_URL}/#login"' not in src, "voltou a carregar já com o hash"
     assert "_abrir_login(page)" in src
@@ -370,7 +370,7 @@ def test_login_usa_tipo_de_input_nao_label_ou_classe_css() -> None:
     """Rótulo ARIA e classe CSS são coisas que a Sympla controla e pode
     trocar a qualquer deploy; tipo de input é HTML semântico padrão."""
     import inspect
-    src = inspect.getsource(sy._login)
+    src = inspect.getsource(sy._login) + inspect.getsource(sy._entrar)
     assert "input[type=email]" in src
     assert "get_by_label" not in src, "voltou a depender de rótulo ARIA"
 
@@ -574,7 +574,7 @@ def test_login_nunca_usa_input_text_generico() -> None:
     """Visto ao vivo: a busca "Buscar experiências" (type=text) vem antes
     do modal no DOM — o seletor antigo digitava o e-mail nela."""
     import inspect
-    src = _sem_comentarios(inspect.getsource(sy._login))
+    src = _sem_comentarios(inspect.getsource(sy._login) + inspect.getsource(sy._entrar))
     assert "input[type=text]" not in src
     assert 'input[type=email]:visible' in src
 

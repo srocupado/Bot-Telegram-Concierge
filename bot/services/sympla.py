@@ -468,15 +468,14 @@ async def _abrir_login(page) -> None:
     # 21/10/2026: a Sympla trocou o aria-label do botão de "Open Dropdown"
     # pra "Perfil" (visto ao vivo; o clique segue abrindo o mesmo modal).
     # Aceita os dois pra não quebrar se voltarem atrás.
-    gatilho = page.get_by_role(
-        "button", name=re.compile(r"^(open dropdown|perfil)$", re.I)).first
+    gatilho = page.get_by_role("button", name=_GATILHO_CONTA_RE).first
     opcao = page.get_by_role(
         "button", name=re.compile(r"e-?mail e senha", re.I)).first
     senha = page.locator("input[type=password]:visible").first
     # Título do modal (visto ao vivo). Modal aberto com a opção ainda não
     # desenhada = ESPERAR: clicar no botão de novo cairia no fundo escuro e
     # fecharia o modal.
-    modal = page.get_by_text(re.compile(r"que bom ter voc", re.I)).first
+    modal = page.get_by_text(_MODAL_LOGIN_RE).first
     import time as _time
     inicio = _time.monotonic()
     prazo = inicio + LOGIN_ABRIR_TIMEOUT_S
@@ -523,8 +522,51 @@ async def _abrir_login(page) -> None:
     )
 
 
+_MODAL_LOGIN_RE = re.compile(r"que bom ter voc", re.I)
+_GATILHO_CONTA_RE = re.compile(r"^(open dropdown|perfil)$", re.I)
+
+
+async def _modal_login_aberto(page) -> bool:
+    return await _visivel(page.get_by_text(_MODAL_LOGIN_RE).first)
+
+
 async def _login(page, creds: SymplaCredenciais) -> None:
     await _ir(page, BASE_URL)
+    await _entrar(page, creds)
+    await _conferir_login(page)
+
+
+async def _conferir_login(page) -> None:
+    """O login "concluído" era só o campo de senha sumir — e ele some também
+    quando o modal fecha por qualquer outro motivo. Em 22/10/2026 o bot
+    chegou ao checkout como VISITANTE (prints do dono: "Você precisa estar
+    logado para acessar este evento") depois de um login dado como certo.
+
+    Teste NEGATIVO, o único que dá pra fazer sem ter visto a tela logada:
+    deslogado, o botão da conta abre "Que bom ter você aqui!". Se abrir de
+    novo depois do ENTRAR, o login não pegou — falha AQUI, dizendo isso, em
+    vez de seguir e quebrar lá no checkout."""
+    gatilho = page.get_by_role("button", name=_GATILHO_CONTA_RE).first
+    if not await _visivel(gatilho):
+        return
+    await _clicar(page, gatilho)
+    await page.wait_for_timeout(3_000)
+    if await _modal_login_aberto(page):
+        raise SymplaError(
+            "o login não pegou: depois de clicar em ENTRAR, o botão da conta "
+            "ainda abre 'Que bom ter você aqui!' (tela de quem não está logado).",
+            print_meio=await _screenshot_seguro(page),
+        )
+    try:
+        await page.keyboard.press("Escape")
+    except Exception:
+        pass
+
+
+async def _entrar(page, creds: SymplaCredenciais) -> None:
+    """Abre (ou aproveita, se já aberto) o modal de login e entra com e-mail
+    e senha. Serve à home e ao checkout — o checkout mostra o MESMO modal
+    ("Que bom ter você aqui!") quando a sessão não chegou até ele."""
     await _abrir_login(page)
 
     # :visible é obrigatório (visto ao vivo): há um 2º input[type=email]
@@ -774,28 +816,182 @@ async def _selecionar_e_reservar(page, qty: int) -> str:
             pass
 
 
-async def _preencher_checkout(page, creds: SymplaCredenciais) -> None:
-    # A página de checkout já foi confirmada por _selecionar_e_reservar.
-    campos = (
-        (re.compile(r"nome completo|nome do participante", re.I), creds.nome_completo),
-        (re.compile(r"e-?mail", re.I), creds.email),
-        (re.compile(r"cpf", re.I), creds.cpf),
-    )
-    for rotulo, valor in campos:
-        if not valor:
+# Checkout em ETAPAS (prints do dono, 22/10/2026): "1 Recebimento do
+# ingresso" (Nome, Sobrenome, E-mail, Confirmação do e-mail) ou "1 Dados do
+# comprador" (Nome, Data de nascimento, CPF, CEP, endereço) → botão
+# "Próximo" → "2 Finalização". O código antigo procurava "Nome completo"
+# (não existe), não preenchia a confirmação do e-mail e esperava um
+# "Finalizar" na 1ª tela — nunca clicava em "Próximo".
+CHECKOUT_MAX_PROXIMOS = 4
+CHECKOUT_CONFIRMA_S = 60
+
+_PROXIMO_RE = re.compile(r"^\s*pr[óo]ximo\b", re.I)
+_FINAL_RE = re.compile(r"finalizar|confirmar|concluir", re.I)
+# Prova POSITIVA de pedido feito. Textos ainda não vistos ao vivo (a tela de
+# confirmação nunca foi alcançada) — por isso a falta deles NÃO vira "não
+# deu certo", vira "não consegui confirmar, confira em Meus ingressos".
+_CONFIRMADO_RE = re.compile(
+    r"pedido (foi )?(confirmado|realizado|conclu[ií]do)|"
+    r"inscri[çc][ãa]o (foi )?(confirmada|realizada|conclu[ií]da)|"
+    r"compra (foi )?(confirmada|realizada|conclu[ií]da)|"
+    r"ingressos? (foram |foi )?enviados?|parab[ée]ns|deu tudo certo", re.I)
+_CONFIRMADO_URL_RE = re.compile(r"confirm|sucesso|success|obrigad|thank", re.I)
+
+
+def _partes_nome(nome_completo: str) -> tuple[str, str]:
+    partes = nome_completo.split()
+    if not partes:
+        return "", ""
+    return partes[0], " ".join(partes[1:])
+
+
+async def _preencher_se_vazio(page, rotulo: re.Pattern, valor: str | None) -> None:
+    """Preenche só campo VISÍVEL e VAZIO: o que a Sympla já trouxe da conta
+    não é sobrescrito."""
+    if not valor:
+        return
+    try:
+        campo = page.get_by_label(rotulo).first
+        if not await _visivel(campo):
+            return
+        if (await campo.input_value(timeout=3_000)).strip():
+            return
+        await campo.fill(valor, timeout=5_000)
+    except Exception:
+        # Campo desta etapa pode ser de outro tipo (select, data); quem diz
+        # o que faltou é a lista de obrigatórios vazios, se travar.
+        return
+
+
+async def _campos_vazios(page) -> list[str]:
+    """Rótulos dos campos visíveis ainda vazios — é o que vai na mensagem
+    quando a etapa não avança (opção b do dono: dado que o bot não tem,
+    como data de nascimento ou CEP, é DITO, não inventado)."""
+    try:
+        rotulos = await page.eval_on_selector_all(
+            "input:not([type=hidden]):not([type=checkbox]):not([type=radio]), select, textarea",
+            """els => els.filter(e => e.offsetParent !== null && !e.value).map(e => {
+                const l = (e.labels && e.labels[0] && e.labels[0].innerText)
+                    || e.getAttribute('aria-label') || e.getAttribute('placeholder')
+                    || e.name || '?';
+                return l.replace(/\\s+/g, ' ').trim();
+            })""",
+        )
+        return [r for r in dict.fromkeys(rotulos) if r][:12]
+    except Exception:
+        return []
+
+
+async def _preencher_etapa(page, creds: SymplaCredenciais) -> None:
+    nome, sobrenome = _partes_nome(creds.nome_completo)
+    await _preencher_se_vazio(page, re.compile(r"^\s*nome\b", re.I), nome)
+    await _preencher_se_vazio(page, re.compile(r"^\s*sobrenome\b", re.I), sobrenome)
+    await _preencher_se_vazio(page, re.compile(r"^\s*e-?mail\b", re.I), creds.email)
+    await _preencher_se_vazio(
+        page, re.compile(r"confirma[çc][ãa]o d[oe] e-?mail", re.I), creds.email)
+    await _preencher_se_vazio(page, re.compile(r"^\s*cpf\b", re.I), creds.cpf)
+
+
+async def _esperar_confirmacao(page, botao: str) -> str:
+    import time as _time
+    prazo = _time.monotonic() + CHECKOUT_CONFIRMA_S
+    while _time.monotonic() < prazo:
+        prova = page.get_by_text(_CONFIRMADO_RE).first
+        if await _visivel(prova):
+            return " ".join((await prova.inner_text()).split())[:120]
+        if _CONFIRMADO_URL_RE.search(getattr(page, "url", "") or ""):
+            return f"página de confirmação ({page.url})"
+        await page.wait_for_timeout(1_000)
+    raise SymplaError(
+        f"cliquei em '{botao}', mas não vi a confirmação do pedido em "
+        f"{CHECKOUT_CONFIRMA_S}s. PODE ter dado certo — confira em 'Meus "
+        "ingressos' na Sympla antes de tentar de novo.")
+
+
+async def _preencher_checkout(page, creds: SymplaCredenciais) -> str:
+    """Percorre as etapas do checkout até a finalização. Devolve a PROVA de
+    pedido confirmado (texto ou URL da tela de confirmação)."""
+    proximos = 0
+    while True:
+        if await _modal_login_aberto(page):
+            # 22/10/2026: a sessão da home não chegou ao checkout ("Você
+            # precisa estar logado para acessar este evento"). É o mesmo
+            # modal da home — entra por ele mesmo.
+            await _entrar(page, creds)
+            await page.wait_for_timeout(2_000)
             continue
-        try:
-            campo = page.get_by_label(rotulo).first
-            if await campo.count():
-                await campo.fill(valor, timeout=5_000)
-        except Exception:
-            # Campo pode não existir nesta tela — segue sem ele; a etapa
-            # de finalizar é quem decide se faltou algo obrigatório.
-            continue
-    finalizar = page.get_by_role(
-        "button", name=re.compile(r"finalizar|confirmar pedido", re.I),
-    ).first
-    await _clicar(page, finalizar, 30_000)
+        await _preencher_etapa(page, creds)
+        final = page.get_by_role("button", name=_FINAL_RE).first
+        if await _visivel(final):
+            rotulo = " ".join((await final.inner_text()).split()) or "finalizar"
+            await _clicar(page, final, 30_000)
+            return await _esperar_confirmacao(page, rotulo)
+        proximo = page.get_by_role("button", name=_PROXIMO_RE).first
+        if not await _visivel(proximo):
+            raise SymplaError(
+                "no checkout não achei nem 'Próximo' nem o botão de finalizar.")
+        if proximos >= CHECKOUT_MAX_PROXIMOS:
+            vazios = await _campos_vazios(page)
+            raise SymplaError(
+                f"o checkout não passou da etapa depois de {proximos} cliques "
+                "em 'Próximo'. Campos ainda vazios: "
+                + (", ".join(vazios) if vazios else "nenhum visível")
+                + ". Se for dado que o bot não tem (nascimento, CEP, "
+                "endereço), dá pra salvar na conta Sympla ou no /sympla_setup.",
+                print_meio=await _screenshot_seguro(page))
+        await _clicar(page, proximo, 30_000)
+        proximos += 1
+        await page.wait_for_timeout(2_500)
+
+
+async def testar_login(creds: SymplaCredenciais) -> SymplaResultado:
+    """Só o login, sem reservar nada (/sympla_testar login): prints da conta
+    LOGADA — tela que nunca vi e da qual depende a prova positiva de login.
+    print_meio = menu aberto pelo botão da conta; screenshot = "Meus
+    ingressos" (se abrir)."""
+    from playwright.async_api import async_playwright
+
+    etapa = "login"
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, args=CHROMIUM_ARGS)
+            try:
+                page = await (await browser.new_context(locale="pt-BR")).new_page()
+                try:
+                    await _login(page, creds)
+                    etapa = "abrir o menu da conta"
+                    gatilho = page.get_by_role("button", name=_GATILHO_CONTA_RE).first
+                    await _clicar(page, gatilho)
+                    await page.wait_for_timeout(2_500)
+                    menu = await _screenshot_seguro(page)
+                    itens_menu = await _dump_clicaveis(page, limite=60)
+                    etapa = "abrir Meus ingressos"
+                    try:
+                        await page.keyboard.press("Escape")
+                        await _clicar(page, page.get_by_role(
+                            "button", name=re.compile(r"meus ingressos", re.I)).first)
+                        await page.wait_for_timeout(4_000)
+                    except Exception as exc:
+                        logger.info("sympla: Meus ingressos não abriu: %s", exc)
+                    return SymplaResultado(
+                        True, "login",
+                        "login feito e conferido (o botão da conta não abriu "
+                        "mais a tela de quem não está logado). Itens na tela "
+                        f"com o menu aberto: {itens_menu} | URL final: {page.url}",
+                        screenshot=await _screenshot_seguro(page),
+                        print_meio=menu,
+                    )
+                except Exception as exc:
+                    return SymplaResultado(
+                        False, etapa, f"{type(exc).__name__}: {exc}",
+                        screenshot=await _screenshot_seguro(page),
+                        print_meio=getattr(exc, "print_meio", None),
+                    )
+            finally:
+                await browser.close()
+    except Exception as exc:
+        logger.exception("sympla: teste de login quebrou")
+        return SymplaResultado(False, etapa, f"{type(exc).__name__}: {exc}")
 
 
 async def retirar_ingresso(
@@ -888,12 +1084,13 @@ async def retirar_ingresso(
                 lote = await _selecionar_e_reservar(page, qty)
 
                 await _avisar("preencher checkout")
-                await _preencher_checkout(page, creds)
+                prova = await _preencher_checkout(page, creds)
 
                 return SymplaResultado(
                     True, "concluído",
                     f"{qty} ingresso(s) retirado(s) para '{evento.titulo}'"
-                    + (f" — lote '{lote}'." if lote else "."),
+                    + (f" — lote '{lote}'" if lote else "")
+                    + f". Confirmação na tela: {prova}",
                     evento_titulo=evento.titulo, evento_url=evento.url,
                     screenshot=await _screenshot_seguro(page),
                 )
