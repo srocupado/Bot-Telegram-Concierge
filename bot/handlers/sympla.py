@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 from aiogram import Router
@@ -27,6 +28,9 @@ from bot.services.sympla import (
     SymplaError,
     descrever_email,
     get_credenciais,
+    aguardando_codigo,
+    entregar_codigo,
+    pedidor_telegram,
     retirar_ingresso,
     testar_login,
     save_cpf,
@@ -108,6 +112,20 @@ async def cmd_setup(
         "cpf": "Manda seu CPF (só números, ou com pontuação — tanto faz).",
     }[etapa]
     await message.answer(proximo, parse_mode=None)
+
+
+@router.message(lambda m: bool(re.fullmatch(r"\s*\d{3}\s?\d{3}\s*", getattr(m, "text", None) or "")))
+async def capturar_codigo(message: Message, user: User) -> None:
+    """Código de 6 dígitos que a Sympla mandou por e-mail — só consumido
+    quando um login está ESPERANDO por ele; fora disso, segue pro chat."""
+    from aiogram.dispatcher.event.bases import SkipHandler
+
+    if not _is_owner(user) or not aguardando_codigo():
+        raise SkipHandler
+    if entregar_codigo(message.text or ""):
+        await message.answer("🔐 Código recebido — digitando na Sympla…", parse_mode=None)
+    else:
+        raise SkipHandler
 
 
 @router.message(lambda m: bool(getattr(m, "text", None)))
@@ -201,12 +219,13 @@ async def cmd_testar(message: Message, user: User, session: AsyncSession,
     # (ex.: "<input ...>") e ia como HTML sem escape; o Telegram recusa e a
     # exceção morria no handler.
     try:
+        pedir = pedidor_telegram(message.bot, message.chat.id, "teste")
         if so_login:
-            resultado = await testar_login(creds)
+            resultado = await testar_login(creds, pedir)
         else:
             resultado = await retirar_ingresso(
                 creds, settings.sympla_search_query, settings.sympla_qty,
-                poll_timeout_s=0, on_etapa=_progresso,
+                poll_timeout_s=0, on_etapa=_progresso, pedir_codigo=pedir,
             )
         texto = (
             f"{'✅' if resultado.sucesso else 'ℹ️'} <b>{html.escape(resultado.etapa)}</b>\n"

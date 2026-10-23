@@ -671,7 +671,7 @@ def test_resultado_sem_falha_no_login_tambem_tras_o_dump_de_elementos(monkeypatc
     monkeypatch.setitem(sys.modules, "playwright.async_api",
                         _fake_playwright_module(page, ordem))
 
-    async def _login_ok(_page, _creds):
+    async def _login_ok(_page, _creds, *_a):
         return None
     monkeypatch.setattr(sy, "_login", _login_ok)
 
@@ -724,7 +724,7 @@ def test_teste_manual_faz_uma_busca_so_e_avisa_cada_etapa(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "playwright.async_api",
                         _fake_playwright_module(page, ordem))
 
-    async def _login_ok(_page, _creds):
+    async def _login_ok(_page, _creds, *_a):
         return None
     monkeypatch.setattr(sy, "_login", _login_ok)
 
@@ -757,7 +757,7 @@ def test_progresso_que_falha_nao_derruba_a_retirada(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "playwright.async_api",
                         _fake_playwright_module(page, ordem))
 
-    async def _login_ok(_page, _creds):
+    async def _login_ok(_page, _creds, *_a):
         return None
     monkeypatch.setattr(sy, "_login", _login_ok)
 
@@ -849,7 +849,7 @@ def test_busca_que_nao_carregou_nao_vira_nao_achei(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "playwright.async_api",
                         _fake_playwright_module(page, ordem))
 
-    async def _login_ok(_page, _creds):
+    async def _login_ok(_page, _creds, *_a):
         return None
     monkeypatch.setattr(sy, "_login", _login_ok)
 
@@ -872,6 +872,13 @@ class _ContaFalsa:
 
     async def count(self):
         return self._fn()
+
+    @property
+    def first(self):
+        return self
+
+    async def is_visible(self):
+        return bool(self._fn())
 
 
 class _PaginaCloudflareFalsa:

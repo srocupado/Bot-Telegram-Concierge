@@ -124,7 +124,7 @@ def test_fluxo_visto_nos_prints_chega_a_confirmacao() -> None:
 def test_modal_de_login_no_checkout_faz_login_ali(monkeypatch) -> None:
     entrou = []
 
-    async def _entrar(page, creds):
+    async def _entrar(page, creds, *_a):
         entrou.append(creds.email)
         page.modal = False
     monkeypatch.setattr(sy, "_entrar", _entrar)
@@ -161,28 +161,86 @@ def test_nome_nao_casa_com_sobrenome() -> None:
     assert not re.compile(r"^\s*nome\b", re.I).search("Sobrenome *")
 
 
-# ───────────── login que "não pegou" falha no login, não no checkout ─────────────
+# ───────────── login conferido, sessão e código por e-mail ─────────────
+
+class _LocH:
+    def __init__(self, h, alvo):
+        self.h, self.alvo = h, alvo
+
+    @property
+    def first(self):
+        return self
+
+    async def wait_for(self, **kw):
+        if not self.h.visivel(self.alvo):
+            raise TimeoutError(self.alvo)
+
+    async def is_visible(self):
+        return self.h.visivel(self.alvo)
+
+    async def count(self):
+        return 6 if self.alvo == "caixas" else int(self.h.visivel(self.alvo))
+
+    def nth(self, _i):
+        return self
+
+    async def fill(self, valor, timeout=None):
+        self.h.preenchido.append((self.alvo, valor))
+
 
 class _Home:
-    def __init__(self, logado):
-        self.logado, self.modal, self.cliques = logado, False, []
+    """Botão da conta: deslogado abre o modal; logado não. `hidrata_no`:
+    cliques antes disso não fazem nada (React ainda não hidratou)."""
+
+    def __init__(self, logado, hidrata_no=1, tem_botao=True):
+        self.logado, self.hidrata_no, self.tem_botao = logado, hidrata_no, tem_botao
+        self.modal, self.cliques, self.preenchido = False, [], []
+        self.tela_codigo, self.digitado, self.codigo_certo = False, "", "123456"
         self.keyboard = self
 
     async def press(self, _k):
         self.modal = False
 
+    async def type(self, texto, delay=None):
+        self.digitado = texto
+
     def get_by_role(self, role, name=None):
-        return _Loc(self, "conta")
+        if name.search("Continuar"):
+            return _LocH(self, "continuar")
+        if name.search("Entrar"):
+            return _LocH(self, "entrar")
+        return _LocH(self, "conta")
 
     def get_by_text(self, padrao):
-        return _Loc(self, "modal")
+        if padrao.search("Digite o código que enviamos"):
+            return _LocH(self, "tela_codigo")
+        if padrao.search("Código inválido"):
+            return _LocH(self, "recusa")
+        if padrao.search("Senha inválida"):
+            return _LocH(self, "-")
+        return _LocH(self, "modal")
+
+    def locator(self, sel):
+        if "password" in sel:
+            return _LocH(self, "senha")
+        if "email" in sel:
+            return _LocH(self, "email")
+        return _LocH(self, "caixas")
 
     def visivel(self, alvo):
-        return self.modal if alvo == "modal" else True
+        return {"modal": self.modal, "conta": self.tem_botao,
+                "tela_codigo": self.tela_codigo, "continuar": self.tela_codigo,
+                "recusa": self.tela_codigo and self.digitado not in ("", self.codigo_certo),
+                "caixas": self.tela_codigo, "senha": False}.get(alvo, False)
 
     def clicar(self, alvo):
         self.cliques.append(alvo)
-        self.modal = not self.logado
+        if alvo == "conta" and self.cliques.count("conta") >= self.hidrata_no:
+            self.modal = not self.logado
+        elif alvo == "entrar":
+            self.tela_codigo = True
+        elif alvo == "continuar" and self.digitado == self.codigo_certo:
+            self.tela_codigo, self.logado = False, True
 
     async def wait_for_timeout(self, _ms):
         return None
@@ -191,14 +249,119 @@ class _Home:
         return b"PRINT"
 
 
-def test_login_que_nao_pegou_falha_dizendo_isso() -> None:
+@pytest.fixture
+def _sem_navegar(monkeypatch):
+    async def _ir(page, url, timeout_ms=0):
+        return None
+    monkeypatch.setattr(sy, "_ir", _ir)
+
+
+def test_login_que_nao_pegou_falha_dizendo_isso(_sem_navegar) -> None:
     with pytest.raises(sy.SymplaError) as e:
         asyncio.run(sy._conferir_login(_Home(logado=False)))
     assert "o login não pegou" in str(e.value)
     assert e.value.print_meio == b"PRINT"
 
 
-def test_login_que_pegou_segue() -> None:
+def test_sem_botao_da_conta_nao_passa_mais_calado(_sem_navegar) -> None:
+    """23/10: na tela do código não há botão da conta, e o conferente antigo
+    dava o login como certo."""
+    with pytest.raises(sy.SymplaError):
+        asyncio.run(sy._conferir_login(_Home(logado=False, tem_botao=False)))
+
+
+def test_clique_antes_de_hidratar_nao_vira_logado(_sem_navegar) -> None:
+    h = _Home(logado=False, hidrata_no=2)
+    assert asyncio.run(sy._sessao_ativa(h)) is False
+
+
+def test_login_que_pegou_segue(_sem_navegar) -> None:
     h = _Home(logado=True)
     asyncio.run(sy._conferir_login(h))
-    assert h.cliques == ["conta"]
+    assert h.cliques.count("conta") == 3
+
+
+def test_sessao_salva_valida_nao_pede_login(_sem_navegar, monkeypatch) -> None:
+    async def _entrar(*a):
+        raise AssertionError("não devia entrar")
+    monkeypatch.setattr(sy, "_entrar", _entrar)
+    assert asyncio.run(sy._login(_Home(logado=True), CREDS)) is False
+
+
+# código por e-mail (print do dono, 23/10/2026)
+
+def _pedidor(respostas, pedidos):
+    async def _pedir(tentativa):
+        pedidos.append(tentativa)
+        if respostas:
+            resp = respostas.pop(0)
+            asyncio.get_running_loop().call_later(
+                0.01, lambda: sy.entregar_codigo(resp))
+    return _pedir
+
+
+def _entrar_com_codigo(monkeypatch, h, pedir):
+    async def _nada(*a, **kw):
+        return None
+
+    async def _sem_cf(_p):
+        return False
+    monkeypatch.setattr(sy, "_abrir_login", _nada)
+    monkeypatch.setattr(sy, "_cloudflare_na_tela", _sem_cf)
+    asyncio.run(sy._entrar(h, CREDS, pedir))
+
+
+def test_tela_do_codigo_pede_ao_dono_e_digita(monkeypatch) -> None:
+    h, pedidos = _Home(logado=False), []
+    _entrar_com_codigo(monkeypatch, h, _pedidor(["123 456"], pedidos))
+    assert pedidos == [1] and h.digitado == "123456" and h.logado
+    assert "continuar" in h.cliques
+
+
+def test_codigo_errado_pede_de_novo(monkeypatch) -> None:
+    h, pedidos = _Home(logado=False), []
+    _entrar_com_codigo(monkeypatch, h, _pedidor(["999999", "123456"], pedidos))
+    assert pedidos == [1, 2] and h.logado
+
+
+def test_sem_resposta_para_no_login_dizendo_isso(monkeypatch) -> None:
+    monkeypatch.setattr(sy, "CODIGO_ESPERA_S", 0.05)
+    with pytest.raises(sy.SymplaError, match="não recebi resposta"):
+        _entrar_com_codigo(monkeypatch, _Home(logado=False), _pedidor([], []))
+
+
+def test_sem_canal_pra_perguntar_falha_alto(monkeypatch) -> None:
+    with pytest.raises(sy.SymplaError, match="não tem como te perguntar"):
+        _entrar_com_codigo(monkeypatch, _Home(logado=False), None)
+
+
+def test_codigo_sem_ninguem_esperando_nao_e_consumido() -> None:
+    assert sy.entregar_codigo("123456") is False
+    assert sy.aguardando_codigo() is False
+
+
+def test_handler_so_consome_o_codigo_quando_ha_login_esperando(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from aiogram.dispatcher.event.bases import SkipHandler
+
+    from bot.handlers import sympla as hs
+    monkeypatch.setattr(hs.settings, "owner_telegram_id", 1)
+    respostas = []
+
+    class _Msg:
+        text = "123 456"
+
+        async def answer(self, t, **kw):
+            respostas.append(t)
+    dono = SimpleNamespace(id=1)
+    with pytest.raises(SkipHandler):
+        asyncio.run(hs.capturar_codigo(_Msg(), dono))
+
+    async def _com_espera():
+        espera = asyncio.create_task(sy._esperar_codigo(5))
+        await asyncio.sleep(0)
+        await hs.capturar_codigo(_Msg(), dono)
+        return await espera
+    assert asyncio.run(_com_espera()) == "123456"
+    assert respostas and "Código recebido" in respostas[0]

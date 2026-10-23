@@ -46,6 +46,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
@@ -530,40 +531,165 @@ async def _modal_login_aberto(page) -> bool:
     return await _visivel(page.get_by_text(_MODAL_LOGIN_RE).first)
 
 
-async def _login(page, creds: SymplaCredenciais) -> None:
+# ───────────── código por e-mail (verificação de aparelho novo) ─────────────
+#
+# 23/10/2026 (print do /sympla_testar login): depois do ENTRAR a Sympla pede
+# "Digite o código que enviamos por e-mail" — 6 caixas + "Continuar". O bot
+# não conhecia a tela, seguia adiante sem sessão e chegava ao checkout como
+# visitante. O código é pedido ao dono pelo Telegram (pedir_codigo), e a
+# sessão é SALVA depois do login pra não pedir de novo a cada execução (cada
+# navegador zerado é um "aparelho novo" pra Sympla).
+
+SESSAO_PATH = Path("/app/data/sympla_sessao.json")
+LOGIN_CODIGO_ESPERA_S = 8.0
+CODIGO_ESPERA_S = 300.0
+CODIGO_TENTATIVAS = 2
+_CODIGO_TELA_RE = re.compile(r"digite o c[óo]digo", re.I)
+_CODIGO_RECUSA_RE = re.compile(
+    r"c[óo]digo (inv[áa]lido|incorreto|expirado|errado)", re.I)
+
+_codigo_futuro: asyncio.Future | None = None
+# Um navegador logado por vez: a checagem das 17h30 esperando o código não
+# pode competir com a retirada das 17h55 (dois logins = dois códigos).
+_trava_navegador = asyncio.Lock()
+
+
+def aguardando_codigo() -> bool:
+    return _codigo_futuro is not None and not _codigo_futuro.done()
+
+
+def entregar_codigo(texto: str) -> bool:
+    """Chamado pelo handler do Telegram. True se havia alguém esperando."""
+    codigo = re.sub(r"\D", "", texto or "")
+    if len(codigo) != 6 or not aguardando_codigo():
+        return False
+    _codigo_futuro.set_result(codigo)
+    return True
+
+
+async def _esperar_codigo(timeout_s: float) -> str | None:
+    global _codigo_futuro
+    _codigo_futuro = asyncio.get_running_loop().create_future()
+    try:
+        return await asyncio.wait_for(_codigo_futuro, timeout_s)
+    except asyncio.TimeoutError:
+        return None
+    finally:
+        _codigo_futuro = None
+
+
+async def _resolver_codigo(page, pedir_codigo) -> None:
+    if pedir_codigo is None:
+        raise SymplaError(
+            "a Sympla pediu o código enviado por e-mail e esta execução não "
+            "tem como te perguntar.", print_meio=await _screenshot_seguro(page))
+    tela = page.get_by_text(_CODIGO_TELA_RE).first
+    caixas = page.locator("input:visible")
+    for tentativa in range(1, CODIGO_TENTATIVAS + 1):
+        await pedir_codigo(tentativa)
+        codigo = await _esperar_codigo(CODIGO_ESPERA_S)
+        if codigo is None:
+            raise SymplaError(
+                f"a Sympla pediu o código enviado por e-mail e não recebi "
+                f"resposta em {CODIGO_ESPERA_S / 60:.0f} min — parei no login.")
+        try:
+            for i in range(await caixas.count()):
+                await caixas.nth(i).fill("", timeout=3_000)
+        except Exception:
+            pass
+        await _clicar(page, caixas.first)
+        await page.keyboard.type(codigo, delay=120)
+        continuar = page.get_by_role(
+            "button", name=re.compile(r"^continuar$", re.I)).first
+        try:
+            if await _visivel(continuar):
+                await _clicar(page, continuar)
+        except Exception:
+            pass  # caixa de 6 dígitos que envia sozinha some antes do clique
+        recusa = page.get_by_text(_CODIGO_RECUSA_RE).first
+        for _ in range(30):
+            if not await _visivel(tela):
+                return
+            if await _visivel(recusa):
+                break
+            await page.wait_for_timeout(1_000)
+    raise SymplaError(
+        f"a Sympla não aceitou o código ({CODIGO_TENTATIVAS} tentativas).",
+        print_meio=await _screenshot_seguro(page))
+
+
+async def _sessao_ativa(page) -> bool:
+    """Deslogado, o botão da conta abre "Que bom ter você aqui!" (visto ao
+    vivo). Clica até 3x porque clique antes da hidratação do React não faz
+    nada — sem a repetição, "não abriu o modal" seria lido como "logado".
+    Sem o botão na tela, não dá pra afirmar sessão: False."""
+    gatilho = page.get_by_role("button", name=_GATILHO_CONTA_RE).first
+    try:
+        await gatilho.wait_for(state="visible", timeout=15_000)
+    except Exception:
+        return False
+    for _ in range(3):
+        await _clicar(page, gatilho)
+        await page.wait_for_timeout(3_000)
+        if await _modal_login_aberto(page):
+            return False
+        # logado: o clique abre o menu da conta — fecha antes de clicar de novo
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
+    return True
+
+
+async def _login(page, creds: SymplaCredenciais, pedir_codigo=None) -> bool:
+    """Garante sessão logada. Devolve True se precisou entrar (sessão salva
+    não valia), False se a sessão salva já estava ativa."""
     await _ir(page, BASE_URL)
-    await _entrar(page, creds)
+    if await _sessao_ativa(page):
+        return False
+    await _entrar(page, creds, pedir_codigo)
     await _conferir_login(page)
+    return True
 
 
 async def _conferir_login(page) -> None:
     """O login "concluído" era só o campo de senha sumir — e ele some também
-    quando o modal fecha por qualquer outro motivo. Em 22/10/2026 o bot
-    chegou ao checkout como VISITANTE (prints do dono: "Você precisa estar
-    logado para acessar este evento") depois de um login dado como certo.
-
-    Teste NEGATIVO, o único que dá pra fazer sem ter visto a tela logada:
-    deslogado, o botão da conta abre "Que bom ter você aqui!". Se abrir de
-    novo depois do ENTRAR, o login não pegou — falha AQUI, dizendo isso, em
-    vez de seguir e quebrar lá no checkout."""
-    gatilho = page.get_by_role("button", name=_GATILHO_CONTA_RE).first
-    if not await _visivel(gatilho):
-        return
-    await _clicar(page, gatilho)
-    await page.wait_for_timeout(3_000)
-    if await _modal_login_aberto(page):
+    quando o modal fecha ou a tela troca pela do código. Em 22/10/2026 o bot
+    chegou ao checkout como VISITANTE, e o 1º conferente (23/10) deixava
+    passar quando o botão da conta nem estava na tela — era a tela do
+    código. Agora: volta à home e exige o teste do botão da conta."""
+    await _ir(page, BASE_URL)
+    if not await _sessao_ativa(page):
         raise SymplaError(
-            "o login não pegou: depois de clicar em ENTRAR, o botão da conta "
-            "ainda abre 'Que bom ter você aqui!' (tela de quem não está logado).",
+            "o login não pegou: depois de entrar, o botão da conta ainda abre "
+            "'Que bom ter você aqui!' (ou nem aparece) — tela de quem não está "
+            "logado.",
             print_meio=await _screenshot_seguro(page),
         )
+
+
+async def _novo_contexto(browser):
+    """Contexto com a sessão salva, se houver. Arquivo corrompido não pode
+    impedir a execução: cai pra contexto limpo (e o login refaz a sessão)."""
+    if SESSAO_PATH.exists():
+        try:
+            return await browser.new_context(
+                locale="pt-BR", storage_state=str(SESSAO_PATH))
+        except Exception as exc:
+            logger.warning("sympla: sessão salva ilegível (%s) — login do zero", exc)
+    return await browser.new_context(locale="pt-BR")
+
+
+async def _salvar_sessao(context) -> None:
     try:
-        await page.keyboard.press("Escape")
+        SESSAO_PATH.parent.mkdir(parents=True, exist_ok=True)
+        await context.storage_state(path=str(SESSAO_PATH))
+        SESSAO_PATH.chmod(0o600)
     except Exception:
-        pass
+        logger.exception("sympla: não consegui salvar a sessão")
 
 
-async def _entrar(page, creds: SymplaCredenciais) -> None:
+async def _entrar(page, creds: SymplaCredenciais, pedir_codigo=None) -> None:
     """Abre (ou aproveita, se já aberto) o modal de login e entra com e-mail
     e senha. Serve à home e ao checkout — o checkout mostra o MESMO modal
     ("Que bom ter você aqui!") quando a sessão não chegou até ele."""
@@ -581,12 +707,17 @@ async def _entrar(page, creds: SymplaCredenciais) -> None:
     await _clicar(page, page.get_by_role(
         "button", name=re.compile(r"^entrar$", re.I)).first, 30_000)
 
-    # Login certo fecha o modal (o campo some). Login errado deixa aberto
-    # com "E-mail ou senha inválidos" (texto visto ao vivo com conta falsa).
+    # Login certo fecha o modal (o campo some) — e pode trocar pela tela do
+    # código por e-mail, que leva uns segundos pra aparecer: campo sumido só
+    # vale como fim depois de LOGIN_CODIGO_ESPERA_S sem a tela do código.
+    # Login errado deixa aberto com "E-mail ou senha inválidos" (texto visto
+    # ao vivo com conta falsa).
     campo = page.locator("input[type=password]").first
     recusa = page.get_by_text(re.compile(r"senha inv[aá]lid", re.I))
+    tela_codigo = page.get_by_text(_CODIGO_TELA_RE).first
     import time as _time
     prazo = _time.monotonic() + 60
+    sumiu_em: float | None = None
     while _time.monotonic() < prazo:
         if await recusa.count():
             raise SymplaError(
@@ -596,8 +727,14 @@ async def _entrar(page, creds: SymplaCredenciais) -> None:
             # O campo some atrás do desafio — isso NÃO é login concluído.
             await _passar_cloudflare(page)
             continue
-        if not await _visivel(campo):
+        if await _visivel(tela_codigo):
+            await _resolver_codigo(page, pedir_codigo)
             return
+        if not await _visivel(campo):
+            if sumiu_em is None:
+                sumiu_em = _time.monotonic()
+            elif _time.monotonic() - sumiu_em >= LOGIN_CODIGO_ESPERA_S:
+                return
         await page.wait_for_timeout(1_000)
     raise SymplaError(
         "cliquei em ENTRAR mas o login não concluiu em 60s (o formulário "
@@ -908,7 +1045,8 @@ async def _esperar_confirmacao(page, botao: str) -> str:
         "ingressos' na Sympla antes de tentar de novo.")
 
 
-async def _preencher_checkout(page, creds: SymplaCredenciais) -> str:
+async def _preencher_checkout(page, creds: SymplaCredenciais,
+                              pedir_codigo=None) -> str:
     """Percorre as etapas do checkout até a finalização. Devolve a PROVA de
     pedido confirmado (texto ou URL da tela de confirmação)."""
     proximos = 0
@@ -917,7 +1055,7 @@ async def _preencher_checkout(page, creds: SymplaCredenciais) -> str:
             # 22/10/2026: a sessão da home não chegou ao checkout ("Você
             # precisa estar logado para acessar este evento"). É o mesmo
             # modal da home — entra por ele mesmo.
-            await _entrar(page, creds)
+            await _entrar(page, creds, pedir_codigo)
             await page.wait_for_timeout(2_000)
             continue
         await _preencher_etapa(page, creds)
@@ -944,7 +1082,7 @@ async def _preencher_checkout(page, creds: SymplaCredenciais) -> str:
         await page.wait_for_timeout(2_500)
 
 
-async def testar_login(creds: SymplaCredenciais) -> SymplaResultado:
+async def testar_login(creds: SymplaCredenciais, pedir_codigo=None) -> SymplaResultado:
     """Só o login, sem reservar nada (/sympla_testar login): prints da conta
     LOGADA — tela que nunca vi e da qual depende a prova positiva de login.
     print_meio = menu aberto pelo botão da conta; screenshot = "Meus
@@ -953,12 +1091,14 @@ async def testar_login(creds: SymplaCredenciais) -> SymplaResultado:
 
     etapa = "login"
     try:
-        async with async_playwright() as p:
+        async with _trava_navegador, async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=CHROMIUM_ARGS)
             try:
-                page = await (await browser.new_context(locale="pt-BR")).new_page()
+                context = await _novo_contexto(browser)
+                page = await context.new_page()
                 try:
-                    await _login(page, creds)
+                    precisou = await _login(page, creds, pedir_codigo)
+                    await _salvar_sessao(context)
                     etapa = "abrir o menu da conta"
                     gatilho = page.get_by_role("button", name=_GATILHO_CONTA_RE).first
                     await _clicar(page, gatilho)
@@ -975,8 +1115,10 @@ async def testar_login(creds: SymplaCredenciais) -> SymplaResultado:
                         logger.info("sympla: Meus ingressos não abriu: %s", exc)
                     return SymplaResultado(
                         True, "login",
-                        "login feito e conferido (o botão da conta não abriu "
-                        "mais a tela de quem não está logado). Itens na tela "
+                        ("login feito e conferido" if precisou
+                         else "sessão salva ainda valia (sem novo login)")
+                        + " — o botão da conta não abre mais a tela de quem não "
+                        "está logado; sessão salva. Itens na tela "
                         f"com o menu aberto: {itens_menu} | URL final: {page.url}",
                         screenshot=await _screenshot_seguro(page),
                         print_meio=menu,
@@ -994,10 +1136,55 @@ async def testar_login(creds: SymplaCredenciais) -> SymplaResultado:
         return SymplaResultado(False, etapa, f"{type(exc).__name__}: {exc}")
 
 
+async def garantir_sessao(creds: SymplaCredenciais, pedir_codigo=None) -> SymplaResultado:
+    """Checagem ~30 min antes da janela: deixa a sessão logada e salva, pra
+    que um eventual pedido de código aconteça com folga, e não às 17h55 com o
+    lote abrindo. sucesso=True com detalhe dizendo se precisou entrar."""
+    from playwright.async_api import async_playwright
+
+    try:
+        async with _trava_navegador, async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, args=CHROMIUM_ARGS)
+            try:
+                context = await _novo_contexto(browser)
+                page = await context.new_page()
+                try:
+                    precisou = await _login(page, creds, pedir_codigo)
+                except Exception as exc:
+                    return SymplaResultado(
+                        False, "login", f"{type(exc).__name__}: {exc}",
+                        screenshot=await _screenshot_seguro(page),
+                        print_meio=getattr(exc, "print_meio", None))
+                await _salvar_sessao(context)
+                return SymplaResultado(
+                    True, "login",
+                    "precisei entrar de novo; login conferido e sessão salva."
+                    if precisou else "a sessão salva continua valendo.")
+            finally:
+                await browser.close()
+    except Exception as exc:
+        logger.exception("sympla: checagem de sessão quebrou")
+        return SymplaResultado(False, "login", f"{type(exc).__name__}: {exc}")
+
+
+def pedidor_telegram(bot, chat_id: int, rotulo: str):
+    """pedir_codigo que pergunta ao dono pelo Telegram."""
+    async def _pedir(tentativa: int) -> None:
+        if tentativa == 1:
+            texto = (f"🔐 <b>Sympla</b> ({rotulo}): ela pediu o código que "
+                     "acabou de mandar pro seu e-mail. Me responde aqui só com "
+                     f"os 6 dígitos (espero {CODIGO_ESPERA_S / 60:.0f} min).")
+        else:
+            texto = ("🔐 <b>Sympla</b>: o código não foi aceito. Manda de novo "
+                     "(se pedir reenvio no e-mail, vale o mais novo).")
+        await bot.send_message(chat_id, texto, parse_mode="HTML")
+    return _pedir
+
+
 async def retirar_ingresso(
     creds: SymplaCredenciais, query: str, qty: int, *, agora: datetime | None = None,
     poll_timeout_s: float = POLL_TIMEOUT_S, on_etapa=None,
-    abre_em: datetime | None = None,
+    abre_em: datetime | None = None, pedir_codigo=None,
 ) -> SymplaResultado:
     """Orquestra o fluxo inteiro. Qualquer exceção numa etapa vira resultado
     de FALHA com screenshot — nunca propaga pro chamador como traceback cru,
@@ -1032,15 +1219,16 @@ async def retirar_ingresso(
     falha_print_meio: bytes | None = None
     falha_extra = ""
     try:
-        async with async_playwright() as p:
+        async with _trava_navegador, async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=CHROMIUM_ARGS)
             page = None
             try:
-                context = await browser.new_context(locale="pt-BR")
+                context = await _novo_contexto(browser)
                 page = await context.new_page()
 
                 await _avisar("login")
-                await _login(page, creds)
+                await _login(page, creds, pedir_codigo)
+                await _salvar_sessao(context)
 
                 await _avisar("localizar o evento da semana")
                 evento = None
@@ -1084,7 +1272,7 @@ async def retirar_ingresso(
                 lote = await _selecionar_e_reservar(page, qty)
 
                 await _avisar("preencher checkout")
-                prova = await _preencher_checkout(page, creds)
+                prova = await _preencher_checkout(page, creds, pedir_codigo)
 
                 return SymplaResultado(
                     True, "concluído",

@@ -238,3 +238,57 @@ def test_fluxo_espera_o_lote_antes_de_selecionar(monkeypatch) -> None:
         creds, "q", 2, abre_em=QUI.replace(hour=12), poll_timeout_s=0))
     assert r.sucesso
     assert ordem.index("esperar:12:00") < ordem.index("selecionar")
+
+
+# ───────────── checagem da sessão ~30 min antes (código por e-mail) ─────────────
+
+def _tick_sessao(ambiente, monkeypatch, quando, resultado=True):
+    chamadas = []
+
+    async def _garantir(creds, pedir=None):
+        chamadas.append(pedir)
+        return sy.SymplaResultado(resultado, "login",
+                                  "a sessão salva continua valendo." if resultado
+                                  else "o login não pegou")
+    monkeypatch.setattr(sy, "garantir_sessao", _garantir)
+    _relogio(monkeypatch, quando)
+    antes = len(ambiente.disparos)
+    asyncio.run(scheduler.run_sympla_sessao(ambiente.sm, ambiente.bot))
+    novos = ambiente.disparos[antes:]
+    for _c, fab in novos:
+        asyncio.run(fab())
+    return [c for c, _ in novos], chamadas
+
+
+def test_sessao_e_checada_as_17h30_com_canal_pro_codigo(ambiente, monkeypatch) -> None:
+    disparos, chamadas = _tick_sessao(ambiente, monkeypatch, QUA.replace(hour=17, minute=30))
+    assert disparos == ["sympla_sessao:2026-10-07"]
+    assert chamadas[0] is not None, "sem canal o código não teria como ser pedido"
+    assert "login pronto" in ambiente.bot.textos[-1] and "(quarta 18h)" in ambiente.bot.textos[-1]
+
+
+def test_sessao_fora_da_faixa_nao_roda(ambiente, monkeypatch) -> None:
+    for h, m in ((17, 29), (17, 51), (18, 0)):
+        assert _tick_sessao(ambiente, monkeypatch, QUA.replace(hour=h, minute=m))[0] == []
+
+
+def test_sessao_uma_vez_por_janela(ambiente, monkeypatch) -> None:
+    _tick_sessao(ambiente, monkeypatch, QUA.replace(hour=17, minute=31))
+    assert _tick_sessao(ambiente, monkeypatch, QUA.replace(hour=17, minute=40))[0] == []
+
+
+def test_sessao_de_quinta_pula_se_a_quarta_retirou(ambiente, monkeypatch) -> None:
+    ambiente.resultado["sucesso"] = True
+    ambiente.tick(QUA.replace(hour=17, minute=56))
+    assert _tick_sessao(ambiente, monkeypatch, QUI.replace(hour=11, minute=35))[0] == []
+
+
+def test_sessao_que_falha_avisa_e_diz_que_tenta_de_novo(ambiente, monkeypatch) -> None:
+    _tick_sessao(ambiente, monkeypatch, QUI.replace(hour=11, minute=30), resultado=False)
+    assert "não consegui deixar o login pronto" in ambiente.bot.textos[-1]
+    assert "(quinta 12h)" in ambiente.bot.textos[-1]
+
+
+def test_retirada_tambem_recebe_canal_pro_codigo(ambiente) -> None:
+    ambiente.tick(QUA.replace(hour=17, minute=56))
+    assert ambiente.chamadas[0].get("pedir_codigo") is not None

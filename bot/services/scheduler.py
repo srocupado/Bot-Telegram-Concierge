@@ -939,7 +939,7 @@ async def run_sympla_pickup(
     from bot.services.proactive import already_notified, mark_notified
     from bot.services.sympla import (
         INICIO_ANTECEDENCIA, get_credenciais, nome_janela, parse_janela,
-        proxima_janela, retirar_ingresso,
+        pedidor_telegram, proxima_janela, retirar_ingresso,
     )
 
     if not settings.owner_telegram_id:
@@ -987,6 +987,7 @@ async def run_sympla_pickup(
             resultado = await retirar_ingresso(
                 creds, settings.sympla_search_query, settings.sympla_qty,
                 agora=now_brt, abre_em=alvo,
+                pedir_codigo=pedidor_telegram(bot, dono_id, rotulo),
             )
             if resultado.sucesso:
                 async with sessionmaker() as session:
@@ -1011,6 +1012,87 @@ async def run_sympla_pickup(
                     logger.exception("sympla: falha ao enviar screenshot")
 
         jobs.spawn(f"sympla:{chave}", _rodar)
+
+
+_KIND_SYMPLA_SESSAO = "sympla_sessao"
+# Checagem da sessão: de 30 a 10 min antes da hora-alvo — antes do início da
+# retirada (alvo − 5 min), com folga pro dono responder um pedido de código.
+_SYMPLA_SESSAO_DE = timedelta(minutes=30)
+_SYMPLA_SESSAO_ATE = timedelta(minutes=10)
+
+
+async def run_sympla_sessao(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    bot: Bot,
+) -> None:
+    """~30 min antes de cada janela da Sympla, deixa o login pronto e salvo.
+
+    A Sympla pede um código por e-mail quando o login vem de "aparelho
+    novo" (visto em 23/10/2026). Se isso acontecesse só às 17h55, o dono
+    teria de responder com o lote abrindo. Aqui o pedido vem com folga; com
+    a sessão salva, a retirada das 17h55 em princípio nem precisa logar.
+    Mesmo dedup e mesmas regras da retirada (a de quinta não roda se a de
+    quarta já retirou)."""
+    from bot.services import jobs
+    from bot.services.proactive import already_notified, mark_notified
+    from bot.services.sympla import (
+        garantir_sessao, get_credenciais, nome_janela, parse_janela,
+        pedidor_telegram, proxima_janela,
+    )
+
+    if not settings.owner_telegram_id:
+        return
+    janelas = [(settings.sympla_weekday, settings.sympla_release_hour)]
+    segunda = parse_janela(settings.sympla_segunda_janela)
+    if segunda:
+        janelas.append(segunda)
+
+    now_brt = datetime.now(BRT)
+    for i, (dia, hora) in enumerate(janelas):
+        alvo = proxima_janela(now_brt - _SYMPLA_SESSAO_ATE, dia, hora)
+        if not (alvo - _SYMPLA_SESSAO_DE <= now_brt <= alvo - _SYMPLA_SESSAO_ATE):
+            continue
+        chave = alvo.date().isoformat()
+        ano, semana, _ = alvo.isocalendar()
+        semana_key = f"{ano}-W{semana:02d}"
+        async with sessionmaker() as session:
+            dono = await session.get(User, settings.owner_telegram_id)
+            if dono is None or not dono.is_authorized:
+                return
+            if await already_notified(session, dono.id, _KIND_SYMPLA_SESSAO, chave):
+                continue
+            if i > 0 and await already_notified(
+                    session, dono.id, _KIND_SYMPLA_OK, semana_key):
+                continue
+            creds = await get_credenciais(session)
+            if creds is None:
+                return
+            await mark_notified(session, dono.id, _KIND_SYMPLA_SESSAO, chave)
+            dono_id = dono.id
+
+        rotulo = nome_janela(dia, hora)
+
+        async def _rodar(rotulo=rotulo, creds=creds, dono_id=dono_id) -> None:
+            r = await garantir_sessao(creds, pedidor_telegram(bot, dono_id, rotulo))
+            if r.sucesso:
+                texto = (f"✅ <b>Sympla</b> ({rotulo}): login pronto pra "
+                         f"retirada — {r.detalhe}")
+            else:
+                texto = (f"⚠️ <b>Sympla</b> ({rotulo}): não consegui deixar o "
+                         f"login pronto — {r.detalhe}\nNa hora da retirada "
+                         "tento de novo (e peço o código se a Sympla pedir).")
+            await _send_html_with_fallback(bot, dono_id, texto)
+            if not r.sucesso:
+                from aiogram.types import BufferedInputFile
+                for imagem in (r.print_meio, r.screenshot):
+                    if imagem:
+                        try:
+                            await bot.send_photo(dono_id, BufferedInputFile(
+                                imagem, filename="sympla.png"))
+                        except Exception:
+                            logger.exception("sympla: falha ao enviar screenshot")
+
+        jobs.spawn(f"sympla_sessao:{chave}", _rodar)
 
 
 def _parse_dia_mes(s: str) -> tuple[int, int] | None:
@@ -1146,6 +1228,11 @@ async def tick(
         await run_finance_backup(sessionmaker, bot)
     except Exception:
         logger.exception("finance backup crashed")
+
+    try:
+        await run_sympla_sessao(sessionmaker, bot)
+    except Exception:
+        logger.exception("sympla sessao crashed")
 
     try:
         await run_sympla_pickup(sessionmaker, bot)
