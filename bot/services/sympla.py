@@ -618,12 +618,17 @@ async def _resolver_codigo(page, pedir_codigo) -> None:
         print_meio=await _screenshot_seguro(page))
 
 
+_SAIR_RE = re.compile(r"^\s*sair\s*$", re.I)
+
+
 async def _sessao_ativa(page) -> bool:
-    """Deslogado, o botão da conta abre "Que bom ter você aqui!" (visto ao
-    vivo). Clica até 3x porque clique antes da hidratação do React não faz
-    nada — sem a repetição, "não abriu o modal" seria lido como "logado".
-    Sem o botão na tela, não dá pra afirmar sessão: False."""
+    """Prova POSITIVA (print do dono, 23/10/2026): logado, o botão da conta
+    (avatar com as iniciais) abre um menu com nome, e-mail, "Minha conta"…
+    e "Sair". Deslogado, abre "Que bom ter você aqui!". Só "Sair" na tela
+    conta como sessão; nenhum dos dois depois de 3 cliques (clique antes da
+    hidratação do React não faz nada) = sem sessão — na dúvida, loga."""
     gatilho = page.get_by_role("button", name=_GATILHO_CONTA_RE).first
+    sair = page.get_by_text(_SAIR_RE).first
     try:
         await gatilho.wait_for(state="visible", timeout=15_000)
     except Exception:
@@ -633,12 +638,13 @@ async def _sessao_ativa(page) -> bool:
         await page.wait_for_timeout(3_000)
         if await _modal_login_aberto(page):
             return False
-        # logado: o clique abre o menu da conta — fecha antes de clicar de novo
-        try:
-            await page.keyboard.press("Escape")
-        except Exception:
-            pass
-    return True
+        if await _visivel(sair):
+            try:
+                await page.keyboard.press("Escape")
+            except Exception:
+                pass
+            return True
+    return False
 
 
 async def _login(page, creds: SymplaCredenciais, pedir_codigo=None) -> bool:

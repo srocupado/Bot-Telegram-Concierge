@@ -192,14 +192,15 @@ class _Home:
     """Botão da conta: deslogado abre o modal; logado não. `hidrata_no`:
     cliques antes disso não fazem nada (React ainda não hidratou)."""
 
-    def __init__(self, logado, hidrata_no=1, tem_botao=True):
+    def __init__(self, logado, hidrata_no=1, tem_botao=True, sem_menu=False):
+        self.sem_menu = sem_menu
         self.logado, self.hidrata_no, self.tem_botao = logado, hidrata_no, tem_botao
-        self.modal, self.cliques, self.preenchido = False, [], []
+        self.modal, self.menu, self.cliques, self.preenchido = False, False, [], []
         self.tela_codigo, self.digitado, self.codigo_certo = False, "", "123456"
         self.keyboard = self
 
     async def press(self, _k):
-        self.modal = False
+        self.modal = self.menu = False
 
     async def type(self, texto, delay=None):
         self.digitado = texto
@@ -218,6 +219,8 @@ class _Home:
             return _LocH(self, "recusa")
         if padrao.search("Senha inválida"):
             return _LocH(self, "-")
+        if padrao.search("Sair"):
+            return _LocH(self, "sair")
         return _LocH(self, "modal")
 
     def locator(self, sel):
@@ -228,7 +231,7 @@ class _Home:
         return _LocH(self, "caixas")
 
     def visivel(self, alvo):
-        return {"modal": self.modal, "conta": self.tem_botao,
+        return {"modal": self.modal, "sair": self.menu, "conta": self.tem_botao,
                 "tela_codigo": self.tela_codigo, "continuar": self.tela_codigo,
                 "recusa": self.tela_codigo and self.digitado not in ("", self.codigo_certo),
                 "caixas": self.tela_codigo, "senha": False}.get(alvo, False)
@@ -237,6 +240,7 @@ class _Home:
         self.cliques.append(alvo)
         if alvo == "conta" and self.cliques.count("conta") >= self.hidrata_no:
             self.modal = not self.logado
+            self.menu = self.logado and not self.sem_menu
         elif alvo == "entrar":
             self.tela_codigo = True
         elif alvo == "continuar" and self.digitado == self.codigo_certo:
@@ -276,9 +280,22 @@ def test_clique_antes_de_hidratar_nao_vira_logado(_sem_navegar) -> None:
 
 
 def test_login_que_pegou_segue(_sem_navegar) -> None:
+    """Prova positiva vista no print do dono: menu da conta com "Sair"."""
     h = _Home(logado=True)
     asyncio.run(sy._conferir_login(h))
+    assert h.cliques.count("conta") == 1
+
+
+def test_logado_so_com_sair_na_tela(_sem_navegar) -> None:
+    """Nem modal nem "Sair" depois de 3 cliques: não afirma sessão."""
+    h = _Home(logado=True, sem_menu=True)
+    assert asyncio.run(sy._sessao_ativa(h)) is False
     assert h.cliques.count("conta") == 3
+
+
+def test_logado_que_hidrata_tarde_ainda_e_reconhecido(_sem_navegar) -> None:
+    h = _Home(logado=True, hidrata_no=2)
+    assert asyncio.run(sy._sessao_ativa(h)) is True
 
 
 def test_sessao_salva_valida_nao_pede_login(_sem_navegar, monkeypatch) -> None:
