@@ -790,7 +790,12 @@ class _AvisoFalso:
 
 class _MensagemFalsa:
     def __init__(self):
+        import types
         self.log: list = []
+        # Message real do aiogram tem .bot e .chat — o /sympla_testar usa os
+        # dois pra pedir o código por e-mail ao dono.
+        self.bot = types.SimpleNamespace()
+        self.chat = types.SimpleNamespace(id=1)
 
     async def answer(self, texto, parse_mode=None):
         self.log.append(("answer", texto))
