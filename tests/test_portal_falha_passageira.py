@@ -132,3 +132,90 @@ def test_portal_inconclusivo_nao_e_chamado_de_fora_do_ar(monkeypatch) -> None:
                   inlabs_exc=dou_monitor.InlabsMaintenanceError("manutenção"))
     assert "fora do ar" not in txt
     assert "portal público" in txt
+
+
+# ───────────── fila: "checando agora" com as fontes fora (25/10/2026) ─────────────
+
+class _SessaoFila:
+    def __init__(self, keys):
+        self.keys = keys
+
+    async def scalars(self, _stmt):
+        return [SimpleNamespace(key=k) for k in self.keys]
+
+    async def commit(self):
+        return None
+
+
+def _disparar(monkeypatch, keys, fontes_fora):
+    from bot.services import jobs
+    disparos = []
+    monkeypatch.setattr(jobs, "job_em_andamento", lambda _k: False)
+    monkeypatch.setattr(jobs, "spawn", lambda chave, fab: disparos.append(chave) or True)
+    hoje = datetime.now(proactive.BRT).date().isoformat()
+    datas = asyncio.run(proactive._processar_notas_pendentes(
+        None, _SessaoFila([f"{hoje}:{k}" for k in keys]), SimpleNamespace(id=1),
+        fontes_fora=fontes_fora))
+    return datas, disparos
+
+
+def test_checagem_do_dia_nao_dispara_com_as_fontes_fora(monkeypatch) -> None:
+    """O job de entrada "all" só consulta o Inlabs: com a janela tendo
+    provado as fontes fora, ele falhava calado e a linha prometia resultado."""
+    datas, disparos = _disparar(monkeypatch, ["all"], fontes_fora=True)
+    assert datas == [] and disparos == []
+
+
+def test_nota_com_numero_continua_disparando_com_inlabs_fora(monkeypatch) -> None:
+    """Entrada com número tenta o PORTAL antes — vale disparar."""
+    datas, disparos = _disparar(monkeypatch, ["1400"], fontes_fora=True)
+    assert len(disparos) == 1
+
+
+def test_checagem_do_dia_dispara_com_as_fontes_de_pe(monkeypatch) -> None:
+    _datas, disparos = _disparar(monkeypatch, ["all"], fontes_fora=False)
+    assert len(disparos) == 1
+
+
+def test_linha_da_fila_cita_portal_e_inlabs_fora(monkeypatch) -> None:
+    hoje = datetime.now(proactive.BRT).date()
+
+    class _S(_Sessao):
+        async def scalars(self, stmt):
+            sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+            if "'nota_pendente'" in sql:
+                return [SimpleNamespace(key=f"{hoje.isoformat()}:all",
+                                        kind="nota_pendente", sent_at=None)]
+            return []
+
+    async def _vazio(*a, **kw):
+        return []
+    monkeypatch.setattr(proactive, "_mp_dias_pendentes", _vazio)
+    monkeypatch.setattr(proactive, "_cobrir_lacuna", _vazio)
+
+    async def _portal(*a, **kw):
+        raise dou_portal.PortalError("busca no portal falhou (3x): 502")
+
+    async def _fetch(_d):
+        raise dou_monitor.DouError("falha ao autenticar no Inlabs: timeout")
+
+    async def _none(*a, **kw):
+        return None
+
+    async def _false(*a, **kw):
+        return False
+    monkeypatch.setattr(dou_portal, "checar_dia_portal", _portal)
+    monkeypatch.setattr(dou_monitor, "fetch_mps", _fetch)
+    monkeypatch.setattr(dou_monitor, "inlabs_configurado", lambda: True)
+    monkeypatch.setattr(dou_monitor, "ultima_checagem_ok", lambda _d: None)
+    monkeypatch.setattr(proactive, "_janelas_restantes", lambda *_a: [19])
+    monkeypatch.setattr(proactive.settings, "dou_portal_fallback", True)
+    monkeypatch.setattr(proactive.settings, "dou_planalto_enabled", False)
+    monkeypatch.setattr(proactive, "already_notified", _false)
+    monkeypatch.setattr(proactive, "mark_notified", _none)
+    user = SimpleNamespace(id=77, dou_mp_subscribed=True, is_authorized=True,
+                           dou_ultimo_dia_ok=None)
+    facts = asyncio.run(proactive.collect_mp(_S(), user, [hoje]))
+    fila = [f.text for f in facts if f.kind == "nota_fila"]
+    assert fila and "portal do DOU e Inlabs sem resposta" in fila[0]
+    assert "checando agora" not in fila[0]

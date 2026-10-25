@@ -558,7 +558,7 @@ async def _tentar_nota_via_portal(
 
 
 async def _processar_notas_pendentes(
-    bot, session: AsyncSession, user: User,
+    bot, session: AsyncSession, user: User, *, fontes_fora: bool = False,
 ) -> list[date]:
     """Agenda as re-tentativas da fila de notas — NÃO espera por elas.
 
@@ -604,6 +604,15 @@ async def _processar_notas_pendentes(
                 await unmark_notified(session, user.id, "nota_pendente", r.key)
             continue
         numeros = [n for n in nums.split(",") if n and n != "all"] or None
+        if numeros is None and fontes_fora:
+            # Entrada "all" é CHECAGEM do dia, e o job dela só consulta o
+            # Inlabs (o portal só atende entrada com números). Com a checagem
+            # DESTA janela tendo provado as fontes fora, disparar era falhar
+            # calado em segundos — e a linha de status virava "checando
+            # agora; aviso o resultado" (25/10/2026: portal 502 + Inlabs com
+            # timeout de SSL, e o resultado prometido nunca veio). O dia segue
+            # em mp_pendente: a próxima janela re-checa portal-primeiro.
+            continue
         fila.append((d, numeros, r.key))
     # Pula quem já tem job vivo — a re-tentativa da janela anterior (ou o
     # pedido manual do dono) ainda está rodando. Sem isso a fila inteira
@@ -1711,6 +1720,13 @@ async def collect_mp(
         elif d.isoformat() in em_manutencao:
             estado = ("<b>na fila de checagem</b> — o Inlabs está em manutenção; "
                       "checo e envio quando ele voltar (pode não ser hoje)")
+        elif inlabs_fora and d in portal_erro:
+            # As DUAS fontes caíram nesta janela (25/10/2026: portal com 502
+            # e Inlabs com timeout de SSL) — "Inlabs instável" escondia a
+            # queda da fonte primária.
+            estado = ("<b>na fila de checagem</b> — portal do DOU e Inlabs "
+                      "sem resposta agora; re-checo a cada janela e aviso o "
+                      "resultado")
         elif inlabs_fora and inlabs_configurado():
             # A checagem DESTE run não alcançou o Inlabs: a nota não gera agora.
             # NÃO dizer "gerando"/"assim que responder" — soa iminente e o dono
@@ -2497,7 +2513,9 @@ async def run_for_user(
                            or settings.dou_portal_fallback)
     if user.dou_mp_subscribed and inlabs_ok_ou_portal:
         try:
-            disparadas = await _processar_notas_pendentes(bot, session, user)
+            disparadas = await _processar_notas_pendentes(
+                bot, session, user,
+                fontes_fora=getattr(user, "dou_fora_agora", False))
         except Exception:
             logger.exception("proactive: fila de notas pendentes falhou p/ user %s", user.id)
             disparadas = []

@@ -138,7 +138,7 @@ def test_fila_roda_mesmo_na_janela_sem_nada_a_enviar(monkeypatch) -> None:
     ):
         monkeypatch.setattr(proactive, coletor, _nada)
 
-    async def _fila(bot, session, user):
+    async def _fila(bot, session, user, **kw):
         chamou.append(user.id)
 
     monkeypatch.setattr(proactive, "_processar_notas_pendentes", _fila)
