@@ -241,6 +241,12 @@ async def _checar_via_portal(bot, session, user, target: date) -> bool:
     return False
 
 
+def _resumo_erro(exc: Exception) -> str:
+    """1ª linha, sem a URL enorme do httpx ("... for url 'https://…'")."""
+    linha = (str(exc).splitlines() or [""])[0]
+    return re.sub(r"\s+for url '[^']*'", "", linha).strip() or type(exc).__name__
+
+
 async def _rodar_nota(
     bot, user_id: int, target: date, only_numeros: list[str] | None,
     *, regerar: bool = False,
@@ -271,11 +277,17 @@ async def _rodar_nota(
         # contrário uma vez (11/08: /mp_dou_agora 01/08 foi no Inlabs com o
         # portal no ar e trouxe ementa mutilada do PDF) — a ordem é regra,
         # não otimização.
+        # Erro do portal (≠ resposta inconclusiva): o aviso final tem de
+        # dizer que a fonte primária CAIU. 25/10/2026: portal com 502 e
+        # Inlabs com timeout de SSL, e a mensagem dizia "o portal não foi
+        # conclusivo" — como se ele tivesse respondido.
+        portal_erro: str | None = None
         if only_numeros is None and settings.dou_portal_fallback:
             try:
                 if await _checar_via_portal(bot, session, user, target):
                     return
-            except Exception:
+            except Exception as exc:
+                portal_erro = _resumo_erro(exc)
                 logger.exception("checagem via portal falhou (%s); Inlabs "
                                  "desempata", target)
         elif only_numeros is not None and settings.dou_portal_fallback:
@@ -292,7 +304,8 @@ async def _rodar_nota(
                     usuario_esperando=True, regerar=regerar,
                 ):
                     return
-            except Exception:
+            except Exception as exc:
+                portal_erro = _resumo_erro(exc)
                 logger.exception("nota via portal falhou (%s); Inlabs "
                                  "desempata", target)
         try:
@@ -323,11 +336,18 @@ async def _rodar_nota(
                    if pendentes else f"{target.isoformat()}:all")
             if not await already_notified(session, user.id, "nota_pendente", key):
                 await mark_notified(session, user.id, "nota_pendente", key)
+            inlabs_txt = (f", e o Inlabs também falhou ({e})."
+                          if inlabs_configurado() else ".")
+            if portal_erro:
+                fontes = (f"⚠️ O portal do DOU (fonte primária) está fora do "
+                          f"ar agora ({portal_erro}){inlabs_txt}")
+            else:
+                fontes = (f"📄 O portal do DOU respondeu, mas não foi "
+                          f"conclusivo{inlabs_txt}")
             await bot.send_message(
                 user.id,
-                f"⚠️ {e}\n📄 O portal público também não foi conclusivo agora. "
-                "Deixei na fila: a re-checagem segue sozinha"
-                + (" (Inlabs OU portal)" if inlabs_configurado() else "")
+                f"{fontes}\nDeixei na fila: a re-checagem segue sozinha"
+                + (" (portal OU Inlabs)" if inlabs_configurado() else "")
                 + " e te aviso o resultado.",
                 parse_mode=None,
             )
