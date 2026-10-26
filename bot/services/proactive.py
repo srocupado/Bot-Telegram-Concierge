@@ -1383,10 +1383,31 @@ async def collect_mp(
             return (f"\n🛡️ Rede do Planalto conferida agora: nenhuma MP depois "
                     f"da {_num_fmt(str(n))}/{a} no site do Planalto (ele "
                     "costuma publicar no mesmo dia do DOU, às vezes horas "
-                    "depois). Os dias seguem na fila até o DOU confirmar.")
+                    "depois). Dia ainda aberto segue na fila até o DOU "
+                    "confirmar; dia encerrado recebe baixa pela rede.")
         if planalto_falhou:
             return "\n🛡️ O site do Planalto (rede de segurança) também não respondeu agora."
         return ""
+
+    # BAIXA PELA REDE DO PLANALTO (dono, 26/10/2026, com o in.gov.br fora pra
+    # todo mundo): dia ENCERRADO que o DOU não conseguiu checar (portal e
+    # Inlabs sem resposta) recebe baixa quando a sonda do Planalto respondeu
+    # "nenhuma MP depois da última entregue". MP do dia teria número acima
+    # dela e estaria lá. Sem margem extra além do encerramento: a sonda não
+    # olha pra dias — roda em TODA janela —, então MP que o Planalto publicar
+    # depois ainda é pega e anunciada; a baixa não desliga a detecção (nem a
+    # conferência com a Câmara). O DOU segue fonte primária: isto só age onde
+    # ele falhou. Planalto fora → nada muda (na dúvida, pendência).
+    from bot.services.dou_monitor import _dia_encerrado as _encerrado
+    planalto_baixas: set[date] = set()
+
+    def _baixa_pelo_planalto(d: date) -> bool:
+        if planalto_sem_novas and planalto_ultimo and _encerrado(d):
+            planalto_baixas.add(d)
+            logger.warning("proactive: DOU de %s fora — baixa pela rede do "
+                           "Planalto (nenhuma MP depois da %s)", d, planalto_ultimo)
+            return True
+        return False
 
     ok_dates: set[date] = set()
     inlabs_fora = False   # fetch RAISOU este run → Inlabs inacessível agora
@@ -1411,7 +1432,10 @@ async def collect_mp(
         # tick inteiro, com o mesmo desfecho. As datas puladas viram
         # pendência igual às falhas (re-checadas quando ele voltar).
         if inlabs_fora:
-            failed.append(d)
+            if _baixa_pelo_planalto(d):
+                ok_dates.add(d)
+            else:
+                failed.append(d)
             continue
         try:
             c = await _colher(d)
@@ -1434,7 +1458,10 @@ async def collect_mp(
                 provisorios.append(d)
         except Exception as exc:
             logger.warning("proactive: fetch_mps(%s) falhou: %s", d, exc)
-            failed.append(d)
+            if _baixa_pelo_planalto(d):
+                ok_dates.add(d)
+            else:
+                failed.append(d)
             inlabs_fora = True
             from bot.services.dou_monitor import InlabsMaintenanceError
             inlabs_manutencao = isinstance(exc, InlabsMaintenanceError)
@@ -1630,6 +1657,9 @@ async def collect_mp(
         # Mesmo curto-circuito da varredura: Inlabs fora neste run → não paga
         # a cascata de timeouts de novo; os dias seguem pendentes.
         if inlabs_fora:
+            if _baixa_pelo_planalto(d):
+                resolvidos.append(d)
+                continue
             logger.info("proactive: Inlabs fora neste run — retroativa de %s adiada", d)
             retro_falhos.append(d)
             continue
@@ -1638,7 +1668,10 @@ async def collect_mp(
         except Exception as exc:
             logger.warning("proactive: retroativa DOU %s ainda falhando: %s", d, exc)
             inlabs_fora = True
-            retro_falhos.append(d)
+            if _baixa_pelo_planalto(d):
+                resolvidos.append(d)
+            else:
+                retro_falhos.append(d)
             continue
         facts += c.facts
         if not c.baixa:
@@ -1650,6 +1683,18 @@ async def collect_mp(
                            "provisorio=%s)", d, c.completo, c.provisorio)
             continue
         resolvidos.append(d)
+    for d in sorted(planalto_baixas):
+        # A baixa diz a FONTE: não foi o DOU que confirmou. Vale também pra
+        # dia da varredura normal que nem estava pendente (ex.: ontem no
+        # briefing) — o dono precisa saber que aquele dia não veio do DOU.
+        n_, a_ = planalto_ultimo
+        facts.append(ProactiveFact(
+            "mp", "mp_retro", f"retro:{d.isoformat()}",
+            f"✅ DOU de {d.strftime('%d/%m')} baixado pela rede do Planalto "
+            f"(DOU fora do ar): nenhuma MP depois da {_num_fmt(str(n_))}/{a_}. "
+            "Se o Planalto publicar MP desse dia depois, a rede avisa.",
+            date_iso=None,
+        ))
     for d in sorted(resolvidos):
         # Dia já encerrado pelo PORTAL nesta mesma volta tem a própria linha
         # ✅ (com a evidência) — não duplica.

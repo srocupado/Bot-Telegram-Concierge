@@ -225,7 +225,8 @@ def test_linha_da_fila_cita_portal_e_inlabs_fora(monkeypatch) -> None:
 # Dono: "Não temos o Planalto como rede de segurança? Pq ela não foi
 # verificada?" — ela rodava, mas o resultado não aparecia no aviso.
 
-def _alarme_com_planalto(monkeypatch, sonda) -> str:
+def _alarme_com_planalto(monkeypatch, sonda, *, datas=None, pendentes=(),
+                         todos=False):
     from bot.services import dou_planalto
 
     class _S(_Sessao):
@@ -237,6 +238,9 @@ def _alarme_com_planalto(monkeypatch, sonda) -> str:
 
     async def _vazio(*a, **kw):
         return []
+
+    async def _pend(*a, **kw):
+        return list(pendentes)
 
     async def _portal(*a, **kw):
         raise dou_portal.PortalError("busca no portal falhou (3x): 502")
@@ -255,7 +259,7 @@ def _alarme_com_planalto(monkeypatch, sonda) -> str:
     monkeypatch.setattr(dou_monitor, "inlabs_configurado", lambda: True)
     monkeypatch.setattr(dou_monitor, "ultima_checagem_ok", lambda _d: None)
     monkeypatch.setattr(proactive, "_janelas_restantes", lambda *_a: [19])
-    monkeypatch.setattr(proactive, "_mp_dias_pendentes", _vazio)
+    monkeypatch.setattr(proactive, "_mp_dias_pendentes", _pend)
     monkeypatch.setattr(proactive, "_cobrir_lacuna", _vazio)
     monkeypatch.setattr(proactive.settings, "dou_portal_fallback", True)
     monkeypatch.setattr(proactive.settings, "dou_planalto_enabled", True)
@@ -264,7 +268,9 @@ def _alarme_com_planalto(monkeypatch, sonda) -> str:
     user = SimpleNamespace(id=77, dou_mp_subscribed=True, is_authorized=True,
                            dou_ultimo_dia_ok=None)
     hoje = datetime.now(proactive.BRT).date()
-    facts = asyncio.run(proactive.collect_mp(_S(), user, [hoje]))
+    facts = asyncio.run(proactive.collect_mp(_S(), user, datas or [hoje]))
+    if todos:
+        return facts
     return " | ".join(f.text for f in facts if f.kind == "mp_fail")
 
 
@@ -282,3 +288,54 @@ def test_dou_fora_e_planalto_fora_diz_os_dois(monkeypatch) -> None:
         raise RuntimeError("planalto timeout")
     txt = _alarme_com_planalto(monkeypatch, _sonda)
     assert "Planalto (rede de segurança) também não respondeu" in txt
+
+
+# ───────────── baixa pela rede do Planalto (dono, 26/10/2026) ─────────────
+
+def _sem_novas(ultimo, anos):
+    async def _s(*a, **kw):
+        return []
+    return _s(ultimo, anos)
+
+
+def _kinds(facts, kind):
+    return [f.text for f in facts if f.kind == kind]
+
+
+def test_dia_encerrado_com_dou_fora_recebe_baixa_pelo_planalto(monkeypatch) -> None:
+    from datetime import timedelta
+    ontem = datetime.now(proactive.BRT).date() - timedelta(days=2)
+    facts = _alarme_com_planalto(monkeypatch, _sem_novas, datas=[ontem], todos=True)
+    assert _kinds(facts, "mp_fail") == [], "dia baixado não pode alarmar"
+    retro = _kinds(facts, "mp_retro")
+    assert retro and "baixado pela rede do Planalto" in retro[0]
+    assert "nenhuma MP depois da 1.398/2026" in retro[0]
+
+
+def test_dia_aberto_nao_recebe_baixa_pelo_planalto(monkeypatch) -> None:
+    hoje = datetime.now(proactive.BRT).date()
+    facts = _alarme_com_planalto(monkeypatch, _sem_novas, datas=[hoje], todos=True)
+    assert _kinds(facts, "mp_retro") == []
+    assert any("Não consegui checar" in t for t in _kinds(facts, "mp_fail"))
+
+
+def test_planalto_fora_nao_da_baixa(monkeypatch) -> None:
+    from datetime import timedelta
+    d = datetime.now(proactive.BRT).date() - timedelta(days=2)
+
+    async def _fora(*a, **kw):
+        raise RuntimeError("planalto timeout")
+    facts = _alarme_com_planalto(monkeypatch, _fora, datas=[d], todos=True)
+    assert _kinds(facts, "mp_retro") == []
+    assert any("Não consegui checar" in t for t in _kinds(facts, "mp_fail"))
+
+
+def test_retroativa_pendente_tambem_baixa_pelo_planalto(monkeypatch) -> None:
+    from datetime import timedelta
+    hoje = datetime.now(proactive.BRT).date()
+    velho = hoje - timedelta(days=3)
+    facts = _alarme_com_planalto(monkeypatch, _sem_novas, datas=[hoje],
+                                 pendentes=[velho], todos=True)
+    retro = _kinds(facts, "mp_retro")
+    assert any(velho.strftime("%d/%m") in t and "rede do Planalto" in t for t in retro)
+    assert len(retro) == 1, "sem a linha genérica duplicada"
