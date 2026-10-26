@@ -1283,6 +1283,13 @@ async def collect_mp(
     # aviso de desistência. Regressão que EU introduzi em 12/09 ao corrigir a
     # perda da MP 1.391 — travei a porta e não abri a saída.
     planalto_sem_novas = False
+    # O que a rede do Planalto APUROU nesta janela, pra ser DITO quando o DOU
+    # falha. 26/10/2026, dono: "Não temos o Planalto como rede de segurança?
+    # Pq ela não foi verificada?" — ela rodava em toda janela, mas o "nenhuma
+    # MP nova" só servia de critério interno; o aviso de DOU fora não dizia
+    # que a rede tinha conferido (nem que ela também tinha falhado).
+    planalto_ultimo: tuple[int, int] | None = None
+    planalto_falhou = False
 
     async def _rede_planalto() -> list[ProactiveFact]:
         """Rede principal: 'existe MP depois da última que entreguei?'
@@ -1323,13 +1330,16 @@ async def collect_mp(
             )
         except Exception as exc:
             logger.warning("proactive: sonda do Planalto falhou (%s)", exc)
+            nonlocal planalto_falhou
+            planalto_falhou = True
             return []
         if not novas:
             # SÓ aqui: a sonda rodou, respondeu, e não há MP acima da última
             # entregue. Falha de rede ou ausência de régua (nenhuma MP
             # entregue ainda) NÃO passam por este ponto.
-            nonlocal planalto_sem_novas
+            nonlocal planalto_sem_novas, planalto_ultimo
             planalto_sem_novas = True
+            planalto_ultimo = (ultimo, ano_ultimo)
 
         achados: list[ProactiveFact] = []
         for mp in novas:
@@ -1363,6 +1373,20 @@ async def collect_mp(
         return achados
 
     facts += await _rede_planalto()
+
+    def _linha_planalto() -> str:
+        """Complemento dos avisos de DOU não checado: o que a rede do
+        Planalto apurou. Vazio quando ela não rodou (desligada/sem régua) ou
+        achou MP (aí a MP vem como aviso próprio, acima)."""
+        if planalto_sem_novas and planalto_ultimo:
+            n, a = planalto_ultimo
+            return (f"\n🛡️ Rede do Planalto conferida agora: nenhuma MP depois "
+                    f"da {_num_fmt(str(n))}/{a} no site do Planalto (ele "
+                    "costuma publicar no mesmo dia do DOU, às vezes horas "
+                    "depois). Os dias seguem na fila até o DOU confirmar.")
+        if planalto_falhou:
+            return "\n🛡️ O site do Planalto (rede de segurança) também não respondeu agora."
+        return ""
 
     ok_dates: set[date] = set()
     inlabs_fora = False   # fetch RAISOU este run → Inlabs inacessível agora
@@ -1527,7 +1551,8 @@ async def collect_mp(
                         + (" O Inlabs também não respondeu pra desempatar — "
                            "sigo re-checando os dois."
                            if inlabs_configurado()
-                           else " Sigo re-checando nas próximas janelas."),
+                           else " Sigo re-checando nas próximas janelas.")
+                        + _linha_planalto(),
                         date_iso=None,
                     ))
                 continue
@@ -1564,7 +1589,7 @@ async def collect_mp(
                     f"⚠️ <b>Não consegui checar o DOU</b> de {datas} "
                     f"({causa}). "
                     + "NÃO assuma que não houve MP — confira depois com "
-                    "<code>/mp_dou_agora</code>.",
+                    "<code>/mp_dou_agora</code>." + _linha_planalto(),
                     date_iso=None,
                 ))
 

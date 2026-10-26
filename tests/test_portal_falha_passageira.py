@@ -219,3 +219,66 @@ def test_linha_da_fila_cita_portal_e_inlabs_fora(monkeypatch) -> None:
     fila = [f.text for f in facts if f.kind == "nota_fila"]
     assert fila and "portal do DOU e Inlabs sem resposta" in fila[0]
     assert "checando agora" not in fila[0]
+
+
+# ───────────── rede do Planalto dita no aviso (26/10/2026) ─────────────
+# Dono: "Não temos o Planalto como rede de segurança? Pq ela não foi
+# verificada?" — ela rodava, mas o resultado não aparecia no aviso.
+
+def _alarme_com_planalto(monkeypatch, sonda) -> str:
+    from bot.services import dou_planalto
+
+    class _S(_Sessao):
+        async def scalars(self, stmt):
+            sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+            if "dou_seen" in sql:
+                return [SimpleNamespace(numero="1398", ano=2026)]
+            return []
+
+    async def _vazio(*a, **kw):
+        return []
+
+    async def _portal(*a, **kw):
+        raise dou_portal.PortalError("busca no portal falhou (3x): 502")
+
+    async def _fetch(_d):
+        raise dou_monitor.DouError("falha ao autenticar no Inlabs: timeout")
+
+    async def _none(*a, **kw):
+        return None
+
+    async def _false(*a, **kw):
+        return False
+    monkeypatch.setattr(dou_planalto, "sondar_novas", sonda)
+    monkeypatch.setattr(dou_portal, "checar_dia_portal", _portal)
+    monkeypatch.setattr(dou_monitor, "fetch_mps", _fetch)
+    monkeypatch.setattr(dou_monitor, "inlabs_configurado", lambda: True)
+    monkeypatch.setattr(dou_monitor, "ultima_checagem_ok", lambda _d: None)
+    monkeypatch.setattr(proactive, "_janelas_restantes", lambda *_a: [19])
+    monkeypatch.setattr(proactive, "_mp_dias_pendentes", _vazio)
+    monkeypatch.setattr(proactive, "_cobrir_lacuna", _vazio)
+    monkeypatch.setattr(proactive.settings, "dou_portal_fallback", True)
+    monkeypatch.setattr(proactive.settings, "dou_planalto_enabled", True)
+    monkeypatch.setattr(proactive, "already_notified", _false)
+    monkeypatch.setattr(proactive, "mark_notified", _none)
+    user = SimpleNamespace(id=77, dou_mp_subscribed=True, is_authorized=True,
+                           dou_ultimo_dia_ok=None)
+    hoje = datetime.now(proactive.BRT).date()
+    facts = asyncio.run(proactive.collect_mp(_S(), user, [hoje]))
+    return " | ".join(f.text for f in facts if f.kind == "mp_fail")
+
+
+def test_dou_fora_diz_que_o_planalto_conferiu_sem_mp_nova(monkeypatch) -> None:
+    async def _sonda(ultimo, anos):
+        assert ultimo == 1398
+        return []
+    txt = _alarme_com_planalto(monkeypatch, _sonda)
+    assert "Não consegui checar" in txt
+    assert "Rede do Planalto conferida agora: nenhuma MP depois da 1.398/2026" in txt
+
+
+def test_dou_fora_e_planalto_fora_diz_os_dois(monkeypatch) -> None:
+    async def _sonda(ultimo, anos):
+        raise RuntimeError("planalto timeout")
+    txt = _alarme_com_planalto(monkeypatch, _sonda)
+    assert "Planalto (rede de segurança) também não respondeu" in txt
