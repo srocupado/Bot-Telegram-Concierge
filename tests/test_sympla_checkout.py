@@ -382,3 +382,34 @@ def test_handler_so_consome_o_codigo_quando_ha_login_esperando(monkeypatch) -> N
         return await espera
     assert asyncio.run(_com_espera()) == "123456"
     assert respostas and "Código recebido" in respostas[0]
+
+
+def test_clique_que_trava_cai_pro_foco_e_enter(_sem_navegar, monkeypatch) -> None:
+    """28/10/2026, 17h30: bounding_box estourou com o "Perfil" visível e a
+    exceção derrubou a checagem de sessão inteira."""
+    h = _Home(logado=True)
+
+    async def _trava(page, loc, timeout_ms=10_000):
+        raise TimeoutError("Locator.bounding_box: Timeout 10000ms exceeded.")
+    monkeypatch.setattr(sy, "_clicar", _trava)
+
+    async def _focus(self, timeout=None):
+        self.h.focado = self.alvo
+    monkeypatch.setattr(_LocH, "focus", _focus, raising=False)
+
+    async def _press(tecla):
+        if tecla == "Enter" and getattr(h, "focado", None) == "conta":
+            h.clicar("conta")
+        else:
+            h.modal = h.menu = False
+    h.press = _press
+    assert asyncio.run(sy._sessao_ativa(h)) is True
+
+
+def test_clique_e_enter_falhando_nao_derrubam_a_checagem(_sem_navegar, monkeypatch) -> None:
+    h = _Home(logado=True)
+
+    async def _trava(page, loc, timeout_ms=10_000):
+        raise TimeoutError("bounding_box")
+    monkeypatch.setattr(sy, "_clicar", _trava)
+    assert asyncio.run(sy._sessao_ativa(h)) is False, "sem prova → sem sessão, sem exceção"

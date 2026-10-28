@@ -621,6 +621,28 @@ async def _resolver_codigo(page, pedir_codigo) -> None:
 _SAIR_RE = re.compile(r"^\s*sair\s*$", re.I)
 
 
+async def _acionar_conta(page, gatilho) -> None:
+    """Clique no botão da conta que não derruba a etapa se a medição da
+    posição travar. Quarta 28/10/2026, 17h30 no Pi: o botão "Perfil" estava
+    visível, mas o bounding_box estourou 10s (página ainda ocupada logo
+    depois de carregar) e a exceção matou a checagem inteira. Agora: falhou o
+    clique por coordenada → foco + Enter (o botão é um gatilho Radix, que
+    abre com Enter) → e, falhando também, só espera; a volta seguinte do
+    laço tenta de novo."""
+    try:
+        await _clicar(page, gatilho)
+        return
+    except Exception as exc:
+        logger.warning("sympla: clique no botão da conta falhou (%s) — "
+                       "tento foco + Enter", str(exc).splitlines()[0][:120])
+    try:
+        await gatilho.focus(timeout=5_000)
+        await page.keyboard.press("Enter")
+    except Exception as exc:
+        logger.warning("sympla: foco + Enter também falhou (%s)",
+                       str(exc).splitlines()[0][:120])
+
+
 async def _sessao_ativa(page) -> bool:
     """Prova POSITIVA (print do dono, 23/10/2026): logado, o botão da conta
     (avatar com as iniciais) abre um menu com nome, e-mail, "Minha conta"…
@@ -634,7 +656,7 @@ async def _sessao_ativa(page) -> bool:
     except Exception:
         return False
     for _ in range(3):
-        await _clicar(page, gatilho)
+        await _acionar_conta(page, gatilho)
         await page.wait_for_timeout(3_000)
         if await _modal_login_aberto(page):
             return False
