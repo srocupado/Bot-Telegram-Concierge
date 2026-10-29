@@ -1228,3 +1228,36 @@ def test_elemento_que_continua_fora_da_tela_falha_dizendo_isso() -> None:
     with pytest.raises(sy.SymplaError, match="fora da tela"):
         asyncio.run(sy._clicar(pagina, _Teimoso()))
     assert pagina.cliques == []
+
+
+# ───────────── 29/10/2026: "+" traduzido e "esgotado" que não era ─────────────
+
+def test_mais_reconhece_o_rotulo_novo_em_portugues() -> None:
+    """Visto ao vivo: aria-label "Aumentar quantidade de ingressos inteira".
+    Com o regex antigo o bot passou 3 min com o lote aberto sem achar o "+"."""
+    for rotulo in ("Aumentar quantidade de ingressos inteira",
+                   "Aumentar quantidade de ingressos Meia", "Increase Amount"):
+        assert sy._MAIS_RE.search(rotulo), rotulo
+    assert not sy._MAIS_RE.search("Diminuir quantidade de ingressos inteira")
+
+
+def test_cloudflare_na_pagina_do_evento_nao_vira_esgotado(monkeypatch) -> None:
+    """Quarta 28/10/2026: tela = desafio do Cloudflare e a mensagem dizia
+    'esgotado ou ainda não iniciado'."""
+    async def _cf(_p):
+        return True
+    monkeypatch.setattr(sy, "_cloudflare_na_tela", _cf)
+    pagina = _PaginaIngressoFalsa(lotes=())
+    with pytest.raises(sy.SymplaError) as e:
+        asyncio.run(sy._selecionar_e_reservar(pagina, 2))
+    assert "Cloudflare" in str(e.value) and "NÃO é lote esgotado" in str(e.value)
+    assert not pagina.comprou
+
+
+def test_sem_lote_aberto_diz_o_estado_de_cada_lote(monkeypatch) -> None:
+    async def _estado(_p):
+        return "Ingresso Antecipado 12h (Quinta-feira): Esgotado"
+    monkeypatch.setattr(sy, "_estado_lotes", _estado)
+    pagina = _PaginaIngressoFalsa(lotes=())
+    with pytest.raises(sy.SymplaError, match="Quinta-feira\\): Esgotado"):
+        asyncio.run(sy._selecionar_e_reservar(pagina, 2))

@@ -272,19 +272,35 @@ def nome_janela(dia: int, hora: int) -> str:
 # quando o evento for publicado (1 min antes da liberação, ver módulo).
 INICIO_ANTECEDENCIA = timedelta(minutes=5)
 # Intervalo entre tentativas de achar o evento recém-publicado.
-POLL_INTERVALO_S = 2.0
+# 2s fazia ~90 visitas à busca entre 17h56 e 17h59, antes de o evento
+# existir — o ritmo que aciona o Cloudflare (quarta 28/10/2026). Ver também
+# BUSCA_ANTECEDENCIA_S.
+POLL_INTERVALO_S = 5.0
+# A busca só começa este tanto antes da hora-alvo (o evento sai ~1 min
+# antes): login às 17h55, busca a partir das 17h58m30s.
+BUSCA_ANTECEDENCIA_S = 90.0
 # Desiste de procurar o evento depois disso (publicação atrasada/sumida).
 POLL_TIMEOUT_S = 180.0
 # Depois da hora de abertura, recarrega a página do evento até um lote abrir.
 # Na quinta o evento JÁ existe às 11h55 e o lote está "Não iniciado" até as
 # 12h00 — sem esperar, o bot desistia antes de abrir.
 LOTE_ESPERA_S = 180.0
-LOTE_RECARGA_S = 5.0
+# Quinta 29/10/2026: o lote ainda estava aberto às 12h00m48s (o dono retirou
+# nessa hora pelo celular) e o bot, recarregando das 12h00 às 12h03, não viu
+# lote aberto em nenhuma recarga. Cada carga de página no Pi é lenta, então
+# nos primeiros LOTE_RAJADA_S a recarga é IMEDIATA (a própria carga já é a
+# pausa); depois, LOTE_RECARGA_S entre recargas, pra não acionar o
+# Cloudflare. A 1ª carga sai LOTE_PRIMEIRA_APOS_S depois da hora: pedida
+# exatamente às 12h00m00s ela pode ainda vir com o lote "Não iniciado".
+LOTE_RAJADA_S = 90.0
+LOTE_RECARGA_S = 10.0
+LOTE_PRIMEIRA_APOS_S = 0.5
 # Prazo pra abrir o formulário de login. Medido com a CPU limitada: 6x
 # levou ~19s, 12x ~40s (do goto até o formulário). O Pi real não foi medido.
 LOGIN_ABRIR_TIMEOUT_S = 120.0
 BUSCA_TIMEOUT_MS = 60_000
-CLOUDFLARE_ESPERA_S = 30.0
+# 30s não bastou no Pi (quarta 28/10/2026).
+CLOUDFLARE_ESPERA_S = 60.0
 
 
 # ───────────────────────── automação (Playwright) ─────────────────────────
@@ -309,6 +325,12 @@ CHROMIUM_ARGS = [
     # sessão (só sympla.com.br, com credencial do próprio dono).
     "--no-sandbox",
     "--disable-dev-shm-usage",
+    # Sem imagens: o fluxo não depende de nenhuma (clique por coordenada de
+    # botão, texto, data-testid) e elas eram o grosso de cada carga de
+    # página no Pi — onde a corrida pelo lote se perde em segundos (quinta
+    # 29/10/2026). Flag nativa do Chromium: sem interceptar requisição (o
+    # que custaria uma ida ao Python por requisição).
+    "--blink-settings=imagesEnabled=false",
 ]
 
 
@@ -842,8 +864,48 @@ _JS_NOME_DO_LOTE = """e => { let n = e; for (let i = 0; i < 10 && n; i++) {
     return (n.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean)[0] || '';
 } return ''; }"""
 
+# Estado escrito em cada lote ("Esgotado", "Não iniciado"…), pra mensagem
+# de falha dizer QUAL dos casos foi — "esgotado ou ainda não iniciado" não
+# deixava saber se o bot chegou tarde ou cedo (quinta 29/10/2026).
+_JS_ESTADO_LOTES = """() => {
+  const st = /^(esgotado|n[ãa]o iniciado|encerrad[oa]|vendas encerradas|indispon[íi]vel|em breve)$/i;
+  const out = [];
+  for (const el of document.querySelectorAll('body *')) {
+    if (el.children.length || !el.offsetParent) continue;
+    const t = (el.innerText || '').trim();
+    if (!st.test(t)) continue;
+    let n = el, nome = '';
+    for (let i = 0; i < 10 && n; i++) {
+      n = n.parentElement;
+      if (n && /Vendas até|Grátis|R\\$/.test(n.innerText || '')) {
+        nome = (n.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean)[0] || '';
+        break;
+      }
+    }
+    out.push((nome ? nome + ': ' : '') + t);
+  }
+  return [...new Set(out)].slice(0, 8);
+}"""
+
+
+async def _estado_lotes(page) -> str:
+    try:
+        itens = await page.evaluate(_JS_ESTADO_LOTES)
+        return " | ".join(i for i in itens if isinstance(i, str)) or "nenhum estado escrito na tela"
+    except Exception:
+        return "não consegui ler o estado dos lotes"
+
+
 # Chamadas de rede que NÃO são a reserva (telemetria, desafio do Cloudflare).
 _RUIDO_REDE = re.compile(r"analytic|collect|track|log|pixel|challenge|recommend", re.I)
+
+
+# O "+" de cada lote. Quinta 29/10/2026: a Sympla trocou o aria-label de
+# "Increase Amount" pra "Aumentar quantidade de ingressos <lote>" (visto ao
+# vivo) — o bot passou 3 min na página com o lote ABERTO (o dono retirou às
+# 12h00m48s) sem achar o botão, e relatou "esgotado ou não iniciado".
+# Aceita os dois.
+_MAIS_RE = re.compile(r"^(increase amount$|aumentar quantidade)", re.I)
 
 
 async def _escolher_lote(page):
@@ -854,8 +916,7 @@ async def _escolher_lote(page):
     os dois lotes assim, a página não tinha nenhum. Então o primeiro "+"
     habilitado é o primeiro lote que dá pra retirar AGORA; não o primeiro
     da lista (na quinta às 12h, o de quarta estará esgotado em cima)."""
-    for el in await page.get_by_role(
-            "button", name=re.compile(r"^increase amount$", re.I)).all():
+    for el in await page.get_by_role("button", name=_MAIS_RE).all():
         try:
             if await el.is_visible() and await el.is_enabled():
                 nome = ""
@@ -881,17 +942,37 @@ async def _esperar_lote_abrir(page, url: str, abre_em: datetime | None) -> None:
     if abre_em is None:
         return
     import time as _time
-    falta = (abre_em - datetime.now(BRT)).total_seconds()
+    falta = (abre_em - datetime.now(BRT)).total_seconds() + LOTE_PRIMEIRA_APOS_S
     if falta > 0:
         await page.wait_for_timeout(int(falta * 1000))
-        await _ir(page, url)
-    prazo = _time.monotonic() + LOTE_ESPERA_S
+        await _carregar_lote(page, url)
+    inicio = _time.monotonic()
+    prazo = inicio + LOTE_ESPERA_S
     while True:
-        el, _ = await _escolher_lote(page)
-        if el is not None or _time.monotonic() >= prazo:
+        if await _cloudflare_na_tela(page):
+            await _passar_cloudflare(page)
+        el, nome = await _escolher_lote(page)
+        if el is not None:
+            logger.info("sympla: lote aberto visto às %s (%s)",
+                        datetime.now(BRT).strftime("%H:%M:%S"), nome or "?")
             return
-        await page.wait_for_timeout(int(LOTE_RECARGA_S * 1000))
-        await _ir(page, url)
+        logger.info("sympla: %s sem lote aberto — %s",
+                    datetime.now(BRT).strftime("%H:%M:%S"), await _estado_lotes(page))
+        if _time.monotonic() >= prazo:
+            return
+        if _time.monotonic() - inicio >= LOTE_RAJADA_S:
+            await page.wait_for_timeout(int(LOTE_RECARGA_S * 1000))
+        await _carregar_lote(page, url)
+
+
+async def _carregar_lote(page, url: str) -> None:
+    """Uma carga da página do evento, com o tempo medido no log — a corrida
+    da quinta 29/10/2026 se perdeu sem saber quanto cada carga levava."""
+    import time as _time
+    t0 = _time.monotonic()
+    await _ir(page, url)
+    logger.info("sympla: página do evento carregada às %s em %.1fs",
+                datetime.now(BRT).strftime("%H:%M:%S"), _time.monotonic() - t0)
 
 
 async def _selecionar_e_reservar(page, qty: int) -> str:
@@ -911,10 +992,16 @@ async def _selecionar_e_reservar(page, qty: int) -> str:
 
     mais, lote = await _escolher_lote(page)
     if mais is None:
+        if await _cloudflare_na_tela(page):
+            # Quarta 28/10/2026: a tela era o desafio do Cloudflare e a
+            # mensagem dizia "esgotado ou ainda não iniciado" — mentira.
+            raise SymplaError(
+                "travei na verificação anti-robô do Cloudflare na página do "
+                "evento — NÃO é lote esgotado; não deu pra ver os lotes.")
         painel = await _dump_clicaveis(page)
         raise SymplaError(
-            "nenhum lote com retirada aberta agora (esgotado ou ainda não "
-            f"iniciado). Elementos visíveis na tela: {painel}")
+            f"nenhum lote com retirada aberta agora. Estado dos lotes na "
+            f"tela: {await _estado_lotes(page)}. Elementos visíveis: {painel}")
     for _ in range(qty):
         await _clicar(page, mais, 30_000)
         await page.wait_for_timeout(500)
@@ -1237,6 +1324,8 @@ async def retirar_ingresso(
     async def _avisar(nova: str) -> None:
         nonlocal etapa
         etapa = nova
+        logger.info("sympla: etapa '%s' às %s", nova,
+                    datetime.now(BRT).strftime("%H:%M:%S"))
         if on_etapa is not None:
             try:
                 await on_etapa(nova)
@@ -1259,6 +1348,12 @@ async def retirar_ingresso(
                 await _salvar_sessao(context)
 
                 await _avisar("localizar o evento da semana")
+                if abre_em is not None:
+                    espera = (abre_em - datetime.now(BRT)).total_seconds() - BUSCA_ANTECEDENCIA_S
+                    if espera > 0:
+                        # Visitar a busca antes de o evento poder existir só
+                        # acumula visita pro Cloudflare (quarta 28/10/2026).
+                        await page.wait_for_timeout(int(espera * 1000))
                 evento = None
                 import time as _time
                 deadline = _time.monotonic() + poll_timeout_s

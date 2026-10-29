@@ -181,12 +181,25 @@ def _rodar_espera(monkeypatch, pagina, abre_em):
 
 
 def test_espera_a_hora_e_recarrega_ate_o_lote_abrir(monkeypatch) -> None:
+    """Quinta 29/10/2026: lote aberto até pelo menos 12h00m48s e o bot, com
+    pausa de 5s + carga lenta no Pi, não viu. Nos primeiros LOTE_RAJADA_S a
+    recarga é imediata (a própria carga é a pausa); a 1ª carga sai meio
+    segundo depois da hora, não exatamente nela."""
     pagina = _PaginaLote(abre_na_recarga=3)
     abre_em = datetime.now(BRT) + timedelta(seconds=30)
     _rodar_espera(monkeypatch, pagina, abre_em)
-    assert 29_000 <= pagina.esperas[0] <= 30_000, "espera parado até a abertura"
+    assert 29_500 <= pagina.esperas[0] <= 30_500, "espera parado até a abertura (+0,5s)"
+    assert pagina.recargas == 3
+    assert pagina.esperas[1:] == [], "na rajada, recarga sem pausa"
+
+
+def test_depois_da_rajada_recarrega_com_pausa(monkeypatch) -> None:
+    monkeypatch.setattr(sy, "LOTE_RAJADA_S", 0.0)
+    pagina = _PaginaLote(abre_na_recarga=3)
+    _rodar_espera(monkeypatch, pagina, datetime.now(BRT) + timedelta(seconds=1))
     assert pagina.recargas == 3
     assert all(e == sy.LOTE_RECARGA_S * 1000 for e in pagina.esperas[1:])
+    assert len(pagina.esperas) == 3
 
 
 def test_lote_que_nunca_abre_desiste_no_prazo(monkeypatch) -> None:
