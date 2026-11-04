@@ -975,6 +975,22 @@ async def _carregar_lote(page, url: str) -> None:
                 datetime.now(BRT).strftime("%H:%M:%S"), _time.monotonic() - t0)
 
 
+# Reserva: "Need retry. Reservation locked" (RES014) é pedido explícito de
+# nova tentativa (quarta 04/11/2026). Prazo total pra o checkout abrir,
+# contando as re-tentativas.
+_RESERVA_RETRY_RE = re.compile(r"need retry|reservation locked|RES014", re.I)
+RESERVA_PRAZO_S = 45.0
+RESERVA_RETENTATIVAS = 6
+RESERVA_PAUSA_S = 1.5
+# Print do dono no mesmo dia: com o RES014, a própria página mostrava "A
+# página está com alto número de acessos. Aguarde enquanto tentamos conexão
+# com os nossos servidores" — o SITE já estava re-tentando (fila), e o bot
+# desistiu em 21s. Com esse aviso na tela o bot só espera (re-clicar
+# poderia reiniciar a tentativa do site), até RESERVA_FILA_MAX_S.
+_FILA_RE = re.compile(r"alto n[úu]mero de acessos|aguarde enquanto tentamos", re.I)
+RESERVA_FILA_MAX_S = 300.0
+
+
 async def _selecionar_e_reservar(page, qty: int) -> str:
     """Seleciona `qty` ingressos do primeiro lote disponível, clica em
     comprar e só volta quando a página de checkout abriu. Devolve o nome do
@@ -1037,11 +1053,46 @@ async def _selecionar_e_reservar(page, qty: int) -> str:
         inicio = _time.monotonic()
         await page.wait_for_timeout(3_000)
         print_meio = await _screenshot_seguro(page)
-        try:
-            await page.wait_for_url(re.compile(r"/checkout/"), timeout=17_000)
-            return lote
-        except Exception:
-            pass
+        # Quarta 04/11/2026: a reserva voltou 200 com {"message": "Need retry.
+        # Reservation locked", "code": "RES014"} e o bot só esperou o
+        # checkout, que nunca viria. "Need retry" é a própria Sympla pedindo
+        # outra tentativa — o que uma pessoa faria clicando de novo. Só
+        # re-clica com esse pedido explícito na resposta (nunca às cegas).
+        vistas = 0
+        retentativas = 0
+        prazo = inicio + RESERVA_PRAZO_S
+        fila_avisada = False
+        aviso_fila = page.get_by_text(_FILA_RE).first
+        while _time.monotonic() < prazo:
+            try:
+                await page.wait_for_url(re.compile(r"/checkout/"), timeout=2_000)
+                return lote
+            except Exception:
+                pass
+            if await _visivel(aviso_fila):
+                # O site está na fila re-tentando sozinho: espera ele.
+                prazo = max(prazo, min(_time.monotonic() + 15,
+                                       inicio + RESERVA_FILA_MAX_S))
+                if not fila_avisada:
+                    fila_avisada = True
+                    logger.warning("sympla: site em fila ('alto número de "
+                                   "acessos') às %s — aguardando",
+                                   datetime.now(BRT).strftime("%H:%M:%S"))
+                vistas = len(respostas)
+                continue
+            novas, vistas = respostas[vistas:], len(respostas)
+            if (any(_RESERVA_RETRY_RE.search(r) for r in novas)
+                    and retentativas < RESERVA_RETENTATIVAS):
+                retentativas += 1
+                logger.warning("sympla: reserva pediu nova tentativa (RES014) — "
+                               "clico em comprar de novo (%d/%d)",
+                               retentativas, RESERVA_RETENTATIVAS)
+                await page.wait_for_timeout(int(RESERVA_PAUSA_S * 1000))
+                try:
+                    await _clicar(page, comprar, 10_000)
+                except Exception as exc:
+                    logger.warning("sympla: re-clique em comprar falhou (%s)",
+                                   str(exc).splitlines()[0][:120])
         await page.wait_for_timeout(500)  # respostas ainda sendo lidas
         avisos: list[str] = []
         for loc in await page.locator(
@@ -1054,7 +1105,10 @@ async def _selecionar_e_reservar(page, qty: int) -> str:
                 continue
         raise SymplaError(
             f"cliquei em comprar ({qty} do lote '{lote}') e o checkout não "
-            f"abriu em {_time.monotonic() - inicio:.0f}s. "
+            f"abriu em {_time.monotonic() - inicio:.0f}s"
+            + (f" (re-cliquei {retentativas}x a pedido da Sympla)" if retentativas else "")
+            + (" — a Sympla mostrou 'alto número de acessos' (fila)" if fila_avisada else "")
+            + ". "
             f"Resposta da Sympla depois do clique: "
             f"{' || '.join(respostas[-6:]) or 'nenhuma chamada de reserva registrada'}. "
             f"Avisos na tela: {' | '.join(avisos[:5]) or 'nenhum'}. "

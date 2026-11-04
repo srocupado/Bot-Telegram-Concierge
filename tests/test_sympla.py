@@ -1051,7 +1051,13 @@ class _PaginaIngressoFalsa:
     ao clique. `limite`: máximo por pessoa."""
 
     def __init__(self, lotes=(("Ingresso Antecipado 18h", True, True),),
-                 abre_checkout=True, respostas=(), avisos=(), limite=10):
+                 abre_checkout=True, respostas=(), avisos=(), limite=10,
+                 abre_no_clique=1, fila_voltas=0):
+        # abre_no_clique: o N-ésimo clique em comprar abre o checkout (o 1º
+        # pode voltar RES014). fila_voltas: por quantas checagens a tela
+        # mostra "alto número de acessos" antes de o checkout abrir sozinho.
+        self.abre_no_clique, self.fila_voltas = abre_no_clique, fila_voltas
+        self.cliques_comprar = 0
         self.qtd = 0
         self.limite = limite
         self.comprou = False
@@ -1066,7 +1072,9 @@ class _PaginaIngressoFalsa:
     async def click(self, x, y):
         if (x, y) == (50, 50):
             self.comprou = True
-            if self.abre_checkout:
+            self.cliques_comprar += 1
+            if (self.abre_checkout and not self.fila_voltas
+                    and self.cliques_comprar >= self.abre_no_clique):
                 self.url = "https://www.sympla.com.br/checkout/abc"
             for r in self._respostas:
                 for f in self._ouvintes:
@@ -1091,6 +1099,24 @@ class _PaginaIngressoFalsa:
 
     def on(self, evento, f):
         self._ouvintes.append(f)
+
+    def get_by_text(self, padrao):
+        pagina = self
+
+        class _Fila:
+            @property
+            def first(self):
+                return self
+
+            async def is_visible(self):
+                if pagina.fila_voltas <= 0:
+                    return False
+                pagina.fila_voltas -= 1
+                if pagina.fila_voltas == 0 and pagina.abre_checkout:
+                    pagina.url = "https://www.sympla.com.br/checkout/abc"
+                return True
+        assert padrao.search("A página está com alto número de acessos")
+        return _Fila()
 
     def remove_listener(self, evento, f):
         self._ouvintes.remove(f)
@@ -1261,3 +1287,44 @@ def test_sem_lote_aberto_diz_o_estado_de_cada_lote(monkeypatch) -> None:
     pagina = _PaginaIngressoFalsa(lotes=())
     with pytest.raises(sy.SymplaError, match="Quinta-feira\\): Esgotado"):
         asyncio.run(sy._selecionar_e_reservar(pagina, 2))
+
+
+# ───────────── 04/11/2026: RES014 "Need retry" e a fila da Sympla ─────────────
+
+@pytest.fixture(autouse=True)
+def _reserva_rapida(monkeypatch):
+    monkeypatch.setattr(sy, "RESERVA_PRAZO_S", 0.3)
+    monkeypatch.setattr(sy, "RESERVA_PAUSA_S", 0.0)
+
+
+_RES014 = ('{"errors":[{"message":"Need retry. Reservation locked",'
+           '"code":"RES014"}]}')
+
+
+def test_res014_faz_clicar_de_novo_e_o_checkout_abre(monkeypatch) -> None:
+    monkeypatch.setattr(sy, "RESERVA_PRAZO_S", 5.0)
+    pagina = _PaginaIngressoFalsa(
+        respostas=[_RespostaFalsa("https://www.sympla.com.br/api/event-bff/"
+                                  "purchase/event/1/tickets/reservation", 200, _RES014)],
+        abre_no_clique=2)
+    assert asyncio.run(sy._selecionar_e_reservar(pagina, 2)) == "Ingresso Antecipado 18h"
+    assert pagina.cliques_comprar == 2
+
+
+def test_sem_pedido_de_retry_nao_reclica(monkeypatch) -> None:
+    pagina = _PaginaIngressoFalsa(abre_checkout=False)
+    with pytest.raises(sy.SymplaError):
+        asyncio.run(sy._selecionar_e_reservar(pagina, 2))
+    assert pagina.cliques_comprar == 1, "re-clique só a pedido da Sympla"
+
+
+def test_fila_de_acessos_espera_sem_reclicar(monkeypatch) -> None:
+    """Print do dono: "A página está com alto número de acessos. Aguarde…" —
+    o site re-tenta sozinho; o bot antigo desistia em 21s."""
+    monkeypatch.setattr(sy, "RESERVA_PRAZO_S", 0.5)
+    pagina = _PaginaIngressoFalsa(
+        respostas=[_RespostaFalsa("https://www.sympla.com.br/api/x/reservation",
+                                  200, _RES014)],
+        fila_voltas=5)
+    assert asyncio.run(sy._selecionar_e_reservar(pagina, 2)) == "Ingresso Antecipado 18h"
+    assert pagina.cliques_comprar == 1, "com a fila na tela, não re-clica"
