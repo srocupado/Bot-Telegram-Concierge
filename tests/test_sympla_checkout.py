@@ -413,3 +413,64 @@ def test_clique_e_enter_falhando_nao_derrubam_a_checagem(_sem_navegar, monkeypat
         raise TimeoutError("bounding_box")
     monkeypatch.setattr(sy, "_clicar", _trava)
     assert asyncio.run(sy._sessao_ativa(h)) is False, "sem prova → sem sessão, sem exceção"
+
+
+# ───────────── 05/11/2026: Cloudflare na página de pagamento ─────────────
+
+def test_cloudflare_no_checkout_espera_e_segue(monkeypatch) -> None:
+    """Pela 1ª vez o bot passou da reserva e o pagamento abriu no desafio do
+    Cloudflare; a etapa desistia na hora ("não achei nem 'Próximo'")."""
+    p = _Checkout()
+    estado = {"cf": 2}
+
+    async def _cf(_page):
+        if estado["cf"] > 0:
+            estado["cf"] -= 1
+            return True
+        return False
+
+    async def _passar(_page):
+        estado["cf"] = 0
+    monkeypatch.setattr(sy, "_cloudflare_na_tela", _cf)
+    monkeypatch.setattr(sy, "_passar_cloudflare", _passar)
+    assert asyncio.run(sy._preencher_checkout(p, CREDS)) == "Pedido confirmado!"
+
+
+def test_cloudflare_que_nao_libera_no_checkout_diz_isso(monkeypatch) -> None:
+    async def _cf(_page):
+        return True
+
+    async def _passar(_page):
+        raise sy.SymplaError("a Sympla mostrou a verificação anti-bot do Cloudflare "
+                             "e ela não liberou em 60s — não consegui continuar.")
+    monkeypatch.setattr(sy, "_cloudflare_na_tela", _cf)
+    monkeypatch.setattr(sy, "_passar_cloudflare", _passar)
+    with pytest.raises(sy.SymplaError, match="Cloudflare"):
+        asyncio.run(sy._preencher_checkout(_Checkout(), CREDS))
+
+
+def test_tela_que_demora_a_montar_nao_desiste_na_hora(monkeypatch) -> None:
+    p = _Checkout()
+    p.etapa = "montando"
+    esperas = {"n": 0}
+    original = p.wait_for_timeout
+
+    async def _espera(ms):
+        esperas["n"] += 1
+        if esperas["n"] == 3:
+            p.etapa = "recebimento"
+        await original(ms)
+    p.wait_for_timeout = _espera
+    assert asyncio.run(sy._preencher_checkout(p, CREDS)) == "Pedido confirmado!"
+
+
+def test_tela_desconhecida_desiste_com_o_que_viu(monkeypatch) -> None:
+    monkeypatch.setattr(sy, "CHECKOUT_TELA_S", 0.05)
+    p = _Checkout()
+    p.etapa = "outra"
+
+    async def _dump(_page, limite=40):
+        return "Algo | Estranho"
+    monkeypatch.setattr(sy, "_dump_clicaveis", _dump)
+    with pytest.raises(sy.SymplaError, match="Algo \\| Estranho"):
+        asyncio.run(sy._preencher_checkout(p, CREDS))

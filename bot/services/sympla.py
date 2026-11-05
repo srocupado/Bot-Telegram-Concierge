@@ -1129,6 +1129,8 @@ async def _selecionar_e_reservar(page, qty: int) -> str:
 # (não existe), não preenchia a confirmação do e-mail e esperava um
 # "Finalizar" na 1ª tela — nunca clicava em "Próximo".
 CHECKOUT_MAX_PROXIMOS = 4
+# Quanto esperar a tela do checkout mostrar algo conhecido (Pi lento).
+CHECKOUT_TELA_S = 30.0
 CHECKOUT_CONFIRMA_S = 60
 
 _PROXIMO_RE = re.compile(r"^\s*pr[óo]ximo\b", re.I)
@@ -1219,7 +1221,18 @@ async def _preencher_checkout(page, creds: SymplaCredenciais,
     """Percorre as etapas do checkout até a finalização. Devolve a PROVA de
     pedido confirmado (texto ou URL da tela de confirmação)."""
     proximos = 0
+    import time as _time
     while True:
+        if await _cloudflare_na_tela(page):
+            # Quinta 05/11/2026: pela 1ª vez o bot passou da reserva, e a
+            # página de pagamento abriu NO desafio do Cloudflare ("Verificando…").
+            # A etapa procurou "Próximo" na tela do desafio e desistiu na hora.
+            # Espera como na página do evento; não liberando, a falha diz que
+            # foi o Cloudflare (CLOUDFLARE_ESPERA_S).
+            logger.warning("sympla: Cloudflare no checkout às %s — aguardando",
+                           datetime.now(BRT).strftime("%H:%M:%S"))
+            await _passar_cloudflare(page)
+            continue
         if await _modal_login_aberto(page):
             # 22/10/2026: a sessão da home não chegou ao checkout ("Você
             # precisa estar logado para acessar este evento"). É o mesmo
@@ -1235,8 +1248,24 @@ async def _preencher_checkout(page, creds: SymplaCredenciais,
             return await _esperar_confirmacao(page, rotulo)
         proximo = page.get_by_role("button", name=_PROXIMO_RE).first
         if not await _visivel(proximo):
+            # A tela pode ainda estar montando (Pi lento): espera aparecer
+            # alguma coisa conhecida antes de desistir.
+            fim = _time.monotonic() + CHECKOUT_TELA_S
+            reconhecida = False
+            while _time.monotonic() < fim:
+                await page.wait_for_timeout(1_000)
+                if (await _visivel(proximo) or await _visivel(final)
+                        or await _cloudflare_na_tela(page)
+                        or await _modal_login_aberto(page)):
+                    reconhecida = True
+                    break
+            if reconhecida:
+                continue
             raise SymplaError(
-                "no checkout não achei nem 'Próximo' nem o botão de finalizar.")
+                f"no checkout não achei nem 'Próximo' nem o botão de finalizar "
+                f"em {CHECKOUT_TELA_S:.0f}s. Elementos visíveis: "
+                f"{await _dump_clicaveis(page)}",
+                print_meio=await _screenshot_seguro(page))
         if proximos >= CHECKOUT_MAX_PROXIMOS:
             vazios = await _campos_vazios(page)
             raise SymplaError(
