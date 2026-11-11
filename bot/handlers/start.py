@@ -377,6 +377,7 @@ _HELP_KEYWORDS: dict[str, str] = {
     "paguei": "gerenciador financeiro", "aportei": "gerenciador financeiro",
     "malhei": "academia", "malhar": "academia", "cardio": "academia",
     "errei": "desfazer", "cancela": "desfazer", "desfaz": "desfazer",
+    "desfaco": "desfazer", "desfazer": "desfazer", "desfiz": "desfazer",
     "monitora": "viagens", "watch": "viagens",
     "transito": "transito", "trafego": "transito", "engarrafamento": "transito",
     "rota": "rota", "chegar": "rota", "caminho": "rota", "trajeto": "rota",
