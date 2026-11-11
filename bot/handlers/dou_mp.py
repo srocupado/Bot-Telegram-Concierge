@@ -282,6 +282,7 @@ async def _rodar_nota(
         # Inlabs com timeout de SSL, e a mensagem dizia "o portal não foi
         # conclusivo" — como se ele tivesse respondido.
         portal_erro: str | None = None
+        outbox_meu: str | None = None
         if only_numeros is None and settings.dou_portal_fallback:
             try:
                 if await _checar_via_portal(bot, session, user, target):
@@ -296,6 +297,15 @@ async def _rodar_nota(
             # primária antes do Inlabs.
             from bot.services.proactive import _tentar_nota_via_portal
             key_np = f"{target.isoformat()}:{','.join(sorted(only_numeros))}"
+            # OUTBOX antes de gerar (regra 2 do projeto; revisão de
+            # 11/11/2026): este caminho, o primário, gerava a nota sem
+            # registrar a pendência — deploy/OOM no meio (a task é cancelada,
+            # e CancelledError não passa por `except Exception`) fazia a nota
+            # prometida sumir sem fila e sem aviso. O sucesso dá a baixa.
+            from bot.services.proactive import already_notified, mark_notified
+            if not await already_notified(session, user.id, "nota_pendente", key_np):
+                await mark_notified(session, user.id, "nota_pendente", key_np)
+                outbox_meu = key_np
             try:
                 if await _tentar_nota_via_portal(
                     bot, session, user, target, sorted(only_numeros), key_np,
@@ -364,6 +374,11 @@ async def _rodar_nota(
         # botão do proativo entrega PARTE do dia — a verificação segue na fila.
         # Falha aqui não pode derrubar a entrega já feita: vira log e a
         # pendência fica (lado seguro).
+        if outbox_meu and n > 0 and not falhas:
+            # O Inlabs entregou o que o portal não conseguiu: a pendência
+            # aberta acima cumpriu o papel.
+            from bot.services.proactive import unmark_notified
+            await unmark_notified(session, user.id, "nota_pendente", outbox_meu)
         baixado = False
         if only_numeros is None:
             from bot.services.proactive import baixa_checagem_manual

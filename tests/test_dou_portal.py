@@ -1058,5 +1058,16 @@ def test_botao_com_numeros_tenta_portal_antes_do_inlabs(monkeypatch) -> None:
     monkeypatch.setattr(proactive, "_tentar_nota_via_portal", _nota_portal)
     monkeypatch.setattr(dou_mp, "deliver_to_user", _deliver)
     monkeypatch.setattr(proactive.settings, "dou_portal_fallback", True)
+    marcas: list = []
+
+    async def _ja(*a, **kw):
+        return False
+
+    async def _marca(_s, _u, kind, key):
+        marcas.append((kind, key))
+    monkeypatch.setattr(proactive, "already_notified", _ja)
+    monkeypatch.setattr(proactive, "mark_notified", _marca)
     asyncio.run(dou_mp._rodar_nota(None, 42, D, ["1.383"]))
+    # Outbox ANTES de gerar: restart no meio não pode sumir com a nota.
+    assert marcas == [("nota_pendente", f"{D.isoformat()}:1.383")]
     assert ordem == [("portal", ("1.383",), f"{D.isoformat()}:1.383")]

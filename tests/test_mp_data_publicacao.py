@@ -217,6 +217,14 @@ def test_botao_com_numero_que_nao_acha_nao_usa_o_texto_de_dia_sem_mp(monkeypatch
     monkeypatch.setattr(dou_mp, "deliver_to_user", _deliver)
     monkeypatch.setattr(dou_mp, "_avisar_mp_nao_achada", _avisar)
     monkeypatch.setattr(dou_mp.settings, "dou_portal_fallback", True)
+
+    async def _ja(*a, **kw):
+        return False
+
+    async def _marca(*a, **kw):
+        return None
+    monkeypatch.setattr(proactive, "already_notified", _ja)
+    monkeypatch.setattr(proactive, "mark_notified", _marca)
     bot = _Bot()
     asyncio.run(dou_mp._rodar_nota(bot, 1, HOJE - timedelta(days=4), ["1395"]))
     assert chamadas == [("avisar", ["1395"])]

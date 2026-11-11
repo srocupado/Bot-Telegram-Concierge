@@ -124,7 +124,7 @@ _MP_TITULO_RE = re.compile(
 _DESPACHO_MP_RE = re.compile(
     r"Encaminhamento\s+ao\s+Congresso\s+Nacional\s+do\s+texto\s+da\s+"
     r"Medida\s+Provis[óo]ria\s+n[ºo°\.\s]*(?P<num>[\d.]+)\s*,\s*de\s+"
-    r"(?P<dia>\d{1,2})\s+de\s+(?P<mes>[A-Za-zÇçÃãÕõÁáÉéÍíÓóÚúÂâÊêÔô]+)\s+de\s+"
+    r"(?P<dia>\d{1,2})\s*[ºo°]?\s+de\s+(?P<mes>[A-Za-zÇçÃãÕõÁáÉéÍíÓóÚúÂâÊêÔô]+)\s+de\s+"
     r"(?P<ano>\d{4})",
     re.IGNORECASE,
 )

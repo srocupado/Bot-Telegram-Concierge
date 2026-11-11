@@ -822,6 +822,9 @@ async def listar_fila_mp(
             "ultima_ok": ultima_ok, "manutencao": manutencao}
 
 
+_EXTRA_SEM_CONFIRMACAO = ("houve edição EXTRA e o índice não traz MP nela, mas "
+                          "o Planalto ainda não confirmou que não há MP nova")
+
 _ESTADO_GERANDO = "<b>gerando agora</b>, chega em alguns minutos"
 # CHECAGEM (entrada 'all') NÃO promete prazo: o desfecho pode ser MP+nota,
 # "não houve edição" (dia fechado) ou "ainda em aberto" (resolve quando o dia
@@ -1310,23 +1313,18 @@ async def collect_mp(
             return []
         from bot.services import dou_planalto
 
-        rows = await session.scalars(
-            select(DouSeenMP).where(DouSeenMP.user_id == user.id)
-        )
-        numeros_vistos: list[tuple[int, int]] = []
-        for r in rows:
-            try:
-                numeros_vistos.append((int(numero_canonico(r.numero)), r.ano))
-            except (TypeError, ValueError):
-                continue
-        if not numeros_vistos:
-            # Sem nenhuma MP entregue não há régua pra "a próxima" — sondar do
-            # zero varreria o histórico inteiro. O caminho por dia cobre.
+        # Régua = toda MP que o dono JÁ CONHECE (nota entregue OU aviso do
+        # proativo), não só as com nota — ver dou_planalto.mps_conhecidas.
+        conhecidas = await dou_planalto.mps_conhecidas(session, user.id)
+        if not conhecidas:
+            # Sem nenhuma MP conhecida não há régua pra "a próxima" — sondar
+            # do zero varreria o histórico inteiro. O caminho por dia cobre.
             return []
-        ultimo, ano_ultimo = max(numeros_vistos)
+        ultimo = max(conhecidas)
+        ano_ultimo = conhecidas[ultimo]
         try:
             novas = await dou_planalto.sondar_novas(
-                ultimo, [hoje_.year, ano_ultimo],
+                ultimo, [hoje_.year, ano_ultimo], conhecidas=set(conhecidas),
             )
         except Exception as exc:
             logger.warning("proactive: sonda do Planalto falhou (%s)", exc)
@@ -1488,10 +1486,15 @@ async def collect_mp(
         agora_ = datetime.now(BRT)
         hora_agora = agora_.hour
         restantes = _janelas_restantes(hora_agora, agora_.minute)
+        # Edição EXTRA no índice sem MP e o Planalto sem confirmar "nenhuma
+        # nova": é o cenário da MP 1.391, que o próprio código trata como
+        # inconclusivo (não dá baixa) — o batimento não pode dizer "sem MP".
+        extra_duvidosa = bool(getattr(colheita_hoje, "extras_sem_mp", False))
         if conferir and restantes:
             # Abertura do dia (briefing/força): diz o estado e quando re-checa.
             quando = " e às ".join(_fmt_hora_janela(h) for h in restantes)
             situacao = ("ainda sem edição publicada" if colheita_hoje.sem_edicao
+                        else _EXTRA_SEM_CONFIRMACAO if extra_duvidosa
                         else "sem MP até o momento")
             facts.append(ProactiveFact(
                 "mp", "mp_checagem", f"{hoje_.isoformat()}:abre",
@@ -1515,6 +1518,9 @@ async def collect_mp(
             if colheita_hoje.sem_edicao:
                 texto = (f"📄 DOU de hoje: sem edição publicada até as "
                          f"{hora_txt} — se sair alguma, chega {proxima}.")
+            elif extra_duvidosa:
+                texto = (f"📄 DOU de hoje ({hora_txt}): {_EXTRA_SEM_CONFIRMACAO}"
+                         f" — sigo checando; o resultado chega {proxima}.")
             else:
                 texto = (f"📄 DOU de hoje: sem MP na checagem das "
                          f"{hora_txt} — extra tardia (se "
@@ -1736,7 +1742,12 @@ async def collect_mp(
     # permite detectar a lacuna na próxima volta — sem isso ela congelaria em
     # "ontem" e um período fora do ar de 3 dias viraria só 1 dia de pendência.
     checados = ok_dates | set(resolvidos)
-    if checados:
+    # Com aviso de LACUNA LONGA pendente de envio, a marca NÃO avança aqui:
+    # _cobrir_lacuna a segura até o aviso ser entregue (o pós-envio a move).
+    # Avançar já fazia um envio falho engolir os dias velhos — a janela
+    # seguinte não via mais lacuna e eles sumiam sem aviso (revisão 11/11/2026).
+    lacuna_pendente = any(f.kind == "mp_lacuna" for f in facts)
+    if checados and not lacuna_pendente:
         novo = max(checados)
         if user.dou_ultimo_dia_ok is None or novo > user.dou_ultimo_dia_ok:
             user.dou_ultimo_dia_ok = novo

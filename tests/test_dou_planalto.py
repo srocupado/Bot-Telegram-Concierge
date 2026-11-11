@@ -115,11 +115,19 @@ def test_erro_de_rede_sobe_e_nao_vira_ausencia() -> None:
 
 # ───────────────────────── a sonda sequencial ─────────────────────────
 
+def _controle(numero: int = 1390, ano: int = ANO) -> None:
+    """A sonda exige que a página da PRÓPRIA régua responda como MP (prova
+    de que o Planalto está servindo MPs pra nós nesta sonda)."""
+    respx.get(pl.url_mp(numero, ano)).mock(return_value=httpx.Response(
+        200, content=_pagina_mp(numero=f"{numero // 1000}.{numero % 1000:03d}")))
+
+
 @respx.mock
 def test_sonda_acha_a_mp_perdida() -> None:
     """O caso real: entregou até a 1.390, a 1.391 existe. A pergunta não é
     'saiu MP no dia D?' (que depende do índice cobrir D) e sim 'existe MP
     depois da última que entreguei?'."""
+    _controle()
     respx.get(_url(1391)).mock(return_value=httpx.Response(200, content=_pagina_mp()))
     for n in (1392, 1393):
         respx.get(_url(n)).mock(return_value=httpx.Response(404))
@@ -132,6 +140,7 @@ def test_sonda_acha_a_mp_perdida() -> None:
 def test_um_404_no_meio_nao_encerra_a_varredura() -> None:
     """Planalto pode demorar a publicar UMA página. Parar no primeiro 404
     esconderia as seguintes — esconder MP é o que este módulo combate."""
+    _controle()
     respx.get(_url(1391)).mock(return_value=httpx.Response(404))
     respx.get(_url(1392)).mock(return_value=httpx.Response(
         200, content=_pagina_mp(numero="1.392", dia="12")))
@@ -144,6 +153,7 @@ def test_um_404_no_meio_nao_encerra_a_varredura() -> None:
 @respx.mock
 def test_dois_404_seguidos_encerram() -> None:
     """Sem teto a sonda varreria o infinito a cada janela proativa."""
+    _controle()
     for n in (1391, 1392, 1393, 1394):
         respx.get(_url(n)).mock(return_value=httpx.Response(404))
     assert asyncio.run(pl.sondar_novas(1390, [ANO])) == []
@@ -157,6 +167,8 @@ def test_virada_de_ano_sonda_as_duas_pastas() -> None:
     """A numeração NÃO reinicia em janeiro, mas a pasta do Planalto sim: a MP
     de janeiro/2027 mora em /2027/, a última de dezembro/2026 em /2026/.
     Sondar só um ano perderia MP toda primeira semana de janeiro."""
+    respx.get(pl.url_mp(1399, 2027)).mock(return_value=httpx.Response(404))
+    _controle(1399, 2026)
     respx.get(pl.url_mp(1400, 2026)).mock(return_value=httpx.Response(404))
     respx.get(pl.url_mp(1400, 2027)).mock(return_value=httpx.Response(
         200, content=_pagina_mp(numero="1.400", dia="5", mes="JANEIRO", ano="2027")))
@@ -309,3 +321,95 @@ def test_planalto_fora_nao_derruba_a_deteccao_da_mp() -> None:
     dia = asyncio.run(dou_portal.checar_dia_portal(date(2026, 9, 11)))
     assert [m.numero for m in dia.mps] == ["1391"], "perdeu a MP por falta de texto"
     assert dia.mps[0].texto is None, "inventou texto"
+
+
+# ───────────── revisão de 11/11/2026: "não sei" nunca vira "não há" ─────────────
+
+def test_titulo_com_dia_primeiro_ordinal() -> None:
+    """MP 1.382, "DE 1º DE AGOSTO DE 2026": toda MP assinada no dia 1º era
+    invisível pra sonda e contava como "não existe"."""
+    for dia in ("1º", "1°", "1o", "1"):
+        parsed = pl._parse(_pagina_mp(numero="1.382", dia=dia, mes="AGOSTO"))
+        assert parsed is not None, dia
+        assert pl._data_do_titulo(parsed[0]).isoformat() == "2026-08-01"
+    assert pl._data_publicacao_dou(
+        "publicado no DOU de 1º.8.2026".encode()).isoformat() == "2026-08-01"
+
+
+def test_despacho_do_portal_com_dia_primeiro() -> None:
+    from bot.services import dou_portal
+    assert dou_portal._DESPACHO_MP_RE.search(
+        "Encaminhamento ao Congresso Nacional do texto da Medida Provisória "
+        "nº 1.382, de 1º de agosto de 2026")
+
+
+_BLOQUEIO = (b"<html><head><title>Acesso Negado!</title></head><body>"
+             b"Esta requisi\xe7\xe3o foi bloqueada.</body></html>")
+
+
+@respx.mock
+def test_bloqueio_com_status_200_nao_vira_nenhuma_mp_nova() -> None:
+    """Visto ao vivo em 11/11/2026: "Acesso Negado!" com status 200 pra todos
+    os números. A sonda antiga devolvia [] — a evidência que dá baixa em dia."""
+    for n in (1390, 1391, 1392):
+        respx.get(_url(n)).mock(return_value=httpx.Response(200, content=_BLOQUEIO))
+    with pytest.raises(pl.PlanaltoInconclusivo):
+        asyncio.run(pl.sondar_novas(1390, [ANO]))
+
+
+@respx.mock
+def test_bloqueio_so_nos_numeros_novos_tambem_levanta() -> None:
+    _controle()
+    respx.get(_url(1391)).mock(return_value=httpx.Response(200, content=_BLOQUEIO))
+    with pytest.raises(pl.PlanaltoInconclusivo):
+        asyncio.run(pl.sondar_novas(1390, [ANO]))
+
+
+@respx.mock
+def test_controle_404_e_inconclusivo() -> None:
+    """A MP da régua existe por definição; se o Planalto diz 404 pra ela, o
+    que ele disser das seguintes não vale como ausência."""
+    for n in (1390, 1391, 1392):
+        respx.get(_url(n)).mock(return_value=httpx.Response(404))
+    with pytest.raises(pl.PlanaltoInconclusivo, match="controle"):
+        asyncio.run(pl.sondar_novas(1390, [ANO]))
+
+
+@respx.mock
+def test_buraco_abaixo_da_regua_e_sondado() -> None:
+    """Entregues {1393, 1395}; a 1394 existe e nunca foi vista: a régua em
+    1395 a escondia pra sempre."""
+    _controle(1395)
+    respx.get(_url(1394)).mock(return_value=httpx.Response(
+        200, content=_pagina_mp(numero="1.394", dia="7", mes="OUTUBRO")))
+    for n in (1396, 1397):
+        respx.get(_url(n)).mock(return_value=httpx.Response(404))
+    novas = asyncio.run(pl.sondar_novas(1395, [ANO], conhecidas={1393, 1395}))
+    assert [m.numero for m in novas] == ["1394"]
+
+
+def test_buscar_mp_fora_da_sonda_continua_devolvendo_none() -> None:
+    @respx.mock
+    def _run():
+        respx.get(_url(1392)).mock(return_value=httpx.Response(200, content=_BLOQUEIO))
+        return asyncio.run(pl.buscar_mp(1392, ANO))
+    assert _run() is None
+
+
+class _SessaoConhecidas:
+    def __init__(self, seen, avisos):
+        self.seen, self.avisos = seen, avisos
+
+    async def scalars(self, stmt):
+        sql = str(stmt)
+        if "dou_seen" in sql:
+            return [type("R", (), {"numero": n, "ano": a}) for n, a in self.seen]
+        return [type("R", (), {"key": k}) for k in self.avisos]
+
+
+def test_regua_conta_mp_anunciada_sem_nota() -> None:
+    """Nota da 1399 recusada: a régua ficava em 1398, a sonda devolvia a 1399
+    em toda janela e "sem novas" nunca ligava."""
+    s = _SessaoConhecidas(seen=[("1398", 2026), ("1.397", 2026)], avisos=["1399/2026", "lixo"])
+    assert asyncio.run(pl.ultimo_numero_entregue(s, 1)) == (1399, 2026)
+    assert set(asyncio.run(pl.mps_conhecidas(s, 1))) == {1397, 1398, 1399}

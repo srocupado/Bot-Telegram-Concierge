@@ -66,7 +66,10 @@ _MESES = {
 # 01/01 e o ano errado quebra dedup, Planalto e conferência).
 _TITULO_RE = re.compile(
     r"MEDIDA\s+PROVIS[ÓO]RIA\s+N[ºo°\.\s]*(?P<num>[\d\.]+)\s*,?\s*DE\s+"
-    r"(?P<dia>\d{1,2})\s+DE\s+(?P<mes>[A-Za-zÇçÃãÕõÁáÉéÍíÓóÚúÂâÊêÔô]+)\s+DE\s+"
+    # Dia 1º vem com ordinal ("DE 1º DE AGOSTO DE 2026", MP 1.382): sem o
+    # [ºo°] opcional, toda MP assinada no dia 1º era invisível pra sonda — e
+    # "invisível" aqui contava como "não existe" (revisão de 11/11/2026).
+    r"(?P<dia>\d{1,2})\s*[ºo°]?\s+DE\s+(?P<mes>[A-Za-zÇçÃãÕõÁáÉéÍíÓóÚúÂâÊêÔô]+)\s+DE\s+"
     r"(?P<ano>\d{4})",
     re.IGNORECASE,
 )
@@ -94,7 +97,7 @@ def _data_do_titulo(m: re.Match) -> date | None:
 # 09/10 — tomar a do título fez o botão da nota procurar a MP no dia errado
 # e responder "Nenhuma MP nova" (09/10/2026).
 _PUBLICADO_DOU_RE = re.compile(
-    r"publicad[oa]\s+no\s+D\.?\s*O\.?\s*U\.?\s+de\s+(\d{1,2})\.(\d{1,2})\.(\d{4})",
+    r"publicad[oa]\s+no\s+D\.?\s*O\.?\s*U\.?\s+de\s+(\d{1,2})\s*[ºo°]?\s*\.\s*(\d{1,2})\.(\d{4})",
     re.IGNORECASE,
 )
 
@@ -158,12 +161,25 @@ def _parse(conteudo: bytes) -> tuple[re.Match, str, str] | None:
     return m, ementa, "\n".join(linhas[:500])
 
 
+class PlanaltoInconclusivo(Exception):
+    """O Planalto respondeu, mas não dá pra dizer se a MP existe (página de
+    bloqueio/erro com status 200, página de outro número, controle falhou).
+    É "não sei" — nunca pode virar "não há MP nova"."""
+
+
 async def buscar_mp(
     numero: str | int, ano: int, *, client: httpx.AsyncClient | None = None,
+    estrito: bool = False,
 ):
     """MP pelo número, direto do Planalto. None = não existe (404) ou a
     página não é uma MP. Exceção de rede sobe — o caller decide, porque
-    "não consegui checar" ≠ "não existe"."""
+    "não consegui checar" ≠ "não existe".
+
+    `estrito` (usado pela sonda): só 404 vale como "não existe"; página 200
+    que não é a MP pedida levanta PlanaltoInconclusivo. Visto ao vivo em
+    11/11/2026: o Planalto bloqueou o acesso e devolveu "Acesso Negado!" com
+    status 200 pra TODOS os números — a sonda lia isso como "nenhuma MP
+    nova", que é a evidência que dá baixa em dia não checado pelo DOU."""
     from bot.services.dou_portal import PortalMP
 
     url = url_mp(numero, ano)
@@ -183,6 +199,9 @@ async def buscar_mp(
 
     if parsed is None:
         logger.info("planalto: %s respondeu 200 mas não parece MP", url)
+        if estrito:
+            raise PlanaltoInconclusivo(
+                f"{url} respondeu 200 com página que não é MP (bloqueio/erro?)")
         return None
     m, ementa, texto = parsed
     num_canon = m.group("num").replace(".", "")
@@ -195,6 +214,8 @@ async def buscar_mp(
     if num_canon != str(numero).replace(".", ""):
         # Página do número X servindo a MP Y: não dá pra confiar em nada dela.
         logger.warning("planalto: %s trouxe MP %s — ignorando", url, num_canon)
+        if estrito:
+            raise PlanaltoInconclusivo(f"{url} trouxe a MP {num_canon}")
         return None
     return PortalMP(
         numero=num_canon,
@@ -211,8 +232,15 @@ async def buscar_mp(
     )
 
 
-async def sondar_novas(ultimo_numero: int, anos: list[int]) -> list:
-    """MPs com número ACIMA de `ultimo_numero` que existem no Planalto.
+# Quantos números ABAIXO da régua a sonda re-confere quando recebe o conjunto
+# de MPs conhecidas (buracos — ver sondar_novas).
+_JANELA_BURACOS = 15
+
+
+async def sondar_novas(ultimo_numero: int, anos: list[int], *,
+                       conhecidas: set[int] | None = None) -> list:
+    """MPs que existem no Planalto e o dono ainda não conhece: as de número
+    ACIMA de `ultimo_numero` e, com `conhecidas`, os BURACOS logo abaixo dele.
 
     O coração da rede: não pergunta "saiu MP no dia D?" (que depende do
     índice cobrir D), pergunta "existe MP depois da última que entreguei?".
@@ -222,22 +250,49 @@ async def sondar_novas(ultimo_numero: int, anos: list[int]) -> list:
     /2027/mpv/, enquanto a 1.399 de dezembro/2026 mora em /2026/mpv/. Sondar
     só o ano corrente perderia MP toda primeira semana de janeiro.
 
-    Exceção de rede sobe pro caller — Planalto fora é "não sei", nunca
-    "não há MP nova"."""
+    Lista vazia é evidência POSITIVA de ausência (dá baixa em dia), então só
+    sai com três garantias (revisão de 11/11/2026):
+    - CONTROLE: a página da própria `ultimo_numero` tem de responder como MP
+      nesta mesma sonda — prova que o site está servindo MPs pra nós agora;
+    - só 404 conta como falta; 200 que não é MP levanta (buscar_mp estrito);
+    - buracos: número abaixo da régua que não está em `conhecidas` é
+      sondado — MP que escapou enquanto uma posterior era entregue não fica
+      escondida atrás da régua pra sempre.
+
+    Exceção de rede/PlanaltoInconclusivo sobe pro caller — Planalto fora é
+    "não sei", nunca "não há MP nova"."""
     achadas: list = []
     faltas = 0
     anos = list(dict.fromkeys(anos))  # únicos, preservando a ordem
+
     async with httpx.AsyncClient(
         timeout=_TIMEOUT, headers=_HEADERS, follow_redirects=True,
     ) as client:
+        async def _buscar(n: int):
+            for ano in anos:
+                mp = await buscar_mp(n, ano, client=client, estrito=True)
+                if mp is not None:
+                    return mp
+            return None
+
+        if await _buscar(ultimo_numero) is None:
+            raise PlanaltoInconclusivo(
+                f"controle falhou: a MP {ultimo_numero} (já conhecida) não "
+                "foi achada no Planalto")
+        if conhecidas:
+            piso = max(min(conhecidas), ultimo_numero - _JANELA_BURACOS)
+            for n in range(piso, ultimo_numero):
+                if n in conhecidas:
+                    continue
+                mp = await _buscar(n)
+                if mp is not None:
+                    logger.warning("planalto: MP %s estava num BURACO abaixo "
+                                   "da régua %d", mp.numero, ultimo_numero)
+                    achadas.append(mp)
         n = ultimo_numero
         while len(achadas) < _MAX_NOVAS and faltas < _MAX_404_SEGUIDOS:
             n += 1
-            mp = None
-            for ano in anos:
-                mp = await buscar_mp(n, ano, client=client)
-                if mp is not None:
-                    break
+            mp = await _buscar(n)
             if mp is None:
                 faltas += 1
                 continue
@@ -249,26 +304,48 @@ async def sondar_novas(ultimo_numero: int, anos: list[int]) -> list:
     return achadas
 
 
+async def mps_conhecidas(session, user_id: int) -> dict[int, int]:
+    """{número: ano} de toda MP que o dono JÁ CONHECE: nota entregue
+    (DouSeenMP) OU aviso do proativo (ProactiveNotice kind="mp") — a mesma
+    união da conferência com a Câmara (regra 5 do projeto).
+
+    Só DouSeenMP não serve de régua (revisão de 11/11/2026): ela é gravada
+    quando a NOTA sai. MP anunciada cuja nota o dono não pediu ficava fora, a
+    sonda a devolvia em toda janela, "sem novas" nunca ligava e os dias com
+    extra não drenavam."""
+    from sqlalchemy import select
+
+    from bot.db.models import DouSeenMP, ProactiveNotice
+    from bot.services.dou_monitor import numero_canonico
+
+    out: dict[int, int] = {}
+    for r in await session.scalars(
+            select(DouSeenMP).where(DouSeenMP.user_id == user_id)):
+        try:
+            out[int(numero_canonico(r.numero))] = int(r.ano)
+        except (TypeError, ValueError):
+            continue
+    for r in await session.scalars(
+            select(ProactiveNotice).where(ProactiveNotice.user_id == user_id,
+                                          ProactiveNotice.kind == "mp")):
+        num, _, ano = str(getattr(r, "key", "") or "").partition("/")
+        try:
+            out.setdefault(int(numero_canonico(num)), int(ano))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 async def ultimo_numero_entregue(session, user_id: int) -> tuple[int, int] | None:
     """(número, ano) da MP mais alta já ENTREGUE a este usuário, ou None.
 
     É a régua da sonda sequencial. None = sem régua (usuário novo): aí não há
     o que sondar e nenhuma conclusão pode ser tirada."""
-    from sqlalchemy import select
-
-    from bot.db.models import DouSeenMP
-    from bot.services.dou_monitor import numero_canonico
-
-    rows = await session.scalars(
-        select(DouSeenMP).where(DouSeenMP.user_id == user_id)
-    )
-    vistos: list[tuple[int, int]] = []
-    for r in rows:
-        try:
-            vistos.append((int(numero_canonico(r.numero)), r.ano))
-        except (TypeError, ValueError):
-            continue
-    return max(vistos) if vistos else None
+    conhecidas = await mps_conhecidas(session, user_id)
+    if not conhecidas:
+        return None
+    ultimo = max(conhecidas)
+    return ultimo, conhecidas[ultimo]
 
 
 async def confirma_sem_mp_nova(session, user_id: int, hoje_ano: int) -> bool:
@@ -283,7 +360,12 @@ async def confirma_sem_mp_nova(session, user_id: int, hoje_ano: int) -> bool:
         return False
     ultimo, ano_ultimo = regua
     try:
-        return not await sondar_novas(ultimo, [hoje_ano, ano_ultimo])
+        conhecidas = set(await mps_conhecidas(session, user_id))
+    except Exception:
+        conhecidas = set()
+    try:
+        return not await sondar_novas(ultimo, [hoje_ano, ano_ultimo],
+                                      conhecidas=conhecidas or None)
     except Exception as exc:
         logger.warning("planalto: sonda de confirmação falhou (%s)", exc)
         return False

@@ -275,7 +275,7 @@ def _alarme_com_planalto(monkeypatch, sonda, *, datas=None, pendentes=(),
 
 
 def test_dou_fora_diz_que_o_planalto_conferiu_sem_mp_nova(monkeypatch) -> None:
-    async def _sonda(ultimo, anos):
+    async def _sonda(ultimo, anos, **kw):
         assert ultimo == 1398
         return []
     txt = _alarme_com_planalto(monkeypatch, _sonda)
@@ -284,7 +284,7 @@ def test_dou_fora_diz_que_o_planalto_conferiu_sem_mp_nova(monkeypatch) -> None:
 
 
 def test_dou_fora_e_planalto_fora_diz_os_dois(monkeypatch) -> None:
-    async def _sonda(ultimo, anos):
+    async def _sonda(ultimo, anos, **kw):
         raise RuntimeError("planalto timeout")
     txt = _alarme_com_planalto(monkeypatch, _sonda)
     assert "Planalto (rede de segurança) também não respondeu" in txt
@@ -292,7 +292,7 @@ def test_dou_fora_e_planalto_fora_diz_os_dois(monkeypatch) -> None:
 
 # ───────────── baixa pela rede do Planalto (dono, 26/10/2026) ─────────────
 
-def _sem_novas(ultimo, anos):
+def _sem_novas(ultimo, anos, **kw):
     async def _s(*a, **kw):
         return []
     return _s(ultimo, anos)
