@@ -305,3 +305,44 @@ def test_sessao_que_falha_avisa_e_diz_que_tenta_de_novo(ambiente, monkeypatch) -
 def test_retirada_tambem_recebe_canal_pro_codigo(ambiente) -> None:
     ambiente.tick(QUA.replace(hour=17, minute=56))
     assert ambiente.chamadas[0].get("pedir_codigo") is not None
+
+
+def test_recarga_que_falha_nao_encerra_a_espera_do_lote(monkeypatch) -> None:
+    """Revisão de 11/11/2026: um page.goto que estourava às 18h00 (site
+    sobrecarregado) derrubava a tentativa inteira; agora a volta seguinte
+    recarrega de novo."""
+    pagina = _PaginaLote(abre_na_recarga=3)
+    falhas = {"n": 0}
+
+    async def _ir(page, url, timeout_ms=60_000):
+        if falhas["n"] < 2:
+            falhas["n"] += 1
+            raise TimeoutError("Page.goto: Timeout 25000ms exceeded.")
+        page.recargas += 1
+
+    async def _lote(page):
+        if page.recargas >= page.abre_na_recarga:
+            return object(), "Ingresso Antecipado 18h (Quarta-feira)"
+        return None, ""
+
+    async def _sem_cf(_p):
+        return False
+
+    async def _estado(_p):
+        return "-"
+    monkeypatch.setattr(sy, "_ir", _ir)
+    monkeypatch.setattr(sy, "_escolher_lote", _lote)
+    monkeypatch.setattr(sy, "_cloudflare_na_tela", _sem_cf)
+    monkeypatch.setattr(sy, "_estado_lotes", _estado)
+    asyncio.run(sy._esperar_lote_abrir(pagina, "https://x",
+                                       datetime.now(BRT) + timedelta(seconds=1)))
+    assert falhas["n"] == 2 and pagina.recargas == 3
+
+
+def test_busca_que_estoura_erro_do_playwright_e_repetida(monkeypatch) -> None:
+    import inspect
+    src = inspect.getsource(sy.retirar_ingresso)
+    trecho = src[src.index("evento = await _localizar_evento"):][:200]
+    assert "except Exception as exc" in trecho, (
+        "erro do Playwright na busca (não só SymplaError) tem de cair na "
+        "re-tentativa, não encerrar a tentativa")

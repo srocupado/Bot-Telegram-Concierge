@@ -105,6 +105,7 @@ class _Checkout:
 
 @pytest.fixture(autouse=True)
 def _rapido(monkeypatch):
+    monkeypatch.setattr(sy, "SESSAO_SONDA_S", 0.0)
     async def _clicar(page, loc, timeout_ms=10_000):
         page.clicar(loc.alvo)
     monkeypatch.setattr(sy, "_clicar", _clicar)
@@ -474,3 +475,49 @@ def test_tela_desconhecida_desiste_com_o_que_viu(monkeypatch) -> None:
     monkeypatch.setattr(sy, "_dump_clicaveis", _dump)
     with pytest.raises(sy.SymplaError, match="Algo \\| Estranho"):
         asyncio.run(sy._preencher_checkout(p, CREDS))
+
+
+# ───────────── revisão de 11/11/2026 ─────────────
+
+def test_sessao_valida_em_pagina_lenta_e_reconhecida(_sem_navegar, monkeypatch) -> None:
+    """Home que só responde ao 6º clique: com 3 cliques fixos a sessão válida
+    era lida como 'sem sessão' e o login gastava 120s no menu da conta."""
+    monkeypatch.setattr(sy, "SESSAO_SONDA_S", 5.0)
+    h = _Home(logado=True, hidrata_no=6)
+    assert asyncio.run(sy._sessao_ativa(h)) is True
+    assert h.cliques.count("conta") == 6
+
+
+def test_abrir_login_com_menu_da_conta_aberto_diz_ja_logado(monkeypatch) -> None:
+    async def _sem_cf(_p):
+        return None
+    monkeypatch.setattr(sy, "_passar_cloudflare", _sem_cf)
+    h = _Home(logado=True)
+    h.menu = True
+    assert asyncio.run(sy._abrir_login(h)) is False
+    assert h.cliques == [], "não clica em nada: já está logado"
+
+
+def test_setup_nao_salva_comando_como_senha(monkeypatch) -> None:
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+
+    from aiogram.dispatcher.event.bases import SkipHandler
+
+    from bot.handlers import sympla as hs
+    monkeypatch.setattr(hs.settings, "owner_telegram_id", 1)
+    salvos = []
+
+    async def _save(_s, v):
+        salvos.append(v)
+    monkeypatch.setattr(hs, "save_senha", _save)
+
+    class _S:
+        async def commit(self):
+            return None
+    user = SimpleNamespace(id=1, awaiting_sympla_field="senha",
+                           awaiting_sympla_until=datetime.now(timezone.utc) + timedelta(minutes=5))
+    msg = SimpleNamespace(text="/sympla_testar")
+    with pytest.raises(SkipHandler):
+        asyncio.run(hs.capturar_campo(msg, user, _S()))
+    assert salvos == [] and user.awaiting_sympla_field is None

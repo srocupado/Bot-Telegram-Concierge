@@ -295,6 +295,9 @@ LOTE_ESPERA_S = 180.0
 LOTE_RAJADA_S = 90.0
 LOTE_RECARGA_S = 10.0
 LOTE_PRIMEIRA_APOS_S = 0.5
+# Recarga na corrida do lote: desistir de uma carga travada em 25s e pedir
+# outra vale mais que esperar os 60s do padrão.
+LOTE_CARGA_TIMEOUT_MS = 25_000
 # Prazo pra abrir o formulário de login. Medido com a CPU limitada: 6x
 # levou ~19s, 12x ~40s (do goto até o formulário). O Pi real não foi medido.
 LOGIN_ABRIR_TIMEOUT_S = 120.0
@@ -466,7 +469,7 @@ async def _visivel(loc) -> bool:
         return False
 
 
-async def _abrir_login(page) -> None:
+async def _abrir_login(page) -> bool | None:
     """Abre o formulário de e-mail+senha. Caminho CONFIRMADO num Chromium de
     verdade contra o site ao vivo (24/09/2026), não inferido:
 
@@ -508,9 +511,16 @@ async def _abrir_login(page) -> None:
     # a próxima falha dizer O QUE a tela mostrava, em vez de eu adivinhar.
     rastro: list[str] = []
     print_meio: bytes | None = None
+    sair = page.get_by_text(_SAIR_RE).first
     while _time.monotonic() < prazo:
         try:
             await _passar_cloudflare(page)
+            if await _visivel(sair):
+                # O botão abriu o MENU DA CONTA: a sessão já está logada (a
+                # sonda de sessão não viu a tempo). Não há formulário a abrir.
+                rastro.append(f"{_time.monotonic() - inicio:.0f}s menu da conta "
+                              "com 'Sair' → já logado")
+                return False
             if await _visivel(senha):
                 return
             if await _visivel(opcao):
@@ -665,19 +675,32 @@ async def _acionar_conta(page, gatilho) -> None:
                        str(exc).splitlines()[0][:120])
 
 
+SESSAO_SONDA_S = 45.0
+
+
 async def _sessao_ativa(page) -> bool:
     """Prova POSITIVA (print do dono, 23/10/2026): logado, o botão da conta
     (avatar com as iniciais) abre um menu com nome, e-mail, "Minha conta"…
     e "Sair". Deslogado, abre "Que bom ter você aqui!". Só "Sair" na tela
-    conta como sessão; nenhum dos dois depois de 3 cliques (clique antes da
-    hidratação do React não faz nada) = sem sessão — na dúvida, loga."""
+    conta como sessão.
+
+    Insiste por SESSAO_SONDA_S, não por 3 cliques fixos (~10s): no Pi a home
+    leva dezenas de segundos pra responder a clique (medido com CPU limitada:
+    19–40s). Com sessão VÁLIDA e página lenta, 3 cliques sem resposta eram
+    lidos como "sem sessão" e o login passava 120s clicando num botão que,
+    logado, abre o menu da conta e nunca o quadro de login (revisão de
+    11/11/2026). Nenhum dos dois no prazo = sem sessão — na dúvida, loga."""
+    import time as _time
     gatilho = page.get_by_role("button", name=_GATILHO_CONTA_RE).first
     sair = page.get_by_text(_SAIR_RE).first
     try:
         await gatilho.wait_for(state="visible", timeout=15_000)
     except Exception:
         return False
-    for _ in range(3):
+    prazo = _time.monotonic() + SESSAO_SONDA_S
+    cliques = 0
+    while cliques < 3 or _time.monotonic() < prazo:
+        cliques += 1
         await _acionar_conta(page, gatilho)
         await page.wait_for_timeout(3_000)
         if await _modal_login_aberto(page):
@@ -743,7 +766,8 @@ async def _entrar(page, creds: SymplaCredenciais, pedir_codigo=None) -> None:
     """Abre (ou aproveita, se já aberto) o modal de login e entra com e-mail
     e senha. Serve à home e ao checkout — o checkout mostra o MESMO modal
     ("Que bom ter você aqui!") quando a sessão não chegou até ele."""
-    await _abrir_login(page)
+    if await _abrir_login(page) is False:
+        return  # já estava logado
 
     # :visible é obrigatório (visto ao vivo): há um 2º input[type=email]
     # escondido no modal, e a busca "Buscar experiências" (type=text) vem
@@ -970,7 +994,15 @@ async def _carregar_lote(page, url: str) -> None:
     da quinta 29/10/2026 se perdeu sem saber quanto cada carga levava."""
     import time as _time
     t0 = _time.monotonic()
-    await _ir(page, url)
+    try:
+        await _ir(page, url, LOTE_CARGA_TIMEOUT_MS)
+    except Exception as exc:
+        # Recarga que falha (site sobrecarregado às 18h00) não encerra a
+        # espera: a volta seguinte recarrega de novo, até LOTE_ESPERA_S.
+        logger.warning("sympla: carga da página do evento falhou às %s (%s)",
+                       datetime.now(BRT).strftime("%H:%M:%S"),
+                       str(exc).splitlines()[0][:150])
+        return
     logger.info("sympla: página do evento carregada às %s em %.1fs",
                 datetime.now(BRT).strftime("%H:%M:%S"), _time.monotonic() - t0)
 
@@ -1445,10 +1477,17 @@ async def retirar_ingresso(
                     try:
                         evento = await _localizar_evento(page, query, hoje)
                         erro_busca = None
-                    except SymplaError as exc:
+                    except Exception as exc:
                         # Busca que não carregou NÃO é "não tem evento":
                         # tenta de novo até o prazo e, se a última falhou,
-                        # reporta como "não consegui checar".
+                        # reporta como "não consegui checar". QUALQUER
+                        # exceção, não só SymplaError: page.goto e
+                        # wait_for_selector levantam erro do Playwright, e
+                        # uma única página travada às 17h58 encerrava a
+                        # tentativa sem usar os 3 min de prazo (revisão de
+                        # 11/11/2026).
+                        logger.warning("sympla: busca falhou (%s) — tento de novo",
+                                       str(exc).splitlines()[0][:150])
                         evento, erro_busca = None, exc
                     if evento is not None or _time.monotonic() >= deadline:
                         break

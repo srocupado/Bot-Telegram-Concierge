@@ -146,6 +146,14 @@ async def capturar_campo(message: Message, user: User, session: AsyncSession) ->
         raise SkipHandler
 
     texto = (message.text or "").strip()
+    if texto.startswith("/"):
+        # Comando no meio do setup NÃO é o valor do campo: "/sympla_setup
+        # senha" seguido de "/sympla_testar" salvava "/sympla_testar" como
+        # senha (revisão de 11/11/2026). Cancela a espera e deixa o comando
+        # seguir pro handler dele.
+        user.awaiting_sympla_field = None
+        await session.commit()
+        raise SkipHandler
     user.awaiting_sympla_field = None
     await session.commit()
     await _apagar(message)  # some do histórico ANTES de qualquer resposta
