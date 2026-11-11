@@ -87,6 +87,8 @@ async def cmd_photo(message: Message, user: User, session: AsyncSession) -> None
     vision_provider_name = (
         user.vision_provider or settings.vision_provider or user.provider
     )
+    ctx = None
+    mem_txt = f"[imagem]{(' ' + caption) if caption else ''}"
     try:
         provider = get_provider_for_user(user, vision_provider_name)
         ctx = ToolContext(user=user, session=session, tz=effective_tz(user), user_text=caption or "")
@@ -105,6 +107,10 @@ async def cmd_photo(message: Message, user: User, session: AsyncSession) -> None
         logger.info("photo analyzed", extra={"reply_len": len(reply or "")})
     except asyncio.TimeoutError:
         logger.warning("photo chat timed out (provider=%s)", vision_provider_name)
+        from bot.handlers.chat import entregar_apos_falha
+        if await entregar_apos_falha(message, ctx, user_text=caption or "",
+                                     memory_user_text=mem_txt):
+            return
         await message.answer(
             f"⚠️ A análise da imagem demorou demais ({vision_provider_name}). Tenta de novo.",
             parse_mode=None,
@@ -112,6 +118,10 @@ async def cmd_photo(message: Message, user: User, session: AsyncSession) -> None
         return
     except Exception as e:
         logger.exception("photo chat failed")
+        from bot.handlers.chat import entregar_apos_falha
+        if await entregar_apos_falha(message, ctx, user_text=caption or "",
+                                     memory_user_text=mem_txt):
+            return
         await message.answer(
             f"❌ erro no LLM de visão ({vision_provider_name}): {e}",
             parse_mode=None,

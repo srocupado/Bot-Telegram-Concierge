@@ -888,6 +888,13 @@ def _parse_valor(valor) -> float | None:
 # bancária legítima e era redirecionada pro cartão. Parcelamento agora é
 # detectado pelo padrão "Nx" (3x, 10 x), que só aparece em compra parcelada.
 _CARD_CUES = ("credito", "crédito", "cartao", "cartão")
+# Sinais de saída da CONTA (não é compra no crédito): débito, pix, boleto,
+# transferência, ou o PAGAMENTO do próprio cartão.
+_SAIDA_DA_CONTA_RE = re.compile(
+    r"\bd[ée]bito\b|\bpix\b|\bboleto\b|\btransfer|\bted\b|"
+    r"\bpag(uei|ar|amento|ando|o)\b[^.;,]{0,25}\bcart[ãa]o\b",
+    re.IGNORECASE,
+)
 _PARCELAS_RE = re.compile(r"\b(\d{1,2})\s*x\b", re.IGNORECASE)
 # "3x de 100" / "3x de R$ 1.250,50" — captura N e o valor DA PARCELA dito.
 _PARCELAS_DE_RE = re.compile(
@@ -902,6 +909,12 @@ def _looks_like_card_purchase(text: str, tipo: str) -> bool:
     mesmo). 'crédito' como ENTRADA bancária (➕) não entra (exige saída)."""
     t = (text or "").lower()
     if "fatura" in t:
+        return False
+    # Revisão de 11/11/2026: "gastei 50 no cartão de DÉBITO" e "paguei o
+    # cartão de crédito, 2300" eram gravados como COMPRA no cartão de crédito
+    # (saldo do banco a maior, fatura inflada). Qualquer sinal de que o
+    # dinheiro saiu da conta desliga a trava — aí vale o que o modelo decidiu.
+    if _SAIDA_DA_CONTA_RE.search(t):
         return False
     is_saida = (tipo or "").strip().lower() in ("debito", "debit", "despesa")
     return is_saida and any(k in t for k in _CARD_CUES)
@@ -1453,6 +1466,15 @@ async def _h_zerar_lista_compras(_args: dict, ctx: ToolContext) -> str:
 
 async def _h_desfazer_ultima_acao(_args: dict, ctx: ToolContext) -> str:
     msg = await undo_last(ctx.session, ctx.user)
+    # O que foi (ou não foi) desfeito vai VERBATIM: o dono precisa ver
+    # exatamente qual ação saiu, sem o modelo resumir (revisão 11/11/2026).
+    ctx.fallback_text = msg
+    if msg.startswith("ok"):
+        ctx.direct_html = "↩️ " + _html_escape(msg.removeprefix("ok:").strip())
+    elif msg.startswith("nada"):
+        ctx.direct_html = "ℹ️ " + _html_escape(msg.removeprefix("nada:").strip())
+    if ctx.direct_html:
+        ctx.short_circuit = True
     return msg
 
 

@@ -98,6 +98,43 @@ async def answer_llm(
                                  disable_web_page_preview=disable_web_page_preview)
 
 
+async def entregar_apos_falha(
+    message: Message, ctx, *, user_text: str, memory_user_text: str | None = None,
+) -> bool:
+    """O modelo falhou DEPOIS de uma tool de escrita já ter rodado? Então não
+    é "erro, tenta de novo": a ação aconteceu. Entrega o que a tool deixou
+    pronto (ou um aviso do que foi feito) e devolve True; False = nada foi
+    gravado e o handler segue com a mensagem de erro normal.
+
+    Revisão de 11/11/2026: "me lembra de pagar o IPTU" criava o lembrete, a
+    rodada seguinte do modelo caía (503/timeout), o dono recebia "❌ erro no
+    LLM", repetia o pedido e ficava com dois. Com "desfaz" era pior: repetir
+    desfazia uma segunda ação."""
+    from bot.services.llm.base import TOOLS_SOMENTE_LEITURA, houve_escrita
+
+    if ctx is None or not houve_escrita(ctx):
+        return False
+    feitas = [n for n in (getattr(ctx, "tools_chamadas", None) or ())
+              if n not in TOOLS_SOMENTE_LEITURA]
+    aviso = ("⚠️ A ação FOI executada (" + ", ".join(dict.fromkeys(feitas)) + "), "
+             "mas falhei ao redigir a confirmação. Não repita o pedido — "
+             "confira antes se já está feito.")
+    try:
+        if ctx.direct_html or ctx.fallback_text:
+            await deliver_llm_reply(message, ctx, ctx.fallback_text or "",
+                                    user_text=user_text,
+                                    memory_user_text=memory_user_text)
+        else:
+            para_memoria = memory_user_text if memory_user_text is not None else user_text
+            memory.append(message.chat.id, "user", para_memoria)
+            memory.append(message.chat.id, "assistant", aviso)
+        await message.answer(aviso, parse_mode=None)
+    except Exception:
+        logger.exception("entregar_apos_falha: falha ao avisar")
+        return False
+    return True
+
+
 async def deliver_llm_reply(
     message: Message, ctx, reply: str, *, user_text: str, memory_user_text: str | None = None,
 ) -> None:
@@ -706,6 +743,7 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
     from bot.services.memoria import get_summary
     summary = await get_summary(session, user.id)
 
+    ctx = None
     try:
         provider = get_provider_for_user(user)
         ctx = ToolContext(user=user, session=session, tz=effective_tz(user), user_text=user_text)
@@ -716,6 +754,8 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
         )
     except Exception as e:
         logger.exception("chat failed")
+        if await entregar_apos_falha(message, ctx, user_text=user_text):
+            return
         await message.answer(
             f"❌ erro no LLM ({user.provider}/{modelo_do_user(user)}): {e}",
             parse_mode=None,

@@ -88,6 +88,9 @@ async def _reverse(session: AsyncSession, user, kind: str, data: dict) -> str:
     raise ValueError(f"tipo de ação desconhecido: {kind}")
 
 
+UNDO_JANELA_MIN = 30
+
+
 async def undo_last(session: AsyncSession, user) -> str:
     """Reverte a ação não-revertida mais recente do usuário.
     Retorna mensagem 'ok: ...' ou 'erro/nada: ...'."""
@@ -100,6 +103,19 @@ async def undo_last(session: AsyncSession, user) -> str:
     entry = (await session.scalars(stmt)).first()
     if entry is None:
         return "nada: não há ação recente pra desfazer"
+    # Só desfaz ação RECENTE. Nem toda escrita é registrada aqui (treino,
+    # lista de compras, fatos…): "errei, desfaz" logo depois de uma dessas
+    # pegava a última ação REGISTRADA — por exemplo um lançamento de ontem —
+    # e a apagava (revisão de 11/11/2026).
+    from datetime import datetime, timedelta, timezone
+
+    from bot.utils import as_utc
+    criada = as_utc(entry.created_at)
+    if criada is not None and datetime.now(timezone.utc) - criada > timedelta(
+            minutes=UNDO_JANELA_MIN):
+        return (f"nada: a última ação que sei desfazer é antiga ({entry.summary}) "
+                f"— só desfaço o que foi feito nos últimos {UNDO_JANELA_MIN} "
+                "minutos. Se é essa mesma, peça pra apagar dizendo qual é.")
 
     try:
         data = json.loads(entry.undo_data)

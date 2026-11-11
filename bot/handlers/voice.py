@@ -584,6 +584,7 @@ async def _dispatch_chat(
     from bot.services.memoria import get_summary
     summary = await get_summary(session, user.id)
 
+    ctx = None
     try:
         provider = get_provider_for_user(user)
         ctx = ToolContext(user=user, session=session, tz=effective_tz(user), user_text=text)
@@ -594,6 +595,9 @@ async def _dispatch_chat(
         )
     except Exception as e:
         logger.exception("voice→chat failed")
+        from bot.handlers.chat import entregar_apos_falha
+        if await entregar_apos_falha(message, ctx, user_text=text):
+            return
         await message.answer(
             f"❌ erro no LLM ({user.provider}/{modelo_do_user(user)}): {e}",
             parse_mode=None,

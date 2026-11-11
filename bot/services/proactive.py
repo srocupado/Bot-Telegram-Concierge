@@ -822,6 +822,11 @@ async def listar_fila_mp(
             "ultima_ok": ultima_ok, "manutencao": manutencao}
 
 
+# Tentativas por janela proativa (ver run_for_user). Em memória: restart zera,
+# e aí a janela é tentada de novo — que é o desejado.
+_RUN_TENTATIVAS: dict[tuple[int, str], int] = {}
+_RUN_MAX_TENTATIVAS = 3
+
 _EXTRA_SEM_CONFIRMACAO = ("houve edição EXTRA e o índice não traz MP nela, mas "
                           "o Planalto ainda não confirmou que não há MP nova")
 
@@ -2541,11 +2546,25 @@ async def run_for_user(
     # e a janela é minute<=1, rodaria ~5x — refazendo fetch de DOU/coletas à
     # toa. Marca já na entrada (mesmo que dê "sem fatos") pra os ticks
     # seguintes pularem. force (/proativo_agora) ignora a trava.
+    # A marca só é gravada quando a janela TERMINA (enviada, ou sem nada a
+    # enviar). Marcada na entrada, um envio falho, um coletor que estourasse
+    # ou um deploy no meio perdiam o briefing do dia sem nova tentativa e sem
+    # aviso (revisão de 11/11/2026). Os ticks são sequenciais, então a marca
+    # não é necessária como trava de reentrada. Teto de tentativas em
+    # memória: Telegram fora não pode virar re-coleta infinita.
+    run_key = None
     if not force:
         run_key = run_key_da_janela(window, today, now_brt.hour)
         if await already_notified(session, user.id, "proactive_run", run_key):
             return False
-        await mark_notified(session, user.id, "proactive_run", run_key)
+        tent = _RUN_TENTATIVAS.get((user.id, run_key), 0) + 1
+        _RUN_TENTATIVAS[(user.id, run_key)] = tent
+        if tent > _RUN_MAX_TENTATIVAS:
+            logger.error("proactive: user %d janela %s falhou %d vezes — desisto "
+                         "desta janela", user.id, run_key, tent - 1)
+            await mark_notified(session, user.id, "proactive_run", run_key)
+            _RUN_TENTATIVAS.pop((user.id, run_key), None)
+            return False
 
     # Resumo do fim do dia = última janela proativa (mesma régua da carteira).
     last_hour = max(parse_proactive_hours(settings.proactive_hours))
@@ -2602,8 +2621,14 @@ async def run_for_user(
             disparadas = []
         _marcar_geradas_agora(facts, disparadas)
 
+    async def _janela_concluida() -> None:
+        if run_key is not None:
+            await mark_notified(session, user.id, "proactive_run", run_key)
+            _RUN_TENTATIVAS.pop((user.id, run_key), None)
+
     if not facts:
         logger.info("proactive: user %d window=%s sem fatos", user.id, window)
+        await _janela_concluida()
         return False
 
     text = await _redigir(user, _compose(facts, briefing=briefing))
@@ -2619,6 +2644,7 @@ async def run_for_user(
     sent = await _send(bot, user.id, text, reply_markup=reply_markup)
     logger.info("proactive: user %d window=%s %d fatos enviado=%s", user.id, window, len(facts), sent)
     if sent:
+        await _janela_concluida()
         await _pos_envio(session, user, facts, force=force)
 
     return sent

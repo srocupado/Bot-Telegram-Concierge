@@ -1686,7 +1686,17 @@ async def consultar_lancamentos(
         def _card_line(it: dict, info: dict) -> str:
             kind = info.get("kind")
             if kind == "parcela":
-                par_label = f" ({info['num']}/{info['total']})"
+                # O ramo "últimos N dias" não calcula num/total (lista por
+                # data de compra): sem eles, mostra só o parcelamento. Antes
+                # era KeyError e o extrato inteiro caía (revisão 11/11/2026).
+                if info.get("num") and info.get("total"):
+                    par_label = f" ({info['num']}/{info['total']})"
+                else:
+                    try:
+                        n_parc = int(it.get("installments") or 0)
+                    except (TypeError, ValueError):
+                        n_parc = 0
+                    par_label = f" (parcela de {n_parc}x)" if n_parc > 1 else " (parcelado)"
             elif kind == "recorrente":
                 par_label = " (recorrente)"
             else:

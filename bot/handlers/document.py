@@ -60,6 +60,7 @@ async def cmd_pdf(message: Message, user: User, session: AsyncSession) -> None:
     vision_provider_name = (
         user.vision_provider or settings.vision_provider or user.provider
     )
+    ctx = None
     try:
         provider = get_provider_for_user(user, vision_provider_name)
         ctx = ToolContext(user=user, session=session, tz=effective_tz(user), user_text=caption or "")
@@ -70,6 +71,12 @@ async def cmd_pdf(message: Message, user: User, session: AsyncSession) -> None:
         )
     except Exception as e:
         logger.exception("pdf chat failed")
+        from bot.handlers.chat import entregar_apos_falha
+        if await entregar_apos_falha(
+                message, ctx, user_text=caption or "",
+                memory_user_text=f"[PDF: {doc.file_name or 'PDF'}]"
+                                 f"{(' ' + caption) if caption else ''}"):
+            return
         await message.answer(
             f"❌ erro no LLM de visão ({vision_provider_name}): {e}",
             parse_mode=None,

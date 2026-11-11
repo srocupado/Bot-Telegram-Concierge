@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -20,6 +21,30 @@ class ReminderParseError(Exception):
     pass
 
 
+# Sem espaço dentro ("18h", "18h30") e sem engolir o "às": a troca preserva
+# o NÚMERO DE PALAVRAS, e o texto do lembrete sai das palavras originais.
+_HORA_H_RE = re.compile(r"(?<![\w:])(\d{1,2})h(\d{2})?(?=$|[\s,.;!?])", re.IGNORECASE)
+_HORA_SOLTA_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+# Conectores que sobram no fim do texto depois de tirar a data ("… às",
+# "… daqui a", "… pra").
+_CONECTOR_FIM_RE = re.compile(
+    r"(?:\s+(?:[àa]s|as|em|daqui\s+a|daqui|para|pra|no\s+dia|dia|na|no))+\s*$",
+    re.IGNORECASE)
+_DURACAO_ANTES_RE = re.compile(r"(?:\bem|\bdaqui\s+a|\bdaqui\s+h[áa]|\bdentro\s+de)\s*$",
+                               re.IGNORECASE)
+
+
+def _normalizar_hora(texto: str) -> str:
+    def _troca(m: re.Match) -> str:
+        if _DURACAO_ANTES_RE.search(texto[:m.start()]):
+            return m.group(0)          # "em 2h": duração, não hora do dia
+        h = int(m.group(1))
+        if h > 23:
+            return m.group(0)
+        return f"{h}:{m.group(2) or '00'}"
+    return _HORA_H_RE.sub(_troca, texto)
+
+
 def parse_reminder(text: str, user_tz: str) -> tuple[str, datetime]:
     """Tenta separar 'texto' e 'quando' de uma string como:
         'ligar pro João em 2h'
@@ -31,6 +56,13 @@ def parse_reminder(text: str, user_tz: str) -> tuple[str, datetime]:
     raw = (text or "").strip()
     if not raw:
         raise ReminderParseError("texto vazio")
+
+    # "18h" / "18h30" / "às 9h" → "18:00" / "18:30" / "9:00". O dateparser
+    # lê "18h" como DURAÇÃO ("daqui a 18 horas"): "sexta 18h" virava a quarta
+    # seguinte à meia-noite e "amanhã às 15h" virava amanhã 21h45 (revisão de
+    # 11/11/2026). "em 2h" / "daqui a 2h" continuam sendo duração.
+    originais = raw.split()
+    raw = _normalizar_hora(raw)
 
     tz = ZoneInfo(user_tz)
     now_local = datetime.now(tz)
@@ -56,6 +88,17 @@ def parse_reminder(text: str, user_tz: str) -> tuple[str, datetime]:
             best_when = parsed
             best_split = len(words) - take
 
+    if best_when is None and len(words) >= 2:
+        # Hora solta no fim ("remédio às 22h"): o dateparser não entende
+        # "22:00" sozinho. Hoje nessa hora; se já passou, amanhã.
+        m_h = _HORA_SOLTA_RE.match(words[-1])
+        if m_h and int(m_h.group(1)) <= 23 and int(m_h.group(2)) <= 59:
+            alvo = now_local.replace(hour=int(m_h.group(1)), minute=int(m_h.group(2)),
+                                     second=0, microsecond=0)
+            if alvo <= now_local:
+                alvo += timedelta(days=1)
+            best_when, best_split = alvo, len(words) - 1
+
     if best_when is None or best_split <= 0:
         # Tenta a string inteira como fallback (caso o texto seja só uma data).
         parsed = dateparser.parse(raw, languages=["pt"], settings=settings)
@@ -65,7 +108,8 @@ def parse_reminder(text: str, user_tz: str) -> tuple[str, datetime]:
             "não entendi a data/hora. Exemplos: 'em 2h', 'amanhã 09:00', 'sexta 18h'"
         )
 
-    clean_text = " ".join(words[:best_split]).strip(" -—:")
+    base = originais if len(originais) == len(words) else words
+    clean_text = _CONECTOR_FIM_RE.sub("", " ".join(base[:best_split])).strip(" -—:,")
     if not clean_text:
         raise ReminderParseError("informe um texto antes da data/hora")
 
@@ -133,7 +177,16 @@ _REM_ACTION_BLOCK = (
     "apag", "delet", "remov", "exclu", "cria", "criar", "cadastr", "marca",
     "adicion", "agend", "edita", "altera", "atualiz", "conclu", "desfaz",
     "me lembr", "lembra de", "lembre de", "lembrar de", "lembra-me", "lembre-me",
+    # Verbos de CRIAÇÃO que faltavam (revisão de 11/11/2026): "coloca um
+    # lembrete que eu tenho médico amanhã às 10h" devolvia a lista e não
+    # criava nada.
+    "coloc", "bota", "bote", "botar", "poe ", "por um", "anota", "anote",
+    "faz um", "faca um", "novo lembrete", "nova lembrete", "quero um",
+    "preciso de um", "cancel", "tira ", "tirar", "muda", "troca", "adia",
 )
+# Hora marcada ("10h", "às 15h30", "09:00") = pedido de criação/alteração,
+# nunca de listagem.
+_REM_HORA_RE = _re.compile(r"\b\d{1,2}\s*(h\b|h\d{2}\b|:\d{2}\b|\s+horas?\b)")
 # Pistas de que o usuário quer VER a lista.
 _REM_LIST_CUES = (
     "lista", "liste", "listar", "listos", "quais", "quantos", "mostra",
@@ -149,6 +202,8 @@ def is_list_reminders_request(text: str) -> bool:
     if "lembrete" not in n:
         return False
     if any(b in n for b in _REM_ACTION_BLOCK):
+        return False
+    if _REM_HORA_RE.search(n):
         return False
     return any(c in n for c in _REM_LIST_CUES)
 
