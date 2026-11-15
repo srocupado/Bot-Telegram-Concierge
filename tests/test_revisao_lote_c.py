@@ -264,3 +264,31 @@ def test_janela_desiste_depois_do_teto_de_tentativas(monkeypatch) -> None:
     resultados, enviadas, marcas = _rodar_briefing(monkeypatch)
     assert resultados[0] is False and enviadas == []
     assert marcas == ["briefing:2026-11-11"], "desistiu e marcou — sem re-coleta infinita"
+
+
+# ───────────── 14/11/2026: plano B em texto puro mostrava as tags ─────────────
+
+def test_plano_b_sem_tags_cruas() -> None:
+    from bot.utils import html_para_texto
+    txt = html_para_texto('🌙 <b>Fechando o dia</b>\n• A &amp; B &lt;3 '
+                          '<a href="https://x">link</a> <code>/cmd</code>')
+    assert txt == "🌙 Fechando o dia\n• A & B <3 link /cmd"
+
+
+def test_envio_que_cai_no_plano_b_vai_sem_tags() -> None:
+    from bot.services import scheduler
+
+    class _B:
+        def __init__(self):
+            self.msgs = []
+
+        async def send_message(self, chat_id, texto, parse_mode=None, **kw):
+            if parse_mode == "HTML":
+                raise RuntimeError("timeout")
+            self.msgs.append(texto)
+    b = _B()
+    assert asyncio.run(scheduler._send_html_with_fallback(b, 1, "🌙 <b>Fechando o dia</b>"))
+    assert b.msgs == ["🌙 Fechando o dia"]
+    b2 = _B()
+    assert asyncio.run(proactive._send(b2, 1, "📜 <b>Diário Oficial</b>"))
+    assert b2.msgs == ["📜 Diário Oficial"]

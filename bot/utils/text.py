@@ -159,3 +159,19 @@ def _costurar_markdown(chunks: list[str]) -> list[str]:
         aberto = corpo.count("```") % 2 == 1
         out.append(corpo + ("\n```" if aberto else ""))
     return out
+
+
+_TAG_FORMATACAO_RE = __import__("re").compile(r"</?(?:b|i|u|s|code|pre|a|strong|em|blockquote|tg-spoiler)(?:\s[^>]*)?>",
+                                   __import__("re").IGNORECASE)
+
+
+def html_para_texto(html: str) -> str:
+    """Versão em TEXTO PURO de uma mensagem HTML do Telegram: tira as tags de
+    formatação e desfaz as entidades (&lt; → <).
+
+    É o que vai no plano B quando o envio em HTML falha. Sem isto o dono
+    recebia as tags cruas ("🌙 <b>Fechando o dia</b>", 14/11/2026) — e a
+    falha nem precisa ser de HTML: qualquer erro passageiro de rede na 1ª
+    tentativa caía no reenvio em texto puro."""
+    import html as _h
+    return _h.unescape(_TAG_FORMATACAO_RE.sub("", html or ""))

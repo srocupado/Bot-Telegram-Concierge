@@ -72,9 +72,10 @@ async def send_html_chunked(
                 reply_markup=kb,
             )
         except TelegramBadRequest:
+            from bot.utils import html_para_texto
             await message.answer(
-                chunk, parse_mode=None, disable_web_page_preview=True,
-                reply_markup=kb,
+                html_para_texto(chunk), parse_mode=None,
+                disable_web_page_preview=True, reply_markup=kb,
             )
 
 

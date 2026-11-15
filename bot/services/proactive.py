@@ -2421,7 +2421,8 @@ async def _send(bot, chat_id: int, text: str, reply_markup=None) -> bool:
         except Exception:
             logger.exception("proactive: HTML send failed; retrying plain for %d", chat_id)
             try:
-                await bot.send_message(chat_id, bloco, parse_mode=None,
+                from bot.utils import html_para_texto
+                await bot.send_message(chat_id, html_para_texto(bloco), parse_mode=None,
                                        disable_web_page_preview=True, reply_markup=kb)
             except Exception:
                 logger.exception("proactive: failed to send to %d", chat_id)

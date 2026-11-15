@@ -74,8 +74,10 @@ async def _send_html_with_fallback(bot: Bot, chat_id: int, text: str) -> None:
         except Exception:
             logger.exception("HTML send failed for chat %d; retrying as plain", chat_id)
             try:
+                from bot.utils import html_para_texto
                 await bot.send_message(
-                    chat_id, bloco, parse_mode=None, disable_web_page_preview=True,
+                    chat_id, html_para_texto(bloco), parse_mode=None,
+                    disable_web_page_preview=True,
                 )
             except Exception:
                 logger.exception("plain send also failed for chat %d (bloco perdido)", chat_id)
