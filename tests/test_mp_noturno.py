@@ -147,7 +147,7 @@ def test_fechamento_traz_a_mp_e_so_marca_depois_de_entregar(monkeypatch) -> None
         connect_args={"check_same_thread": False},
     )
     sm = async_sessionmaker(engine, expire_on_commit=False)
-    bot = _Bot(falhas=2)  # 1º tick: HTML e texto puro falham
+    bot = _Bot(falhas=4)  # 1º tick: 3 tentativas em HTML e o texto puro falham
 
     async def _kinds():
         async with sm() as s:

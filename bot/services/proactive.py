@@ -2415,18 +2415,10 @@ async def _send(bot, chat_id: int, text: str, reply_markup=None) -> bool:
     ok = True
     for i, bloco in enumerate(blocos):
         kb = reply_markup if i == len(blocos) - 1 else None
-        try:
-            await bot.send_message(chat_id, bloco, parse_mode="HTML",
-                                   disable_web_page_preview=True, reply_markup=kb)
-        except Exception:
-            logger.exception("proactive: HTML send failed; retrying plain for %d", chat_id)
-            try:
-                from bot.utils import html_para_texto
-                await bot.send_message(chat_id, html_para_texto(bloco), parse_mode=None,
-                                       disable_web_page_preview=True, reply_markup=kb)
-            except Exception:
-                logger.exception("proactive: failed to send to %d", chat_id)
-                ok = False
+        from bot.utils.envio import enviar_html
+        if not await enviar_html(bot, chat_id, bloco, disable_web_page_preview=True,
+                                 reply_markup=kb):
+            ok = False
     return ok
 
 

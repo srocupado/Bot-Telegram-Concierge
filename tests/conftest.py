@@ -40,3 +40,11 @@ def _reset_inlabs_sessao():
     except Exception:
         pass
     yield
+
+
+@pytest.fixture(autouse=True)
+def _envio_sem_pausa(monkeypatch):
+    """bot.utils.envio espera segundos entre as novas tentativas em HTML; na
+    suíte as pausas são zero (o número de tentativas continua o real)."""
+    from bot.utils import envio
+    monkeypatch.setattr(envio, "PAUSAS_S", (0.0, 0.0))

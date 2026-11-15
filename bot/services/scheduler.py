@@ -110,21 +110,9 @@ async def _send_html_with_fallback(bot: Bot, chat_id: int, text: str) -> bool:
 
     ok = True
     for bloco in chunk_text(text, mode="html") or [""]:
-        try:
-            await bot.send_message(
-                chat_id, bloco, parse_mode="HTML", disable_web_page_preview=True,
-            )
-        except Exception:
-            logger.exception("HTML send failed; retrying as plain text for chat %d", chat_id)
-            try:
-                from bot.utils import html_para_texto
-                await bot.send_message(
-                    chat_id, html_para_texto(bloco), parse_mode=None,
-                    disable_web_page_preview=True
-                )
-            except Exception:
-                logger.exception("failed to send message to chat %d", chat_id)
-                ok = False
+        from bot.utils.envio import enviar_html
+        if not await enviar_html(bot, chat_id, bloco, disable_web_page_preview=True):
+            ok = False
     return ok
 
 

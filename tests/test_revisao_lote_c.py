@@ -292,3 +292,42 @@ def test_envio_que_cai_no_plano_b_vai_sem_tags() -> None:
     b2 = _B()
     assert asyncio.run(proactive._send(b2, 1, "📜 <b>Diário Oficial</b>"))
     assert b2.msgs == ["📜 Diário Oficial"]
+
+
+def test_falha_passageira_tenta_de_novo_em_html(monkeypatch) -> None:
+    """Log do Pi, 14/11 21h30: 'Bad Gateway' do Telegram derrubava direto pro
+    texto puro."""
+    from bot.utils import envio
+    monkeypatch.setattr(envio, "PAUSAS_S", (0.0, 0.0))
+
+    class _B:
+        def __init__(self, falhas):
+            self.falhas, self.msgs = falhas, []
+
+        async def send_message(self, chat_id, texto, parse_mode=None, **kw):
+            if parse_mode == "HTML" and self.falhas > 0:
+                self.falhas -= 1
+                raise RuntimeError("Bad Gateway")
+            self.msgs.append((parse_mode, texto))
+    b = _B(falhas=2)
+    assert asyncio.run(envio.enviar_html(b, 1, "<b>oi</b>")) is True
+    assert b.msgs == [("HTML", "<b>oi</b>")], "3ª tentativa ainda em HTML"
+    b = _B(falhas=99)
+    assert asyncio.run(envio.enviar_html(b, 1, "<b>oi</b>")) is True
+    assert b.msgs == [(None, "oi")], "esgotou: texto puro SEM tags"
+
+
+def test_html_invalido_vai_direto_pro_texto_puro(monkeypatch) -> None:
+    from aiogram.exceptions import TelegramBadRequest
+    from aiogram.methods import SendMessage
+    from bot.utils import envio
+    tentativas = []
+
+    class _B:
+        async def send_message(self, chat_id, texto, parse_mode=None, **kw):
+            tentativas.append(parse_mode)
+            if parse_mode == "HTML":
+                raise TelegramBadRequest(method=SendMessage(chat_id=1, text="x"),
+                                         message="can't parse entities")
+    assert asyncio.run(envio.enviar_html(_B(), 1, "<b>oi")) is True
+    assert tentativas == ["HTML", None]
