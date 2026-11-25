@@ -590,6 +590,7 @@ _CODIGO_TELA_RE = re.compile(
     r"digite o c[óo]digo|insira o c[óo]digo|informe o c[óo]digo|"
     r"c[óo]digo (que )?(te )?enviamos|enviamos (um|o) c[óo]digo|"
     r"c[óo]digo de (verifica|acesso|seguran|confirma)", re.I)
+_CODIGO_CANAL_RE = re.compile(r"receber (via|por) e-?mail", re.I)
 _CODIGO_RECUSA_RE = re.compile(
     r"c[óo]digo (inv[áa]lido|incorreto|expirado|errado)", re.I)
 
@@ -630,6 +631,28 @@ async def _resolver_codigo(page, pedir_codigo) -> None:
             "tem como te perguntar.", print_meio=await _screenshot_seguro(page))
     tela = page.get_by_text(_CODIGO_TELA_RE).first
     caixas = page.locator("input:visible")
+    # Página nova (print do dono, 25/11/2026): ANTES de mandar o código a
+    # Sympla pergunta o canal — "Vamos enviar um código pra você / Escolha
+    # por onde você quer receber" com o botão "Receber via e-mail". O bot
+    # pedia os 6 dígitos ao dono sem clicar, e o e-mail nunca era enviado.
+    canal = page.get_by_text(_CODIGO_CANAL_RE).first
+    if await _visivel(canal):
+        logger.info("sympla: escolhendo 'Receber via e-mail' pro código")
+        await _clicar(page, canal)
+        try:
+            await caixas.first.wait_for(state="visible", timeout=30_000)
+        except Exception as exc:
+            raise SymplaError(
+                "cliquei em 'Receber via e-mail', mas a tela de digitar o "
+                "código não apareceu em 30s. Elementos: "
+                f"{await _dump_clicaveis(page)}",
+                print_meio=await _screenshot_seguro(page)) from exc
+    elif not await caixas.count():
+        raise SymplaError(
+            "a Sympla fala em código, mas não achei nem o botão 'Receber via "
+            "e-mail' nem onde digitar. Elementos: "
+            f"{await _dump_clicaveis(page)}",
+            print_meio=await _screenshot_seguro(page))
     for tentativa in range(1, CODIGO_TENTATIVAS + 1):
         await pedir_codigo(tentativa)
         codigo = await _esperar_codigo(CODIGO_ESPERA_S)

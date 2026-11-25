@@ -535,3 +535,35 @@ def test_login_novo_da_sympla_auth_v2() -> None:
     assert sy._ENVIAR_LOGIN_RE.search("Continuar") and sy._ENVIAR_LOGIN_RE.search("ENTRAR")
     for outro in ("Continuar sem senha", "Continuar com Google"):
         assert not sy._ENVIAR_LOGIN_RE.search(outro)
+
+
+class _HomeComCanal(_Home):
+    """Página nova (25/11/2026): antes do código, escolher 'Receber via e-mail'."""
+
+    def __init__(self):
+        super().__init__(logado=False)
+        self.canal = True
+
+    def get_by_text(self, padrao):
+        if padrao.search("Receber via e-mail"):
+            return _LocH(self, "canal")
+        return super().get_by_text(padrao)
+
+    def visivel(self, alvo):
+        if alvo == "canal":
+            return self.canal
+        return super().visivel(alvo)
+
+    def clicar(self, alvo):
+        if alvo == "canal":
+            self.cliques.append(alvo)
+            self.canal, self.tela_codigo = False, True
+            return
+        super().clicar(alvo)
+
+
+def test_escolhe_receber_via_email_antes_de_pedir_o_codigo() -> None:
+    h, pedidos = _HomeComCanal(), []
+    asyncio.run(sy._resolver_codigo(h, _pedidor(["123456"], pedidos)))
+    assert h.cliques[0] == "canal", "tem de clicar ANTES de pedir o código ao dono"
+    assert pedidos == [1] and h.digitado == "123456" and h.logado
