@@ -583,7 +583,13 @@ SESSAO_PATH = Path("/app/data/sympla_sessao.json")
 LOGIN_CODIGO_ESPERA_S = 8.0
 CODIGO_ESPERA_S = 300.0
 CODIGO_TENTATIVAS = 2
-_CODIGO_TELA_RE = re.compile(r"digite o c[óo]digo", re.I)
+# Mais largo que "Digite o código": a página nova de login (/auth/v2,
+# 25/11/2026) pode dizer de outro jeito, e a tela pós-senha dela ainda não
+# foi vista.
+_CODIGO_TELA_RE = re.compile(
+    r"digite o c[óo]digo|insira o c[óo]digo|informe o c[óo]digo|"
+    r"c[óo]digo (que )?(te )?enviamos|enviamos (um|o) c[óo]digo|"
+    r"c[óo]digo de (verifica|acesso|seguran|confirma)", re.I)
 _CODIGO_RECUSA_RE = re.compile(
     r"c[óo]digo (inv[áa]lido|incorreto|expirado|errado)", re.I)
 
@@ -812,14 +818,27 @@ async def _entrar(page, creds: SymplaCredenciais, pedir_codigo=None) -> None:
             await _resolver_codigo(page, pedir_codigo)
             return
         if not await _visivel(campo):
-            if sumiu_em is None:
+            # Ainda DENTRO do fluxo de login (/auth/…): o campo de senha
+            # sumir não é login feito — é outra etapa (código, confirmação)
+            # que o bot não reconheceu. Em 25/11/2026 isso passava por
+            # "entrou" e só a conferência acusava, sem mostrar a tela.
+            if "/auth/" in (getattr(page, "url", "") or ""):
+                sumiu_em = None
+            elif sumiu_em is None:
                 sumiu_em = _time.monotonic()
             elif _time.monotonic() - sumiu_em >= LOGIN_CODIGO_ESPERA_S:
                 return
         await page.wait_for_timeout(1_000)
+    try:
+        na_tela = " ".join((await page.evaluate(
+            "() => document.body.innerText")).split())[:500]
+    except Exception:
+        na_tela = "(não consegui ler a tela)"
     raise SymplaError(
-        "cliquei em ENTRAR mas o login não concluiu em 60s (o formulário "
-        "continuou aberto, sem mensagem de erro).")
+        "enviei e-mail e senha mas o login não concluiu em 60s. "
+        f"Página: {getattr(page, 'url', '?')}. Texto na tela: {na_tela}. "
+        f"Elementos: {await _dump_clicaveis(page)}",
+        print_meio=await _screenshot_seguro(page))
 
 
 async def _buscar_candidatos(page, query: str) -> list[EventoCandidato]:
