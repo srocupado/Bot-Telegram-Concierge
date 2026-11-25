@@ -496,7 +496,7 @@ async def _abrir_login(page) -> bool | None:
     # Aceita os dois pra não quebrar se voltarem atrás.
     gatilho = page.get_by_role("button", name=_GATILHO_CONTA_RE).first
     opcao = page.get_by_role(
-        "button", name=re.compile(r"e-?mail e senha", re.I)).first
+        "button", name=_OPCAO_SENHA_RE).first
     senha = page.locator("input[type=password]:visible").first
     # Título do modal (visto ao vivo). Modal aberto com a opção ainda não
     # desenhada = ESPERAR: clicar no botão de novo cairia no fundo escuro e
@@ -555,7 +555,14 @@ async def _abrir_login(page) -> bool | None:
     )
 
 
-_MODAL_LOGIN_RE = re.compile(r"que bom ter voc", re.I)
+# 25/11/2026 (visto ao vivo): o botão da conta deixou de abrir um quadro e
+# passou a levar à página /auth/v2 — "Entre ou crie sua conta!", com
+# "Entrar com senha" no lugar de "Continuar com e-mail e senha"; o formulário
+# fica em /auth/v2/password e o botão de enviar é "Continuar" (era "ENTRAR").
+# Os textos antigos seguem aceitos.
+_MODAL_LOGIN_RE = re.compile(r"que bom ter voc|entre ou crie sua conta", re.I)
+_OPCAO_SENHA_RE = re.compile(r"e-?mail e senha|entrar com senha", re.I)
+_ENVIAR_LOGIN_RE = re.compile(r"^\s*(entrar|continuar)\s*$", re.I)
 _GATILHO_CONTA_RE = re.compile(r"^(open dropdown|perfil)$", re.I)
 
 
@@ -779,7 +786,7 @@ async def _entrar(page, creds: SymplaCredenciais, pedir_codigo=None) -> None:
 
     # O botão ENTRAR é type="button" (não submit), confirmado ao vivo.
     await _clicar(page, page.get_by_role(
-        "button", name=re.compile(r"^entrar$", re.I)).first, 30_000)
+        "button", name=_ENVIAR_LOGIN_RE).first, 30_000)
 
     # Login certo fecha o modal (o campo some) — e pode trocar pela tela do
     # código por e-mail, que leva uns segundos pra aparecer: campo sumido só

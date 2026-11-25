@@ -207,6 +207,8 @@ class _Home:
         self.digitado = texto
 
     def get_by_role(self, role, name=None):
+        if name is sy._ENVIAR_LOGIN_RE:      # enviar do login (ENTRAR/Continuar)
+            return _LocH(self, "entrar")
         if name.search("Continuar"):
             return _LocH(self, "continuar")
         if name.search("Entrar"):
@@ -521,3 +523,15 @@ def test_setup_nao_salva_comando_como_senha(monkeypatch) -> None:
     with pytest.raises(SkipHandler):
         asyncio.run(hs.capturar_campo(msg, user, _S()))
     assert salvos == [] and user.awaiting_sympla_field is None
+
+
+def test_login_novo_da_sympla_auth_v2() -> None:
+    """25/11/2026, visto ao vivo: página /auth/v2 com "Entrar com senha" e
+    botão de enviar "Continuar"."""
+    assert sy._OPCAO_SENHA_RE.search("Entrar com senha")
+    assert sy._OPCAO_SENHA_RE.search("Continuar com e-mail e senha")
+    assert not sy._OPCAO_SENHA_RE.search("Continuar sem senha")
+    assert sy._MODAL_LOGIN_RE.search("Entre ou crie sua conta!")
+    assert sy._ENVIAR_LOGIN_RE.search("Continuar") and sy._ENVIAR_LOGIN_RE.search("ENTRAR")
+    for outro in ("Continuar sem senha", "Continuar com Google"):
+        assert not sy._ENVIAR_LOGIN_RE.search(outro)
