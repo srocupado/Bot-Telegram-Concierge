@@ -9,6 +9,7 @@ import anthropic
 from bot.services.llm.base import (
     MAX_ITER_PADRAO,
     fallback_limite,
+    houve_escrita,
     instrucao_limite,
     teto_de_rodadas,
     ChatMessage,
@@ -19,6 +20,9 @@ from bot.services.llm.base import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Teto de tokens da 2ª tentativa quando a 1ª foi cortada sem texto nenhum.
+TETO_AMPLIADO = 4096
 
 
 def _log_usage(where: str, resp: Any) -> None:
@@ -109,7 +113,7 @@ class AnthropicProvider(LLMProvider):
 
         return await asyncio.to_thread(_call)
 
-    async def chat_with_tools(
+    async def chat_with_tools(  # noqa: C901
         self,
         messages: list[ChatMessage],
         tools: list[Tool],
@@ -148,6 +152,14 @@ class AnthropicProvider(LLMProvider):
         )
 
         rodada = 0
+        # Resposta SEM TEXTO não é resposta (27/11/2026, Opus 5.5 por voz:
+        # "(sem resposta)" pra "filmes em cartaz no Cine Araújo"). Dois casos:
+        # - cortada pelo teto (max_tokens) antes de escrever qualquer texto —
+        #   raciocínio, busca web ou uma chamada de ferramenta pela metade
+        #   comem o teto curto do chat (600–800): refaz UMA vez com teto maior;
+        # - terminou "normal" e vazia: refaz UMA vez; persistindo, diz isso.
+        ampliou = False
+        repetiu_vazia = False
         # Teto RECALCULADO a cada volta: se uma escrita acontecer no
         # meio de um turno que começou só lendo, o teto encurta na hora.
         while rodada < teto_de_rodadas(ctx, max_iterations):
@@ -180,6 +192,24 @@ class AnthropicProvider(LLMProvider):
             if resp.stop_reason != "tool_use":
                 parts = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
                 texto = "".join(parts).strip()
+                if not texto and not ctx.direct_html:
+                    tipos = [getattr(b, "type", "?") for b in resp.content]
+                    logger.warning("anthropic: resposta sem texto (stop_reason=%s, "
+                                   "blocos=%s, max_tokens=%d)", resp.stop_reason,
+                                   tipos, max_tokens)
+                    if resp.stop_reason == "max_tokens" and not ampliou:
+                        ampliou = True
+                        max_tokens = max(max_tokens * 4, TETO_AMPLIADO)
+                        rodada -= 1
+                        continue
+                    if resp.stop_reason != "max_tokens" and not repetiu_vazia:
+                        repetiu_vazia = True
+                        rodada -= 1
+                        continue
+                    if not houve_escrita(ctx):
+                        return ("⚠️ O modelo terminou sem escrever resposta "
+                                f"(motivo: {resp.stop_reason}). Tenta de novo, "
+                                "ou reformula o pedido.")
                 if resp.stop_reason == "max_tokens" and texto:
                     # Corte por teto de tokens não pode passar por resposta
                     # completa — o usuário lia um texto interrompido no meio
