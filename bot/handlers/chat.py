@@ -751,7 +751,7 @@ async def free_chat(message: Message, user: User, session: AsyncSession) -> None
         reply = await provider.chat_with_tools(
             inject_context(history, effective_tz(user), summary), tools=tools_do_chat(), ctx=ctx,
             system=_build_system_prompt(),
-            max_tokens=800,
+            max_tokens=2000,
         )
     except Exception as e:
         logger.exception("chat failed")

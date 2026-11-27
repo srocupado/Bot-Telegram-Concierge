@@ -240,7 +240,7 @@ async def _run_chat(
             # relativas do prompt agendado divergiam do resto do turno.
             inject_context(history, effective_tz(user), summary), tools=tools_do_chat(), ctx=ctx,
             system=_build_system_prompt(),
-            max_tokens=800,
+            max_tokens=2000,
         )
     except Exception:
         logger.exception("scheduled chat failed")

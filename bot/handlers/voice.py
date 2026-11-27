@@ -591,7 +591,7 @@ async def _dispatch_chat(
         reply = await provider.chat_with_tools(
             inject_context(history, effective_tz(user), summary), tools=tools_do_chat(), ctx=ctx,
             system=_build_system_prompt(),
-            max_tokens=600,
+            max_tokens=2000,
         )
     except Exception as e:
         logger.exception("voice→chat failed")
